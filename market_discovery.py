@@ -25,10 +25,10 @@ def discover() -> dict[str, Any]:
                 "status": m.get("status"),
                 "close_time": m.get("close_time"),
                 "expiration_time": m.get("expiration_time"),
-                "yes_ask": m.get("yes_ask"),
-                "no_ask": m.get("no_ask"),
-                "yes_bid": m.get("yes_bid"),
-                "no_bid": m.get("no_bid"),
+                "yes_ask": m.get("yes_ask", m.get("yes_ask_dollars")),
+"no_ask": m.get("no_ask", m.get("no_ask_dollars")),
+"yes_bid": m.get("yes_bid", m.get("yes_bid_dollars")),
+"no_bid": m.get("no_bid", m.get("no_bid_dollars")),
                 "raw": m,
             }
             for m in candidates
