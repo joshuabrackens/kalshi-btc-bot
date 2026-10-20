@@ -44,8 +44,9 @@ def get_orderbook(ticker: str) -> dict:
 
 
 
+def 
 def find_open_btc_markets() -> list[dict]:
-    """Return only markets from Kalshi's Bitcoin 15-minute series."""
+    """Return only markets from the Bitcoin 15-minute series."""
     found = []
     cursor = None
 
@@ -59,13 +60,12 @@ def find_open_btc_markets() -> list[dict]:
 
         for market in payload.get("markets", []):
             ticker = str(market.get("ticker", "")).upper()
-            event_ticker = str(market.get("event_ticker", "")).upper()
+            status = str(market.get("status", "")).lower()
 
-            # Require the actual BTC 15-minute series identifier.
+            # Require the BTC 15-minute ticker; never accept sports markets.
             if (
                 ticker.startswith("KXBTC15M-")
-                and "KXBTC15M" in event_ticker
-                and market.get("status") == "active"
+                and status in ("active", "open")
             ):
                 found.append(market)
 
@@ -74,4 +74,5 @@ def find_open_btc_markets() -> list[dict]:
             break
 
     return found
+
 
