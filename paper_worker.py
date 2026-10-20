@@ -72,24 +72,35 @@ def _extract_market(raw: dict) -> dict | None:
 
 
 def _top_bid(book: dict, side: str) -> float | None:
-    # Kalshi may wrap the order book in orderbook_fp.
+    """Return the highest bid in cents from Kalshi's order book."""
+    if not isinstance(book, dict):
+        return None
+
+    # Kalshi may wrap the order book in either of these keys.
     ob = book.get("orderbook_fp", book.get("orderbook", book))
+
     if not isinstance(ob, dict):
         return None
 
     values = []
+
     for key in (side, f"{side}_dollars"):
         levels = ob.get(key)
+
         if not isinstance(levels, list):
             continue
 
         for level in levels:
             try:
                 price = float(level[0])
+
+                # Convert dollar prices to cents.
                 if key.endswith("_dollars"):
                     price *= 100
+
                 if 0 <= price <= 100:
                     values.append(price)
+
             except (ValueError, TypeError, IndexError):
                 continue
 
