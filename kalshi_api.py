@@ -44,7 +44,6 @@ def get_orderbook(ticker: str) -> dict:
 
 
 
-def 
 def find_open_btc_markets() -> list[dict]:
     """Return only markets from the Bitcoin 15-minute series."""
     found = []
