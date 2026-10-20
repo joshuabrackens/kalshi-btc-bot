@@ -43,18 +43,35 @@ def get_orderbook(ticker: str) -> dict:
     return _get(f"/markets/{ticker}/orderbook")
 
 
-def find_open_btc_markets(search_terms: tuple[str, ...] = ("BTC", "Bitcoin")) -> list[dict]:
-    """Best-effort discovery only; inspect returned market titles/tickers before use."""
+
+def find_open_btc_markets() -> list[dict]:
+    """Return only markets from Kalshi's Bitcoin 15-minute series."""
     found = []
     cursor = None
+
     for _ in range(5):
-        payload = get_markets(status="open", limit=200, cursor=cursor)
+        payload = get_markets(
+            status="open",
+            limit=200,
+            cursor=cursor,
+            series_ticker="KXBTC15M",
+        )
+
         for market in payload.get("markets", []):
-            text = " ".join(str(market.get(k, "")) for k in
-                            ("ticker", "title", "subtitle", "event_ticker")).lower()
-            if any(term.lower() in text for term in search_terms):
+            ticker = str(market.get("ticker", "")).upper()
+            event_ticker = str(market.get("event_ticker", "")).upper()
+
+            # Require the actual BTC 15-minute series identifier.
+            if (
+                ticker.startswith("KXBTC15M-")
+                and "KXBTC15M" in event_ticker
+                and market.get("status") == "active"
+            ):
                 found.append(market)
+
         cursor = payload.get("cursor")
         if not cursor:
             break
+
     return found
+
