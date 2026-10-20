@@ -70,22 +70,31 @@ def _extract_market(raw: dict) -> dict | None:
             "yes_ask": _price(m, "yes", "ask"), "no_ask": _price(m, "no", "ask"),
             "status": status, "title": title}
 
+
 def _top_bid(book: dict, side: str) -> float | None:
-    ob = book.get("orderbook", book)
-    if not isinstance(ob, dict): return None
-    # Kalshi public orderbook levels are [price_cents, quantity].
+    # Kalshi may wrap the order book in orderbook_fp.
+    ob = book.get("orderbook_fp", book.get("orderbook", book))
+    if not isinstance(ob, dict):
+        return None
+
+    values = []
     for key in (side, f"{side}_dollars"):
         levels = ob.get(key)
-        if isinstance(levels, list) and levels:
-            vals=[]
-            for level in levels:
-                try:
-                    price=float(level[0])
-                    if key.endswith("_dollars"): price *= 100
-                    vals.append(price)
-                except (ValueError, TypeError, IndexError): continue
-            if vals: return max(vals)
-    return None
+        if not isinstance(levels, list):
+            continue
+
+        for level in levels:
+            try:
+                price = float(level[0])
+                if key.endswith("_dollars"):
+                    price *= 100
+                if 0 <= price <= 100:
+                    values.append(price)
+            except (ValueError, TypeError, IndexError):
+                continue
+
+    return max(values) if values else None
+
 
 def _ensure_schema(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS paper_trades (
