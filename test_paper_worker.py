@@ -22,33 +22,27 @@ class WorkerSafetyTests(unittest.TestCase):
         m={"market":{"ticker":"KXBTC15M-TEST","status":"active","title":"BTC price up in next 15 mins?","close_time":(datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat(),"floor_strike":65000,"yes_ask":50,"no_ask":50}}
         parsed=w._extract_market(m)
         self.assertIsNotNone(parsed); self.assertEqual(parsed["strike"],65000)
-def test_top_bid_levels(self):
-    # Existing simplified format
-    self.assertEqual(
-        w._top_bid({"orderbook": {"yes": [[40, 3], [42, 1]]}}, "yes"),
-        42
-    )
+    def test_top_bid_levels(self):
+        self.assertEqual(
+            w._top_bid({"orderbook": {"yes": [[40, 3], [42, 1]]}}, "yes"),
+            42,
+        )
 
-    # Actual Kalshi orderbook_fp format: prices are dollars
-    self.assertEqual(
-        w._top_bid({
-            "orderbook_fp": {
-                "yes_dollars": [["0.4000", "3"], ["0.4200", "1"]],
-                "no_dollars": [["0.5500", "2"]]
-            }
-        }, "yes"),
-        42
-    )
+        self.assertAlmostEqual(
+            w._top_bid(
+                {"orderbook_fp": {"yes_dollars": [["0.4200", "3"], ["0.4500", "1"]]}},
+                "yes",
+            ),
+            45.0,
+        )
 
-    self.assertEqual(
-        w._top_bid({
-            "orderbook_fp": {
-                "yes_dollars": [["0.4000", "3"]],
-                "no_dollars": [["0.5500", "2"]]
-            }
-        }, "no"),
-        55
-    )
+        self.assertAlmostEqual(
+            w._top_bid(
+                {"orderbook_fp": {"no_dollars": [["0.3100", "2"]]}},
+                "no",
+            ),
+            31.0,
+        )
     def test_discovery_without_strike_does_not_open_trade(self):
         old_discover,old_get_market=w.discover,w.get_market
         w.discover=lambda:{"candidates":[{"ticker":"KXBTC15M-TEST"}]}
