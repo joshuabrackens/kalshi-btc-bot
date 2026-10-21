@@ -132,10 +132,9 @@ def startup() -> None:
 @app.get("/")
 def home():
     return FileResponse(
-        "dashboard.html",
+        Path(__file__).resolve().parent / "dashboard.html",
         media_type="text/html"
     )
-
 
 @app.get("/health")
 def health() -> dict[str, str]:
