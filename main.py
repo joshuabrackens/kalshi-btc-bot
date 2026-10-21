@@ -170,7 +170,7 @@ def dashboard_data():
     return {
         "health": {
             "api_ok": True,
-            "worker_enabled": False,
+          "worker_enabled": os.getenv("PAPER_WORKER_ENABLED", "false").lower() == "true",
             "kalshi_api": "See Render worker logs"
         },
         "risk": {
