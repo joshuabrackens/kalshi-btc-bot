@@ -136,6 +136,81 @@ def home():
         media_type="text/html"
     )
 
+@app.get("/api/dashboard")
+def dashboard_data():
+    with db_connect() as conn:
+        totals = conn.execute("""
+            SELECT
+                COUNT(*),
+                SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN settled_at IS NOT NULL AND pnl_cents > 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN settled_at IS NOT NULL AND pnl_cents < 0 THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN settled_at IS NOT NULL THEN pnl_cents ELSE 0 END), 0),
+                SUM(CASE WHEN settled_at IS NULL THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN settled_at IS NULL THEN contracts * (entry_cents + fee_cents_per_contract) ELSE 0 END), 0)
+            FROM paper_trades
+        """).fetchone()
+
+        rows = conn.execute("""
+            SELECT id, created_at, settled_at, market_ticker, direction,
+                   contracts, entry_cents, outcome, pnl_cents
+            FROM paper_trades
+            ORDER BY id DESC LIMIT 20
+        """).fetchall()
+
+        signal = conn.execute("""
+            SELECT created_at, market_ticker, direction, score,
+                   btc_price, strike_price, seconds_remaining
+            FROM signal_log
+            ORDER BY id DESC LIMIT 1
+        """).fetchone()
+
+    total, settled, wins, losses, pnl, opened, exposure = totals
+
+    return {
+        "health": {
+            "api_ok": True,
+            "worker_enabled": False,
+            "kalshi_api": "See Render worker logs"
+        },
+        "risk": {
+            "max_trade_dollars": 1.00,
+            "max_daily_loss_dollars": 10.00,
+            "open_exposure_dollars": round(float(exposure or 0) / 100, 2)
+        },
+        "stats": {
+            "total_trades": int(total or 0),
+            "settled_trades": int(settled or 0),
+            "wins": int(wins or 0),
+            "losses": int(losses or 0),
+            "open_positions": int(opened or 0),
+            "win_rate_percent": round(100 * (wins or 0) / settled, 2) if settled else None,
+            "net_pnl_dollars": round(float(pnl or 0) / 100, 2)
+        },
+        "latest_signal": dict(zip(
+            ["created_at", "market_ticker", "direction", "score",
+             "btc_price", "strike_price", "seconds_remaining"],
+            signal
+        )) if signal else None,
+        "trades": [
+            {
+                "id": r[0],
+                "created_at": r[1],
+                "settled_at": r[2],
+                "market_ticker": r[3],
+                "direction": r[4],
+                "contracts": r[5],
+                "entry_cents": r[6],
+                "outcome": r[7],
+                "pnl_cents": r[8],
+                "pnl_dollars": round(float(r[8]) / 100, 2) if r[8] is not None else None
+            }
+            for r in rows
+        ],
+        "mode": "SIMULATION_ONLY",
+        "real_orders_enabled": False
+    }
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "time_utc": datetime.now(timezone.utc).isoformat()}
