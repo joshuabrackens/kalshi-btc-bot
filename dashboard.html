@@ -1,0 +1,420 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTC Engine | Paper Trading</title>
+
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #080d17;
+  --card: #111b2b;
+  --line: #26344a;
+  --text: #eef4ff;
+  --muted: #91a0b8;
+  --blue: #6895ff;
+  --green: #3ddc97;
+  --red: #ff7185;
+  --amber: #f5c56a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: radial-gradient(ellipse at 10% 0%, #172746, transparent 42%), var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+}
+
+.wrap {
+  max-width: 1150px;
+  margin: auto;
+  padding: 28px 18px;
+}
+
+.top, .head, .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.top { margin-bottom: 35px; }
+
+.logo { display: flex; gap: 12px; align-items: center; }
+
+.mark {
+  background: linear-gradient(140deg, #7aa6ff, #456bdf);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 900;
+}
+
+h1 { font-size: 17px; margin: 0; }
+h2 { font-size: clamp(26px, 4vw, 36px); letter-spacing: -.04em; margin: 5px 0; }
+h3 { font-size: 14px; margin: 0; }
+
+.muted, .sub { color: var(--muted); }
+
+.pill, .badge {
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.badge {
+  color: var(--green);
+  background: #10342b;
+  border-color: #205945;
+}
+
+.badge.warn {
+  color: var(--amber);
+  background: #382d17;
+  border-color: #6c5327;
+}
+
+.kicker {
+  color: var(--blue);
+  font-size: 11px;
+  letter-spacing: .15em;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.intro { margin-bottom: 22px; }
+
+.btn {
+  background: #1b2d4d;
+  color: #e8f0ff;
+  border: 1px solid #36527f;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.card {
+  grid-column: span 4;
+  background: linear-gradient(145deg, #131e30, #0e1726);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 19px;
+  min-width: 0;
+}
+
+.half { grid-column: span 6; }
+.wide { grid-column: span 12; }
+
+.head { margin-bottom: 18px; }
+
+.big {
+  font-size: 30px;
+  font-weight: 850;
+  letter-spacing: -.04em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.sub { font-size: 12px; margin-top: 6px; }
+
+.line {
+  height: 1px;
+  background: var(--line);
+  margin: 17px 0;
+}
+
+.rows { display: grid; gap: 10px; }
+.row span { color: var(--muted); }
+.row strong { text-align: right; overflow-wrap: anywhere; }
+
+.positive { color: var(--green); }
+.negative { color: var(--red); }
+
+.callout {
+  padding: 12px;
+  border-radius: 10px;
+  background: #111f37;
+  border: 1px solid #29416b;
+  color: #c4d5f4;
+  font-size: 12px;
+}
+
+.tablewrap { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+th, td {
+  text-align: left;
+  padding: 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+th { color: var(--muted); }
+
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 24px;
+}
+
+.foot {
+  text-align: center;
+  color: #687891;
+  font-size: 11px;
+  margin-top: 22px;
+}
+
+@media (max-width: 780px) {
+  .card, .half { grid-column: span 12; }
+  .top { align-items: flex-start; flex-direction: column; }
+}
+</style>
+</head>
+
+<body>
+<main class="wrap">
+
+<header class="top">
+  <div class="logo">
+    <div class="mark">B</div>
+    <div>
+      <h1>BTC ENGINE</h1>
+      <div class="muted">Kalshi 15-minute · paper execution</div>
+    </div>
+  </div>
+  <div>
+    <span class="pill">● PAPER MODE ONLY</span>
+    <span class="pill" id="updated">Waiting for data</span>
+  </div>
+</header>
+
+<section class="intro">
+  <div class="kicker">Engine overview / trading journal</div>
+  <h2>Your engine. One clear view.</h2>
+  <div class="muted">Signals, simulated positions, realized results, and safety limits.</div>
+  <p><button class="btn" onclick="loadDashboard()">↻ Refresh data</button></p>
+</section>
+
+<div class="grid">
+
+<section class="card">
+  <div class="head">
+    <h3>Engine connection</h3>
+    <span class="badge warn" id="engineBadge">Checking</span>
+  </div>
+  <div class="big" id="engineStatus">Waiting for API</div>
+  <div class="sub" id="engineSub">Checking dashboard connection</div>
+  <div class="line"></div>
+  <div class="rows">
+    <div class="row"><span>Paper worker</span><strong id="workerStatus">—</strong></div>
+    <div class="row"><span>Kalshi API</span><strong id="kalshiStatus">—</strong></div>
+    <div class="row"><span>Real orders</span><strong class="positive">Disabled</strong></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="head">
+    <h3>Realized P&amp;L</h3>
+    <span class="muted">After recorded fees</span>
+  </div>
+  <div class="big" id="pnl">$0.00</div>
+  <div class="sub">Cumulative settled paper trades</div>
+  <div class="line"></div>
+  <div class="rows">
+    <div class="row"><span>Win rate</span><strong id="winRate">—</strong></div>
+    <div class="row"><span>Settled trades</span><strong id="settled">0</strong></div>
+    <div class="row"><span>Wins / losses</span><strong id="winsLosses">0 / 0</strong></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="head">
+    <h3>Risk limits</h3>
+    <span class="badge">Guardrails</span>
+  </div>
+  <div class="rows">
+    <div class="row"><span>Max cost / trade</span><strong id="maxTrade">$1.00</strong></div>
+    <div class="row"><span>Daily loss limit</span><strong id="maxLoss">$10.00</strong></div>
+    <div class="row"><span>Open exposure</span><strong id="exposure">$0.00</strong></div>
+    <div class="row"><span>Open positions</span><strong id="openPositions">0</strong></div>
+  </div>
+  <div class="line"></div>
+  <div class="callout"><b>Safety lock:</b> This dashboard is read-only. It cannot place or enable real orders.</div>
+</section>
+
+<section class="card half">
+  <div class="head">
+    <h3>Latest signal</h3>
+    <span class="muted">Signal journal</span>
+  </div>
+  <div class="big" id="direction">No signal yet</div>
+  <div class="sub" id="signalMeta">Waiting for recorded signal data</div>
+  <div class="line"></div>
+  <div class="rows">
+    <div class="row"><span>Score</span><strong id="score">—</strong></div>
+    <div class="row"><span>BTC price</span><strong id="btcPrice">—</strong></div>
+    <div class="row"><span>Strike</span><strong id="strike">—</strong></div>
+    <div class="row"><span>Time remaining</span><strong id="remaining">—</strong></div>
+  </div>
+</section>
+
+<section class="card half">
+  <div class="head">
+    <h3>What happens next</h3>
+    <span class="badge warn" id="activityBadge">Checking</span>
+  </div>
+  <div class="rows">
+    <div class="row"><span>Worker status</span><strong id="activity">Waiting for worker data</strong></div>
+    <div class="row"><span>Last signal</span><strong id="lastSignal">—</strong></div>
+    <div class="row"><span>Dashboard API</span><strong id="apiHealth">—</strong></div>
+  </div>
+  <div class="line"></div>
+  <div class="callout">If Kalshi rate-limits or market data cannot be verified, the safe behavior is to wait—not force a trade. Check Render logs for API errors.</div>
+</section>
+
+<section class="card wide">
+  <div class="head">
+    <h3>Paper trade activity</h3>
+    <span class="muted">Most recent 20 trades</span>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Opened</th><th>Market</th><th>Side</th><th>Contracts</th>
+          <th>Entry</th><th>Status</th><th>Outcome</th><th>Net P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody id="trades">
+        <tr><td colspan="8" class="empty">Waiting for journal data</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</div>
+
+<div class="foot">Paper simulation only · not a live Kalshi account balance.</div>
+</main>
+
+<script>
+const el = id => document.getElementById(id);
+
+function money(value) {
+  const n = Number(value || 0);
+  return (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2);
+}
+
+function dateText(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return isNaN(d) ? String(value) : d.toLocaleString();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;",
+    '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+async function loadDashboard() {
+  try {
+    const response = await fetch("/api/dashboard", { cache: "no-store" });
+    if (!response.ok) throw new Error("API returned HTTP " + response.status);
+
+    const data = await response.json();
+    const stats = data.stats || {};
+    const risk = data.risk || {};
+    const health = data.health || {};
+    const signal = data.latest_signal;
+
+    el("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+    el("engineBadge").textContent = health.api_ok ? "Connected" : "Degraded";
+    el("engineBadge").className = "badge " + (health.api_ok ? "" : "warn");
+    el("engineStatus").textContent = health.api_ok ? "API online" : "API degraded";
+    el("engineSub").textContent = "Last check: " + dateText(health.checked_at);
+    el("workerStatus").textContent = health.worker_enabled ? "Enabled" : "Not confirmed";
+    el("kalshiStatus").textContent = health.kalshi_api || "Not checked";
+
+    el("pnl").textContent = money(stats.net_pnl_dollars);
+    el("pnl").className = "big " +
+      (Number(stats.net_pnl_dollars) > 0 ? "positive" :
+       Number(stats.net_pnl_dollars) < 0 ? "negative" : "");
+    el("winRate").textContent = stats.win_rate_percent == null
+      ? "—" : Number(stats.win_rate_percent).toFixed(1) + "%";
+    el("settled").textContent = stats.settled_trades ?? 0;
+    el("winsLosses").textContent = (stats.wins ?? 0) + " / " + (stats.losses ?? 0);
+
+    el("maxTrade").textContent = money(risk.max_trade_dollars);
+    el("maxLoss").textContent = money(risk.max_daily_loss_dollars);
+    el("exposure").textContent = money(risk.open_exposure_dollars);
+    el("openPositions").textContent = stats.open_positions ?? 0;
+
+    el("direction").textContent = signal ? (signal.direction || "Signal recorded") : "No signal yet";
+    el("signalMeta").textContent = signal
+      ? (signal.market_ticker || "Market unspecified") + " · " + dateText(signal.created_at)
+      : "Waiting for recorded signal data";
+    el("score").textContent = signal ? signal.score + " / 100" : "—";
+    el("btcPrice").textContent = signal && signal.btc_price != null
+      ? "$" + Number(signal.btc_price).toLocaleString() : "—";
+    el("strike").textContent = signal && signal.strike_price != null
+      ? "$" + Number(signal.strike_price).toLocaleString() : "—";
+    el("remaining").textContent = signal && signal.seconds_remaining != null
+      ? signal.seconds_remaining + " sec" : "—";
+
+    el("activity").textContent = health.worker_enabled
+      ? "Worker configured" : "Worker status unconfirmed";
+    el("lastSignal").textContent = signal ? dateText(signal.created_at) : "No signal recorded";
+    el("apiHealth").textContent = health.api_ok ? "Healthy" : "Error";
+    el("activityBadge").textContent = health.worker_enabled ? "Monitoring" : "Check worker";
+    el("activityBadge").className = "badge " + (health.worker_enabled ? "" : "warn");
+
+    const trades = data.trades || [];
+    el("trades").innerHTML = trades.length
+      ? trades.map(t => {
+          const pnl = t.pnl_dollars;
+          const pnlClass = pnl == null ? "" : Number(pnl) > 0
+            ? "positive" : Number(pnl) < 0 ? "negative" : "";
+          return `<tr>
+            <td>${escapeHtml(dateText(t.created_at))}</td>
+            <td>${escapeHtml(t.market_ticker)}</td>
+            <td>${escapeHtml(t.direction)}</td>
+            <td>${escapeHtml(t.contracts)}</td>
+            <td>${escapeHtml(t.entry_cents)}¢</td>
+            <td>${t.settled_at ? "Settled" : "Open"}</td>
+            <td>${escapeHtml(t.outcome || "—")}</td>
+            <td class="${pnlClass}">${pnl == null ? "—" : money(pnl)}</td>
+          </tr>`;
+        }).join("")
+      : '<tr><td colspan="8" class="empty">No trades in the connected journal yet.</td></tr>';
+
+  } catch (error) {
+    el("engineBadge").textContent = "Offline";
+    el("engineBadge").className = "badge warn";
+    el("engineStatus").textContent = "Dashboard API unavailable";
+    el("engineSub").textContent = error.message;
+    el("updated").textContent = "Refresh failed";
+  }
+}
+
+loadDashboard();
+setInterval(loadDashboard, 15000);
+</script>
+</body>
+</html>
