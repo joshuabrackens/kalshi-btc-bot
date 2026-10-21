@@ -130,23 +130,11 @@ def startup() -> None:
 
 
 @app.get("/")
-def home() -> dict[str, Any]:
-    return {
-        "service": "Kalshi BTC 15-minute bot",
-        "status": "running",
-        "mode": "signal-engine-only",
-        "market_discovery": "available (public endpoint)",
-        "live_data_connected": False,
-        "telegram_connected": False,
-        "real_order_execution_enabled": False,
-        "next_steps": [
-            "Connect verified BTC candle provider",
-            "Connect Kalshi market discovery and order-book data",
-            "Run paper-trading evaluation and outcome tracking",
-            "Add Telegram alerts",
-            "Review safety checks before considering live orders",
-        ],
-    }
+def home():
+    return FileResponse(
+        "dashboard.html",
+        media_type="text/html"
+    )
 
 
 @app.get("/health")
