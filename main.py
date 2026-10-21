@@ -10,8 +10,8 @@ from typing import Any
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-
 from signal_engine import MarketContext, evaluate_signal
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
