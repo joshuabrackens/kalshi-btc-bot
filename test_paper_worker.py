@@ -64,4 +64,47 @@ class WorkerSafetyTests(unittest.TestCase):
             finally: c.close()
         finally: w.discover,w.get_market=old_discover,old_get_market
 
+    def test_limits_halts_when_open_risk_reaches_daily_limit(self):
+        conn = w._connect()
+        try:
+            # Create an open paper position with $10 of reserved risk.
+            now = w._utcnow().isoformat()
+            conn.execute(
+                """INSERT INTO paper_trades
+                (created_at, market_ticker, direction, contracts,
+                 entry_cents, fee_cents_per_contract, notes, stop_loss_cents)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now, "KXBTC15M-TEST", "UP", 10, 98, 2, "test", 60),
+            )
+            conn.commit()
+
+            realized, open_cost, count, halt = w._limits(conn, 1.00, 10.00)
+
+            self.assertTrue(halt)
+            self.assertGreaterEqual(open_cost, 1000)
+        finally:
+            conn.close()
+
+    def test_limits_halts_after_daily_realized_loss(self):
+        conn = w._connect()
+        try:
+            now = w._utcnow().isoformat()
+            conn.execute(
+                """INSERT INTO paper_trades
+                (created_at, market_ticker, direction, contracts,
+                 entry_cents, fee_cents_per_contract, notes, stop_loss_cents,
+                 settled_at, outcome, pnl_cents)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now, "KXBTC15M-TEST", "UP", 1, 50, 2, "test", 30,
+                 now, "DOWN", -1000),
+            )
+            conn.commit()
+
+            realized, open_cost, count, halt = w._limits(conn, 1.00, 10.00)
+
+            self.assertLessEqual(realized, -1000)
+            self.assertTrue(halt)
+        finally:
+            conn.close()
+
 if __name__=="__main__": unittest.main()
