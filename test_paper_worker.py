@@ -150,4 +150,42 @@ class WorkerSafetyTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_stop_loss_closes_paper_trade_at_trigger(self):
+        conn = w._connect()
+        original_get_market = w.get_market
+        original_get_orderbook = w.get_orderbook
+
+        try:
+            now = w._utcnow().isoformat()
+            conn.execute(
+                """INSERT INTO paper_trades
+                (created_at, market_ticker, direction, contracts,
+                 entry_cents, fee_cents_per_contract, notes, stop_loss_cents)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now, "KXBTC15M-TEST", "UP", 1, 60, 2, "test", 40),
+            )
+            conn.commit()
+
+            w.get_market = lambda ticker: {"market": {"status": "active"}}
+            w.get_orderbook = lambda ticker: {
+                "orderbook_fp": {
+                    "yes_dollars": [["0.3900", "5"]]
+                }
+            }
+
+            w._manage_open(conn, 10.00)
+
+            trade = conn.execute(
+                "SELECT settled_at, outcome, pnl_cents FROM paper_trades"
+            ).fetchone()
+
+            self.assertIsNotNone(trade[0])
+            self.assertEqual(trade[1], "STOP_LOSS")
+            self.assertAlmostEqual(trade[2], 39 - 60 - 2 - 2)
+
+        finally:
+            w.get_market = original_get_market
+            w.get_orderbook = original_get_orderbook
+            conn.close()
+
 if __name__=="__main__": unittest.main()
