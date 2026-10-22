@@ -609,8 +609,20 @@ def _next_gainzalgo_signal(conn):
         timeframe_text=str(timeframe or "").lower().replace(" ", "")
         if symbol_text and "BTC" not in symbol_text:
             conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='symbol is not BTC' WHERE id=?", (now.isoformat(), signal_id)); conn.commit(); continue
-        if timeframe_text and timeframe_text not in {"15", "15m", "15min", "15minute", "15minutes"}:
-            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='timeframe is not 15m' WHERE id=?", (now.isoformat(), signal_id)); conn.commit(); continue
+        # TradingView indicator runs on 1m; accept that signal timeframe while
+        # preserving compatibility with existing 15m alerts. The Kalshi contract
+        # being traded is still a 15-minute market.
+        supported_timeframes = {
+            "1", "1m", "1min", "1minute", "1minutes",
+            "15", "15m", "15min", "15minute", "15minutes",
+        }
+        if timeframe_text and timeframe_text not in supported_timeframes:
+            conn.execute(
+                "UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note=? WHERE id=?",
+                (now.isoformat(), "unsupported timeframe; expected a 1m TradingView signal (15m legacy alerts also accepted)", signal_id),
+            )
+            conn.commit()
+            continue
         d=str(raw_direction or "").upper()
         if d in {"BUY", "LONG", "UP"}: direction="UP"
         elif d in {"SELL", "SHORT", "DOWN"}: direction="DOWN"

@@ -12,6 +12,28 @@ import paper_worker as w
 
 
 class HybridVetoTests(unittest.TestCase):
+    def test_accepts_one_minute_tradingview_alert(self):
+        tmp = tempfile.TemporaryDirectory()
+        old_db = w.DB_PATH
+        try:
+            w.DB_PATH = Path(tmp.name) / "signal-1m.sqlite3"
+            with w._connect() as conn:
+                conn.execute(
+                    """INSERT INTO gainzalgo_signals
+                       (created_at,direction,symbol,timeframe,payload_json)
+                       VALUES (?,?,?,?,?)""",
+                    (w._utcnow().isoformat(), "UP", "BTCUSDT", "1m",
+                     '{"direction":"UP","symbol":"BTCUSDT","timeframe":"1m"}'),
+                )
+                conn.commit()
+                row, direction = w._next_gainzalgo_signal(conn)
+                self.assertIsNotNone(row)
+                self.assertEqual(direction, "UP")
+                self.assertEqual(row["direction"], "UP")
+        finally:
+            w.DB_PATH = old_db
+            tmp.cleanup()
+
     def test_internal_wait_or_low_score_does_not_veto_by_itself(self):
         payload = {
             "direction": "WAIT",
