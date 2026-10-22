@@ -95,6 +95,24 @@ def db_connect() -> Iterator[sqlite3.Connection]:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)").fetchall()}
         if "stop_loss_cents" not in columns:
             conn.execute("ALTER TABLE paper_trades ADD COLUMN stop_loss_cents REAL")
+        if "timeframe" not in columns:
+            conn.execute("ALTER TABLE paper_trades ADD COLUMN timeframe TEXT")
+        # Existing BTC 15-minute market records can be identified as 15m contracts,
+        # but this does not pretend to know which TradingView chart timeframe triggered them.
+        conn.execute("""UPDATE paper_trades SET timeframe = '15m contract; TV timeframe unknown'
+                       WHERE timeframe IS NULL AND upper(market_ticker) LIKE '%15M%'""")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS webhook_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                symbol TEXT,
+                timeframe TEXT,
+                direction TEXT
+            )"""
+        )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS gainzalgo_signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,6 +178,7 @@ class PaperTradeRequest(BaseModel):
     entry_cents: float = Field(gt=0, lt=100)
     fee_cents_per_contract: float = Field(default=0, ge=0, le=10)
     stop_loss_cents: float | None = Field(default=None, gt=0, lt=100)
+    timeframe: str | None = Field(default=None, max_length=40)
     notes: str | None = Field(default=None, max_length=500)
 
 
@@ -203,7 +222,7 @@ def dashboard_data() -> dict[str, Any]:
         ).fetchone()
         rows = conn.execute(
             """SELECT id, created_at, settled_at, market_ticker, direction,
-                      contracts, entry_cents, outcome, pnl_cents
+                      contracts, entry_cents, outcome, pnl_cents, timeframe
                FROM paper_trades ORDER BY id DESC LIMIT 20"""
         ).fetchall()
         signal_row = conn.execute(
@@ -218,6 +237,10 @@ def dashboard_data() -> dict[str, Any]:
         external_alert_count = int(conn.execute(
             "SELECT COUNT(*) FROM gainzalgo_signals"
         ).fetchone()[0] or 0)
+        last_webhook_event = conn.execute(
+            """SELECT received_at, status_code, status, reason, symbol, timeframe, direction
+               FROM webhook_events ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
 
     total, settled, wins, losses, pnl, opened, exposure = totals
     signal = None
@@ -317,10 +340,17 @@ def dashboard_data() -> dict[str, Any]:
         "latest_external_alert": external_alerts[0] if external_alerts else None,
         "external_alert_count": external_alert_count,
         "recent_external_alerts": external_alerts,
+        "latest_webhook_event": ({
+            "received_at": last_webhook_event[0], "status_code": last_webhook_event[1],
+            "status": last_webhook_event[2], "reason": last_webhook_event[3],
+            "symbol": last_webhook_event[4] or None, "timeframe": last_webhook_event[5] or None,
+            "direction": last_webhook_event[6] or None,
+        } if last_webhook_event else None),
         "trades": [
             {"id": r[0], "created_at": r[1], "settled_at": r[2], "market_ticker": r[3],
              "direction": r[4], "contracts": r[5], "entry_cents": r[6], "outcome": r[7],
-             "pnl_cents": r[8], "pnl_dollars": round(float(r[8]) / 100, 2) if r[8] is not None else None}
+             "pnl_cents": r[8], "timeframe": r[9],
+             "pnl_dollars": round(float(r[8]) / 100, 2) if r[8] is not None else None}
             for r in rows
         ],
         "mode": "SIMULATION_ONLY",
@@ -493,10 +523,11 @@ def open_paper_trade(request: PaperTradeRequest) -> dict[str, Any]:
         cur = conn.execute(
             """INSERT INTO paper_trades
                (created_at, market_ticker, direction, contracts, entry_cents,
-                fee_cents_per_contract, notes, stop_loss_cents)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                fee_cents_per_contract, notes, stop_loss_cents, timeframe)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (created_at, ticker, direction, request.contracts, request.entry_cents,
-             request.fee_cents_per_contract, request.notes, request.stop_loss_cents),
+             request.fee_cents_per_contract, request.notes, request.stop_loss_cents,
+             request.timeframe or ("15m contract; TV timeframe unknown" if "15M" in ticker.upper() else None)),
         )
         trade_id = cur.lastrowid
 
@@ -504,6 +535,8 @@ def open_paper_trade(request: PaperTradeRequest) -> dict[str, Any]:
         "paper_trade_id": trade_id, "mode": "SIMULATION_ONLY", "status": "open",
         "market_ticker": ticker, "direction": direction, "contracts": request.contracts,
         "entry_cents": request.entry_cents, "stop_loss_cents": request.stop_loss_cents,
+        "timeframe": request.timeframe or ("15m contract; TV timeframe unknown" if "15M" in ticker.upper() else None),
+        "created_at": created_at,
         "max_gross_cost_cents": round(request.contracts * request.entry_cents, 4),
         "total_entry_cost_including_fees_dollars": round(total_cost_cents / 100, 4),
         "note": "No live order was placed. stop_loss_cents is stored for reference only; this endpoint does not monitor prices or execute automatic exits.",
@@ -551,11 +584,11 @@ def paper_trades(limit: int = 50) -> dict[str, Any]:
     with db_connect() as conn:
         rows = conn.execute(
             """SELECT id, created_at, settled_at, market_ticker, direction, contracts,
-                      entry_cents, fee_cents_per_contract, outcome, pnl_cents, notes, stop_loss_cents
+                      entry_cents, fee_cents_per_contract, outcome, pnl_cents, notes, stop_loss_cents, timeframe
                FROM paper_trades ORDER BY id DESC LIMIT ?""", (limit,)
         ).fetchall()
     keys = ["id", "created_at", "settled_at", "market_ticker", "direction", "contracts",
-            "entry_cents", "fee_cents_per_contract", "outcome", "pnl_cents", "notes", "stop_loss_cents"]
+            "entry_cents", "fee_cents_per_contract", "outcome", "pnl_cents", "notes", "stop_loss_cents", "timeframe"]
     return {"trades": [dict(zip(keys, row)) for row in rows]}
 
 
@@ -606,27 +639,84 @@ def market_orderbook(ticker: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+def _record_webhook_event(status_code: int, status: str, reason: str, payload: dict[str, Any] | None = None) -> None:
+    """Audit webhook delivery outcomes without ever persisting credentials or message bodies."""
+    payload = payload if isinstance(payload, dict) else {}
+    symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("market_ticker") or "")[:100]
+    timeframe = str(payload.get("timeframe") or payload.get("interval") or payload.get("resolution") or "")[:40]
+    direction = str(payload.get("direction") or payload.get("action") or payload.get("signal") or "")[:40]
+    try:
+        with db_connect() as conn:
+            conn.execute(
+                """INSERT INTO webhook_events
+                   (received_at, status_code, status, reason, symbol, timeframe, direction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (datetime.now(timezone.utc).isoformat(), status_code, status, reason[:300], symbol, timeframe, direction),
+            )
+    except Exception:
+        # Never mask the actual webhook response if diagnostics logging fails.
+        pass
+
+
+def _normalize_webhook_direction(payload: dict[str, Any]) -> str:
+    """Accept common TradingView/GainzAlgo field names and directional labels."""
+    candidates = []
+    for key in ("direction", "action", "signal", "side", "alert", "message", "strategy_order_action"):
+        value = payload.get(key)
+        if value is not None:
+            candidates.append(str(value).strip().upper())
+    for value in candidates:
+        normalized = value.replace("-", "_")
+        compact = "_".join(normalized.split())
+        if compact in {"BUY_UP", "LONG_UP", "BULLISH", "BULL", "UP", "BUY", "LONG"}:
+            return "UP" if compact in {"BUY_UP", "LONG_UP", "BULLISH", "BULL", "UP"} else "BUY"
+        if compact in {"BUY_DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWN", "SELL", "SHORT"}:
+            return "DOWN" if compact in {"BUY_DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWN"} else "SELL"
+        # TradingView messages often contain extra text, e.g. "BTCUSDT 1m BUY_UP".
+        tokens = {part.strip(".,:;[](){}\"'") for part in normalized.replace("/", " ").split()}
+        if tokens.intersection({"BUY_UP", "LONG_UP", "BULLISH", "BULL", "UP"}):
+            return "UP"
+        if tokens.intersection({"BUY_DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWN"}):
+            return "DOWN"
+        if tokens.intersection({"BUY", "LONG"}):
+            return "BUY"
+        if tokens.intersection({"SELL", "SHORT"}):
+            return "SELL"
+    return ""
+
+
 @app.post("/webhooks/gainzalgo")
 async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
-    """Validate and journal an alert for analysis; never places a trade."""
+    """Record incoming TradingView/GainzAlgo alerts for display and analysis; no trades."""
     try:
         payload = await request.json()
     except Exception as exc:
+        _record_webhook_event(400, "rejected", "Expected a JSON alert body.")
         raise HTTPException(status_code=400, detail="Expected a JSON alert body.") from exc
     if not isinstance(payload, dict):
+        _record_webhook_event(400, "rejected", "Expected a JSON object.")
         raise HTTPException(status_code=400, detail="Expected a JSON object.")
 
     expected_secret = os.getenv("GAINZALGO_WEBHOOK_SECRET", "")
-    supplied_secret = str(payload.get("secret", ""))
-    if not expected_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+    supplied_secret = str(payload.get("secret", payload.get("token", "")))
+    if not expected_secret:
+        _record_webhook_event(503, "rejected", "GAINZALGO_WEBHOOK_SECRET is not configured.", payload)
+        raise HTTPException(status_code=503, detail="Webhook secret is not configured on the server.")
+    if not hmac.compare_digest(supplied_secret, expected_secret):
+        _record_webhook_event(401, "rejected", "Webhook secret did not match.", payload)
         raise HTTPException(status_code=401, detail="Invalid webhook secret.")
 
-    direction_text = str(payload.get("direction") or payload.get("action") or payload.get("signal") or "").strip().upper()
-    if direction_text not in {"BUY", "SELL", "LONG", "SHORT", "UP", "DOWN"}:
-        raise HTTPException(status_code=422, detail="Unrecognized signal direction; alert was not recorded.")
+    direction_text = _normalize_webhook_direction(payload)
+    if not direction_text:
+        _record_webhook_event(422, "rejected", "Could not identify a recognized direction field.", payload)
+        raise HTTPException(status_code=422, detail="Unrecognized direction. Send direction/action/signal as BUY, SELL, LONG, SHORT, UP, DOWN, BUY_UP, BUY_DOWN, BULLISH, or BEARISH.")
 
     created_at = datetime.now(timezone.utc).isoformat()
-    safe_payload = {key: value for key, value in payload.items() if key.lower() not in {"secret", "token", "api_key", "authorization"}}
+    symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("market_ticker") or "")[:100]
+    timeframe = str(payload.get("timeframe") or payload.get("interval") or payload.get("resolution") or "")[:40]
+    # Strip sensitive fields before storing or exposing any alert detail.
+    safe_payload = {key: value for key, value in payload.items()
+                    if key.lower() not in {"secret", "token", "api_key", "authorization", "password"}}
     try:
         serialized = json.dumps(safe_payload, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
@@ -638,8 +728,12 @@ async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
         conn.execute(
             """INSERT INTO gainzalgo_signals (created_at, direction, symbol, timeframe, payload_json)
                VALUES (?, ?, ?, ?, ?)""",
-            (created_at, direction_text, str(payload.get("symbol", ""))[:100],
-             str(payload.get("timeframe", ""))[:20], serialized),
+            (created_at, direction_text, symbol, timeframe, serialized),
         )
-    return {"status": "recorded", "source": "GainzAlgo", "direction": direction_text,
-            "created_at": created_at, "mode": "SIMULATION_ONLY", "trade_placed": False}
+    _record_webhook_event(200, "accepted", "Alert recorded successfully.", {
+        "symbol": symbol, "timeframe": timeframe, "direction": direction_text,
+    })
+    return {"status": "recorded", "source": "TradingView/GainzAlgo", "direction": direction_text,
+            "symbol": symbol or None, "timeframe": timeframe or None, "created_at": created_at,
+            "mode": "SIMULATION_ONLY", "trade_placed": False}
+

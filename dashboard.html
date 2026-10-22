@@ -73,14 +73,15 @@
       <div style="text-align:right"><div class="label muted">Timeframe</div><div class="direction" id="alert-timeframe">—</div></div>
     </div>
     <p class="sub section-gap" id="alert-details">Incoming webhook alerts are shown separately from evaluated signals below. An alert being received does not mean a paper trade was taken.</p>
-    <div class="table-wrap section-gap"><table><thead><tr><th>Received (UTC)</th><th>Direction</th><th>Symbol</th><th>Timeframe</th><th>Details</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No webhook alerts recorded yet.</td></tr></tbody></table></div>
+    <p class="sub section-gap" id="webhook-status">Webhook delivery status: waiting for first delivery attempt.</p>
+    <div class="table-wrap section-gap"><table><thead><tr><th>Received (local time)</th><th>Direction</th><th>Symbol</th><th>Timeframe</th><th>Details</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No webhook alerts recorded yet.</td></tr></tbody></table></div>
     <p class="sub section-gap">For diagnostics, <code>/api/alerts/recent</code> returns the recent received alert history without webhook secrets.</p>
   </section>
 
   <div class="layout">
     <section class="panel">
       <div class="signal-top">
-        <div><h2>Latest signal</h2><p class="sub" id="signal-time">Waiting for a recorded signal…</p></div>
+        <div><h2>Latest evaluated signal (separate from alerts)</h2><p class="sub" id="signal-time">Waiting for a recorded signal…</p></div>
         <span class="pill" id="signal-freshness">No signal yet</span>
       </div>
       <div class="signal-top section-gap">
@@ -124,7 +125,7 @@
 
   <section class="panel section-gap">
     <h2>Recent paper trades</h2>
-    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry</th><th>Outcome</th><th>Net P&amp;L</th><th>Status</th></tr></thead><tbody id="trades"><tr><td colspan="8" class="empty">No paper trades recorded.</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Placed (local time)</th><th>Timeframe</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry</th><th>Outcome</th><th>Net P&amp;L</th><th>Status</th></tr></thead><tbody id="trades"><tr><td colspan="10" class="empty">No paper trades recorded.</td></tr></tbody></table></div>
   </section>
   <footer>Paper-trading journal only. Simulated performance is not evidence of future results. Verify entries, fees, and official settlement outcomes.</footer>
 </main>
@@ -150,15 +151,17 @@
   function renderTrades(rows) {
     const tbody = byId('trades'); tbody.replaceChildren();
     if (!Array.isArray(rows) || rows.length === 0) {
-      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 8; td.className='empty'; td.textContent='No paper trades recorded.'; tr.appendChild(td); tbody.appendChild(tr); return;
+      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 10; td.className='empty'; td.textContent='No paper trades recorded.'; tr.appendChild(td); tbody.appendChild(tr); return;
     }
     rows.forEach(r => {
       const tr = document.createElement('tr');
       const status = r.settled_at ? 'Settled' : 'Open';
-      const values = [r.id, r.market_ticker, r.direction, r.contracts, cents(r.entry_cents), r.outcome || '—', r.pnl_dollars == null ? '—' : money(r.pnl_dollars), status];
+      const placed = r.created_at ? new Date(r.created_at).toLocaleString() : 'Time not recorded';
+      const timeframe = r.timeframe || (/15M/i.test(String(r.market_ticker || '')) ? '15m contract · TV TF unknown' : 'Not recorded');
+      const values = [r.id, placed, timeframe, r.market_ticker, r.direction, r.contracts, cents(r.entry_cents), r.outcome || '—', r.pnl_dollars == null ? '—' : money(r.pnl_dollars), status];
       values.forEach((value, i) => {
         const td = document.createElement('td'); td.textContent = String(value == null ? '—' : value);
-        if (i === 6 && r.pnl_dollars != null) td.className = Number(r.pnl_dollars) > 0 ? 'green' : (Number(r.pnl_dollars) < 0 ? 'red' : '');
+        if (i === 8 && r.pnl_dollars != null) td.className = Number(r.pnl_dollars) > 0 ? 'green' : (Number(r.pnl_dollars) < 0 ? 'red' : '');
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -168,6 +171,16 @@
     const latest = data.latest_external_alert;
     const count = Number(data.external_alert_count || 0);
     setText('alert-count', `${count} alert${count === 1 ? '' : 's'} received`);
+    const delivery = data.latest_webhook_event;
+    if (delivery) {
+      const at = delivery.received_at ? new Date(delivery.received_at).toLocaleString() : 'time unknown';
+      const ok = Number(delivery.status_code) >= 200 && Number(delivery.status_code) < 300;
+      setText('webhook-status', `Latest webhook attempt: ${delivery.status_code} ${delivery.status || ''} · ${at} · ${delivery.reason || 'no details'}${delivery.timeframe ? ` · timeframe ${delivery.timeframe}` : ''}`);
+      byId('webhook-status').className = 'sub section-gap ' + (ok ? 'green' : 'red');
+    } else {
+      setText('webhook-status', 'No webhook delivery attempts have reached this application yet. If TradingView fired alerts, verify the webhook URL and check TradingView delivery logs.');
+      byId('webhook-status').className = 'sub section-gap amber';
+    }
     if (latest) {
       setText('alert-time', latest.received_at ? `Received ${new Date(latest.received_at).toLocaleString()} · ${latest.age_seconds == null ? 'age unknown' : `${latest.age_seconds}s ago`}` : 'Receive timestamp unavailable');
       setText('alert-direction', latest.direction || '—');
@@ -222,6 +235,7 @@
       setText('entry-ask', cents(s.entry_ask_cents)); setText('entry-cap', cents(s.max_entry_cents));
       setText('disclaimer', s.disclaimer || 'Score is heuristic evidence only, not a calibrated win probability.');
       setText('signal-freshness', s.is_stale ? `Stale · ${s.age_seconds ?? '?'}s old` : `Fresh · ${s.age_seconds ?? '?'}s old`);
+      if (s.is_stale) setText('disclaimer', 'This evaluated signal is stale. New TradingView alerts are listed above, but receiving an alert does not itself run the candle-based signal engine or create a paper trade. ' + (s.disclaimer || 'Evidence score is not a win probability.'));
       byId('signal-freshness').className = 'pill ' + (s.is_stale ? 'red' : 'green');
       setList('reasons', s.reasons, 'No reasons recorded.'); setList('warnings', s.warnings, 'No warnings recorded.');
       setText('strategies', JSON.stringify(s.strategies || {}, null, 2));
