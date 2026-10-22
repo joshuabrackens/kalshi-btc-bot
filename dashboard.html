@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -149,6 +150,21 @@ h3 { font-size: 14px; margin: 0; }
   font-size: 12px;
 }
 
+.reasonGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.reasonList {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 9px;
+  color: #d4def0;
+}
+.reasonList li { overflow-wrap: anywhere; }
+.reasonEmpty { color: var(--muted); font-size: 12px; }
+
 .tablewrap { overflow-x: auto; }
 
 table {
@@ -181,6 +197,7 @@ th { color: var(--muted); }
 
 @media (max-width: 780px) {
   .card, .half { grid-column: span 12; }
+  .reasonGrid { grid-template-columns: 1fr; }
   .top { align-items: flex-start; flex-direction: column; }
 }
 </style>
@@ -282,9 +299,37 @@ th { color: var(--muted); }
     <div class="row"><span>Worker status</span><strong id="activity">Waiting for worker data</strong></div>
     <div class="row"><span>Last signal</span><strong id="lastSignal">—</strong></div>
     <div class="row"><span>Dashboard API</span><strong id="apiHealth">—</strong></div>
+    <div class="row"><span>Signal source</span><strong id="signalSource">—</strong></div>
+    <div class="row"><span>Trend stop</span><strong id="trendStopStatus">—</strong></div>
+    <div class="row"><span>Stop mode</span><strong id="trendStopMode">—</strong></div>
   </div>
   <div class="line"></div>
   <div class="callout">If Kalshi rate-limits or market data cannot be verified, the safe behavior is to wait—not force a trade. Check Render logs for API errors.</div>
+</section>
+
+<section class="card wide" id="reasoningCard">
+  <div class="head">
+    <h3>Why the engine chose this</h3>
+    <span class="badge warn" id="reasoningBadge">Waiting for signal</span>
+  </div>
+  <div class="rows">
+    <div class="row"><span>Current decision</span><strong id="reasonDirection">—</strong></div>
+    <div class="row"><span>Signal age</span><strong id="reasonAge">—</strong></div>
+  </div>
+  <div class="line"></div>
+  <div class="reasonGrid">
+    <div>
+      <h3>Evidence and strategy reasoning</h3>
+      <ul class="reasonList" id="reasonList"><li class="reasonEmpty">Waiting for a signal payload with reasons.</li></ul>
+    </div>
+    <div>
+      <h3>Warnings and blockers</h3>
+      <ul class="reasonList" id="warningList"><li class="reasonEmpty">No warning data yet.</li></ul>
+    </div>
+  </div>
+  <div class="line"></div>
+  <div class="callout" id="reasonDisclaimer">The score is a heuristic, not a calibrated probability of winning.</div>
+  <div class="sub" id="reasoningSource">Reasoning is read from the saved signal payload.</div>
 </section>
 
 <section class="card wide">
@@ -331,6 +376,18 @@ function escapeHtml(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;",
     '"': "&quot;", "'": "&#39;"
   }[c]));
+}
+
+function renderReasonList(id, items, emptyText) {
+  const list = el(id);
+  if (!Array.isArray(items) || items.length === 0) {
+    list.innerHTML = `<li class="reasonEmpty">${escapeHtml(emptyText)}</li>`;
+    return;
+  }
+  list.innerHTML = items.map(item => {
+    const text = typeof item === "string" ? item : JSON.stringify(item);
+    return `<li>${escapeHtml(text)}</li>`;
+  }).join("");
 }
 
 async function loadDashboard() {
@@ -384,6 +441,40 @@ async function loadDashboard() {
     el("apiHealth").textContent = health.api_ok ? "Healthy" : "Error";
     el("activityBadge").textContent = health.worker_enabled ? "Monitoring" : "Check worker";
     el("activityBadge").className = "badge " + (health.worker_enabled ? "" : "warn");
+    el("signalSource").textContent = health.signal_source || "unknown";
+    el("trendStopStatus").textContent = health.trend_stop_enabled ? "Enabled (paper only)" : "Disabled";
+    el("trendStopMode").textContent = health.trend_stop_shadow_mode
+      ? "Shadow (observe only)" : (health.trend_stop_enabled ? "Active simulated exits" : "Not active");
+
+    // Render the exact saved explanation that accompanied the latest signal.
+    el("reasonDirection").textContent = signal ? (signal.direction || "Unknown") : "No signal";
+    if (!signal) {
+      el("reasoningBadge").textContent = "No signal data";
+      el("reasoningBadge").className = "badge warn";
+      el("reasonAge").textContent = "—";
+      renderReasonList("reasonList", [], "No saved signal reasoning yet.");
+      renderReasonList("warningList", [], "No warning data yet.");
+      el("reasonDisclaimer").textContent = "The score is a heuristic, not a calibrated probability of winning.";
+      el("reasoningSource").textContent = "The dashboard reads the most recent signal saved in its connected journal.";
+    } else {
+      const stale = Boolean(signal.is_stale);
+      el("reasoningBadge").textContent = stale ? "Signal may be stale" : "Reasoning loaded";
+      el("reasoningBadge").className = "badge " + (stale ? "warn" : "");
+      el("reasonAge").textContent = signal.age_seconds == null ? "Unknown" :
+        (signal.age_seconds < 60 ? `${signal.age_seconds}s` : `${Math.floor(signal.age_seconds / 60)}m ${signal.age_seconds % 60}s`);
+      let reasons = Array.isArray(signal.reasons) ? signal.reasons.slice() : [];
+      if (signal.strategies && typeof signal.strategies === "object" && !Array.isArray(signal.strategies)) {
+        for (const [name, detail] of Object.entries(signal.strategies)) {
+          reasons.push(`${name}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+        }
+      }
+      renderReasonList("reasonList", reasons, "This older signal has no saved reasoning payload. A newer internal signal should populate this panel.");
+      renderReasonList("warningList", signal.warnings, "No warnings were recorded for this signal.");
+      el("reasonDisclaimer").textContent = signal.disclaimer || "Score is heuristic only; it is not a calibrated win probability.";
+      el("reasoningSource").textContent = stale
+        ? "No recent signal was recorded in the dashboard's connected journal. Check that the worker and dashboard use the same service/database."
+        : "Loaded from the saved signal payload; refreshed automatically every 15 seconds.";
+    }
 
     const trades = data.trades || [];
     el("trades").innerHTML = trades.length

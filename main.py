@@ -158,24 +158,64 @@ def dashboard_data():
             ORDER BY id DESC LIMIT 20
         """).fetchall()
 
-        signal = conn.execute("""
+        signal_row = conn.execute("""
             SELECT created_at, market_ticker, direction, score,
-                   btc_price, strike_price, seconds_remaining
+                   btc_price, strike_price, seconds_remaining, payload_json
             FROM signal_log
             ORDER BY id DESC LIMIT 1
         """).fetchone()
 
     total, settled, wins, losses, pnl, opened, exposure = totals
 
+    # Surface the exact diagnostic payload recorded by signal_engine.evaluate_signal().
+    # Older journal rows may have an empty or malformed payload, so fail safely.
+    signal = None
+    if signal_row:
+        signal_keys = [
+            "created_at", "market_ticker", "direction", "score",
+            "btc_price", "strike_price", "seconds_remaining",
+        ]
+        signal = dict(zip(signal_keys, signal_row[:7]))
+        try:
+            signal_payload = json.loads(signal_row[7] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            signal_payload = {}
+        if not isinstance(signal_payload, dict):
+            signal_payload = {}
+        signal["reasons"] = signal_payload.get("reasons", [])
+        signal["warnings"] = signal_payload.get("warnings", [])
+        signal["disclaimer"] = signal_payload.get(
+            "disclaimer",
+            "Score is heuristic only; it is not a calibrated win probability.",
+        )
+        # Future strategy-engine versions may provide richer module-by-module diagnostics.
+        signal["strategies"] = signal_payload.get(
+            "strategies", signal_payload.get("strategy_diagnostics", {})
+        )
+        try:
+            created = datetime.fromisoformat(str(signal["created_at"]).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_seconds = max(0, int((datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()))
+            signal["age_seconds"] = age_seconds
+            signal["is_stale"] = age_seconds > max(180, 3 * int(os.getenv("PAPER_WORKER_INTERVAL_SECONDS", "60")))
+        except (TypeError, ValueError, OverflowError):
+            signal["age_seconds"] = None
+            signal["is_stale"] = True
+
     return {
         "health": {
             "api_ok": True,
-          "worker_enabled": os.getenv("PAPER_WORKER_ENABLED", "false").lower() == "true",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "worker_enabled": os.getenv("PAPER_WORKER_ENABLED", "false").lower() == "true",
+            "signal_source": os.getenv("PAPER_SIGNAL_SOURCE", "gainzalgo").strip().lower(),
+            "trend_stop_enabled": os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true",
+            "trend_stop_shadow_mode": os.getenv("PAPER_TREND_STOP_SHADOW_MODE", "false").lower() == "true",
             "kalshi_api": "See Render worker logs"
         },
         "risk": {
-            "max_trade_dollars": 1.00,
-            "max_daily_loss_dollars": 10.00,
+            "max_trade_dollars": max(0.01, float(os.getenv("MAX_TRADE_DOLLARS", "1.00"))),
+            "max_daily_loss_dollars": max(0.01, float(os.getenv("MAX_DAILY_LOSS_DOLLARS", "10.00"))),
             "open_exposure_dollars": round(float(exposure or 0) / 100, 2)
         },
         "stats": {
@@ -187,11 +227,7 @@ def dashboard_data():
             "win_rate_percent": round(100 * (wins or 0) / settled, 2) if settled else None,
             "net_pnl_dollars": round(float(pnl or 0) / 100, 2)
         },
-        "latest_signal": dict(zip(
-            ["created_at", "market_ticker", "direction", "score",
-             "btc_price", "strike_price", "seconds_remaining"],
-            signal
-        )) if signal else None,
+        "latest_signal": signal,
         "trades": [
             {
                 "id": r[0],
