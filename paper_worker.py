@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from candle_feed import fetch_signal_candles, CandleFeedError
+from candle_feed import fetch_signal_candles, fetch_closed_candles, CandleFeedError
+from trend_stop import update_trend_stop
 from signal_engine import MarketContext, evaluate_signal
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
@@ -114,12 +115,32 @@ def _ensure_schema(conn):
       entry_cents REAL NOT NULL, fee_cents_per_contract REAL NOT NULL, outcome TEXT,
       pnl_cents REAL, notes TEXT, stop_loss_cents REAL)""")
     cols={r[1] for r in conn.execute("PRAGMA table_info(paper_trades)")}
-    if "stop_loss_cents" not in cols: conn.execute("ALTER TABLE paper_trades ADD COLUMN stop_loss_cents REAL")
+    migrations = (
+        ("stop_loss_cents", "REAL"),
+        ("entry_btc_price", "REAL"),
+        ("high_water_btc", "REAL"),
+        ("low_water_btc", "REAL"),
+        ("trailing_stop_btc", "REAL"),
+        ("last_stop_candle_timestamp", "TEXT"),
+        ("last_trend_check_at", "TEXT"),
+    )
+    for col, definition in migrations:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {definition}")
     conn.execute("""CREATE TABLE IF NOT EXISTS signal_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, market_ticker TEXT,
       direction TEXT NOT NULL, score INTEGER NOT NULL, btc_price REAL NOT NULL,
       strike_price REAL NOT NULL, seconds_remaining INTEGER NOT NULL, max_entry_cents REAL,
       payload_json TEXT NOT NULL)""")
+    # The webhook creates this table; these columns make each alert a one-time queue item.
+    conn.execute("""CREATE TABLE IF NOT EXISTS gainzalgo_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+      direction TEXT NOT NULL, symbol TEXT, timeframe TEXT, payload_json TEXT NOT NULL,
+      processed_at TEXT, processing_status TEXT, processing_note TEXT)""")
+    signal_cols={r[1] for r in conn.execute("PRAGMA table_info(gainzalgo_signals)")}
+    for col, definition in (("processed_at", "TEXT"), ("processing_status", "TEXT"), ("processing_note", "TEXT")):
+        if col not in signal_cols:
+            conn.execute(f"ALTER TABLE gainzalgo_signals ADD COLUMN {col} {definition}")
     conn.commit()
 
 def _connect():
@@ -138,10 +159,20 @@ def _limits(conn, max_trade_dollars, max_daily_loss_dollars):
     return realized, open_cost, count, (realized - open_cost <= -max_daily_loss_dollars*100)
 
 def _manage_open(conn, max_daily_loss_dollars: float):
-    rows=conn.execute("SELECT id,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,stop_loss_cents FROM paper_trades WHERE settled_at IS NULL").fetchall()
-    for trade_id,ticker,direction,contracts,entry,fee,stop in rows:
+    rows=conn.execute(
+        "SELECT id,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,stop_loss_cents, "
+        "entry_btc_price,high_water_btc,low_water_btc,trailing_stop_btc,last_stop_candle_timestamp,last_trend_check_at "
+        "FROM paper_trades WHERE settled_at IS NULL"
+    ).fetchall()
+    trend_enabled = os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true"
+    check_seconds = max(30.0, min(180.0, float(os.getenv("PAPER_TREND_STOP_CHECK_SECONDS", "45"))))
+    atr_multiplier = float(os.getenv("PAPER_TREND_STOP_ATR_MULTIPLIER", "2.5"))
+    swing_lookback = max(8, min(100, int(os.getenv("PAPER_TREND_STOP_SWING_LOOKBACK", "30"))))
+    for row in rows:
+        (trade_id,ticker,direction,contracts,entry,fee,static_stop,entry_btc,high_water,low_water,
+         trailing_stop,last_candle_ts,last_check_at) = row
         try:
-            # Settle only from an explicit final Kalshi result; never guess from BTC candles.
+            # Settlement always takes precedence and uses only Kalshi's official final result.
             market_payload=get_market(ticker)
             market=market_payload.get("market",market_payload)
             status=str(market.get("status", "")).lower() if isinstance(market,dict) else ""
@@ -155,20 +186,116 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                 conn.commit()
                 log.info("Paper trade %s settled from official market result %s",trade_id,result)
                 continue
+
             payload=get_orderbook(ticker)
             bid=_top_bid(payload, "yes" if direction=="UP" else "no")
-            if bid is None: continue
-            if os.getenv("PAPER_STOP_LOSS_ENABLED", "true").lower() == "true" and stop is not None and bid <= float(stop):
-                # Simulated exit at observed top bid, minus conservative exit fee.
+            if bid is None:
+                continue
+
+            trend_triggered = False
+            trend_reason = None
+            now_dt = _utcnow()
+            # Only update chart stops using a new, fully closed 1m candle. This gate
+            # is OFF by default and is separate from the legacy fixed-contract stop.
+            last_check = _parse_time(last_check_at)
+            due = last_check is None or (now_dt - last_check).total_seconds() >= check_seconds
+            if trend_enabled and entry_btc is not None and due:
+                # Persist the throttle before the request so a failed feed won't hammer Binance.
+                conn.execute("UPDATE paper_trades SET last_trend_check_at=? WHERE id=?",
+                             (now_dt.isoformat(), trade_id))
+                conn.commit()
+                try:
+                    candles = fetch_closed_candles("1m", 100)
+                    candle_ts = str(candles["timestamp"].iloc[-1])
+                    if candle_ts != last_candle_ts:
+                        update = update_trend_stop(
+                            candles, direction,
+                            high_water_btc=(float(high_water) if high_water is not None else float(entry_btc)),
+                            low_water_btc=(float(low_water) if low_water is not None else float(entry_btc)),
+                            trailing_stop_btc=(float(trailing_stop) if trailing_stop is not None else None),
+                            atr_multiplier=atr_multiplier, swing_lookback=swing_lookback,
+                        )
+                        conn.execute(
+                            "UPDATE paper_trades SET high_water_btc=?,low_water_btc=?,trailing_stop_btc=?,last_stop_candle_timestamp=? WHERE id=?",
+                            (update["high_water_btc"], update["low_water_btc"], update["trailing_stop_btc"], candle_ts, trade_id)
+                        )
+                        conn.commit()
+                        trailing_stop = update["trailing_stop_btc"]
+                        trend_reason = update["reason"]
+                        trend_triggered = bool(update["triggered"])
+                        log.info("Paper trade %s chart-stop update: %s; enabled=%s; trigger=%s",
+                                 trade_id, trend_reason, trend_enabled, trend_triggered)
+                    elif trailing_stop is not None:
+                        # Re-check an already processed candle in case a previous cycle
+                        # persisted the trail but was interrupted before marking the exit.
+                        last_close = float(candles["close"].iloc[-1])
+                        trend_triggered = (
+                            (direction == "UP" and last_close <= float(trailing_stop))
+                            or (direction == "DOWN" and last_close >= float(trailing_stop))
+                        )
+                        if trend_triggered:
+                            trend_reason = (f"Previously stored {direction} chart stop {float(trailing_stop):.2f} "
+                                            f"breached by latest closed BTC candle {last_close:.2f}")
+                except (CandleFeedError, ValueError, TypeError, KeyError) as exc:
+                    log.warning("Trend stop check unavailable for paper trade %s; no chart-stop exit: %s", trade_id, exc)
+
+            static_triggered = (
+                os.getenv("PAPER_STOP_LOSS_ENABLED", "false").lower() == "true"
+                and static_stop is not None and bid <= float(static_stop)
+            )
+            if trend_triggered or static_triggered:
+                # Chart trigger decides *when* to exit; the observed Kalshi bid
+                # models the paper exit price. BTC price is never substituted for it.
                 exit_fee=float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"))
                 pnl=(bid-float(entry)-float(fee)-exit_fee)*int(contracts)
                 now=_utcnow().isoformat()
-                conn.execute("UPDATE paper_trades SET settled_at=?,outcome='STOP_LOSS',pnl_cents=?,notes=COALESCE(notes,'') || ? WHERE id=?",
-                  (now, pnl, f" | paper stop triggered; observed bid {bid:.2f}c; simulated exit only", trade_id))
+                if trend_triggered:
+                    outcome = "TREND_STOP_LOSS"
+                    note = (f" | paper trend stop triggered; {trend_reason}; "
+                            f"simulated Kalshi exit bid {bid:.2f}c; no real order placed")
+                else:
+                    outcome = "STOP_LOSS"
+                    note = f" | paper fixed stop triggered; observed Kalshi bid {bid:.2f}c; simulated exit only"
+                conn.execute("UPDATE paper_trades SET settled_at=?,outcome=?,pnl_cents=?,notes=COALESCE(notes,'') || ? WHERE id=?",
+                  (now, outcome, pnl, note, trade_id))
                 conn.commit()
-                log.warning("Paper stop-loss closed trade %s at observed bid %.2fc; no real order placed",trade_id,bid)
-        except (KalshiAPIError, ValueError, TypeError) as exc:
+                log.warning("Paper trade %s closed by %s at observed Kalshi bid %.2fc; no real order placed",
+                            trade_id, outcome, bid)
+        except (KalshiAPIError, ValueError, TypeError, KeyError) as exc:
             log.warning("Could not monitor open paper trade %s: %s",trade_id,exc)
+
+def _next_gainzalgo_signal(conn):
+    """Consume one fresh, unprocessed GainzAlgo alert. Returns (row, mapped direction)."""
+    max_age=max(30, min(900, int(os.getenv("GAINZALGO_MAX_SIGNAL_AGE_SECONDS", "300"))))
+    now=_utcnow()
+    rows=conn.execute("SELECT id,created_at,direction,symbol,timeframe,payload_json FROM gainzalgo_signals WHERE processed_at IS NULL ORDER BY id ASC LIMIT 20").fetchall()
+    for row in rows:
+        signal_id, created_at, raw_direction, symbol, timeframe, payload_json = row
+        created=_parse_time(created_at)
+        age=(now-created).total_seconds() if created else float("inf")
+        if age < 0 or age > max_age:
+            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note=? WHERE id=?",
+                         (now.isoformat(), f"stale or invalid timestamp; age_seconds={age:.0f}", signal_id))
+            conn.commit()
+            continue
+        symbol_text=str(symbol or "").upper()
+        timeframe_text=str(timeframe or "").lower().replace(" ", "")
+        if symbol_text and "BTC" not in symbol_text:
+            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='symbol is not BTC' WHERE id=?", (now.isoformat(), signal_id)); conn.commit(); continue
+        if timeframe_text and timeframe_text not in {"15", "15m", "15min", "15minute", "15minutes"}:
+            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='timeframe is not 15m' WHERE id=?", (now.isoformat(), signal_id)); conn.commit(); continue
+        d=str(raw_direction or "").upper()
+        if d in {"BUY", "LONG", "UP"}: direction="UP"
+        elif d in {"SELL", "SHORT", "DOWN"}: direction="DOWN"
+        else:
+            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='unrecognized direction' WHERE id=?", (now.isoformat(), signal_id)); conn.commit(); continue
+        return {"id": signal_id, "created_at": created_at, "direction": direction, "payload_json": payload_json}, direction
+    return None, None
+
+def _mark_gainzalgo(conn, signal_id, status, note):
+    conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status=?,processing_note=? WHERE id=? AND processed_at IS NULL",
+                 (_utcnow().isoformat(), status, str(note)[:500], signal_id))
+    conn.commit()
 
 def run_once() -> dict:
     """Run one paper-only monitoring cycle; safe to call in tests or a worker loop."""
@@ -189,9 +316,15 @@ def run_once() -> dict:
         if halt: return {"action":"blocked","reason":"daily loss budget reached including open-position risk","realized_pnl_cents":round(realized,2),"open_risk_cents":round(open_cost,2)}
         daily_cap=max(1,min(96,int(os.getenv("PAPER_MAX_TRADES_PER_DAY","96"))))
         if count>=daily_cap: return {"action":"wait","reason":"paper daily trade cap reached"}
-        # Conservative: one open position at a time to bound unobserved exposure.
+        # GainzAlgo is the default source; the internal heuristic is used only when explicitly selected.
+        source=os.getenv("PAPER_SIGNAL_SOURCE", "gainzalgo").strip().lower()
+        queued_signal, queued_direction = _next_gainzalgo_signal(conn) if source == "gainzalgo" else (None, None)
         if conn.execute("SELECT 1 FROM paper_trades WHERE settled_at IS NULL LIMIT 1").fetchone():
+            if queued_signal:
+                _mark_gainzalgo(conn, queued_signal["id"], "skipped", "an open paper position already exists")
             return {"action":"monitoring","reason":"an open paper position already exists"}
+        if source == "gainzalgo" and not queued_signal:
+            return {"action":"wait","reason":"waiting for a fresh GainzAlgo 15m alert"}
         discovered=discover()
         candidates=discovered.get("candidates",[])
         parsed=[]
@@ -213,29 +346,56 @@ def run_once() -> dict:
         if yes_ask is None or no_ask is None or yes_bid is None or no_bid is None:
             return {"action":"wait","reason":"market/orderbook missing an explicit yes/no ask or bid"}
         spread=max(yes_ask-yes_bid,no_ask-no_bid)
-        candles=fetch_signal_candles()
-        signal=evaluate_signal(candles["candles_1m"],candles["candles_5m"],candles["candles_15m"],
-            MarketContext(strike_price=m["strike"],seconds_remaining=m["seconds"],up_ask_cents=yes_ask,down_ask_cents=no_ask,spread_cents=spread,estimated_fee_cents=fee),
-            minimum_score=min_score,max_entry_cents=max_entry,max_spread_cents=float(os.getenv("PAPER_MAX_SPREAD_CENTS","5")))
-        payload=signal.to_dict(); now=_utcnow().isoformat()
-        conn.execute("INSERT INTO signal_log (created_at,market_ticker,direction,score,btc_price,strike_price,seconds_remaining,max_entry_cents,payload_json) VALUES (?,?,?,?,?,?,?,?,?)",
-          (now,m["ticker"],payload["direction"],payload["score"],payload["btc_price"],payload["strike_price"],payload["seconds_remaining"],payload["max_entry_cents"],json.dumps(payload)))
-        conn.commit()
-        if signal.direction=="WAIT": return {"action":"wait","ticker":m["ticker"],"score":signal.score,"reasons":signal.reasons,"warnings":signal.warnings}
-        direction="UP" if signal.direction=="BUY_UP" else "DOWN"
-        entry=yes_ask if direction=="UP" else no_ask
+        now=_utcnow().isoformat()
+        if source == "gainzalgo":
+            direction=queued_direction
+            entry=yes_ask if direction=="UP" else no_ask
+            if entry is None or entry <= 0 or entry > max_entry:
+                _mark_gainzalgo(conn, queued_signal["id"], "skipped", f"invalid or too expensive ask: {entry}; max_entry_cents={max_entry}")
+                return {"action":"wait","reason":"GainzAlgo signal skipped: market ask is missing or exceeds PAPER_MAX_ENTRY_CENTS","entry_cents":entry}
+            if spread > float(os.getenv("PAPER_MAX_SPREAD_CENTS","5")):
+                _mark_gainzalgo(conn, queued_signal["id"], "skipped", f"spread too wide: {spread:.2f} cents")
+                return {"action":"wait","reason":"GainzAlgo signal skipped: market spread exceeds PAPER_MAX_SPREAD_CENTS","spread_cents":spread}
+            payload={"source":"GainzAlgo","signal_id":queued_signal["id"],"direction":direction,"raw_payload":queued_signal["payload_json"]}
+            warnings=[]
+            entry_btc_price=None
+            entry_btc_candle_timestamp=None
+        else:
+            candles=fetch_signal_candles()
+            signal=evaluate_signal(candles["candles_1m"],candles["candles_5m"],candles["candles_15m"],
+                MarketContext(strike_price=m["strike"],seconds_remaining=m["seconds"],up_ask_cents=yes_ask,down_ask_cents=no_ask,spread_cents=spread,estimated_fee_cents=fee),
+                minimum_score=min_score,max_entry_cents=max_entry,max_spread_cents=float(os.getenv("PAPER_MAX_SPREAD_CENTS","5")))
+            payload=signal.to_dict()
+            entry_btc_price=float(signal.btc_price)
+            entry_btc_candle_timestamp=str(candles["candles_1m"]["timestamp"].iloc[-1])
+            conn.execute("INSERT INTO signal_log (created_at,market_ticker,direction,score,btc_price,strike_price,seconds_remaining,max_entry_cents,payload_json) VALUES (?,?,?,?,?,?,?,?,?)",
+              (now,m["ticker"],payload["direction"],payload["score"],payload["btc_price"],payload["strike_price"],payload["seconds_remaining"],payload["max_entry_cents"],json.dumps(payload)))
+            conn.commit()
+            if signal.direction=="WAIT": return {"action":"wait","ticker":m["ticker"],"score":signal.score,"reasons":signal.reasons,"warnings":signal.warnings}
+            direction="UP" if signal.direction=="BUY_UP" else "DOWN"
+            entry=yes_ask if direction=="UP" else no_ask
+            warnings=signal.warnings
+        # GainzAlgo alerts do not contain the candle price; capture the latest closed
+        # BTC candle so future chart-stop tests have a real entry reference.
+        if entry_btc_price is None:
+            entry_candles=fetch_closed_candles("1m", 100)
+            entry_btc_price=float(entry_candles["close"].iloc[-1])
+            entry_btc_candle_timestamp=str(entry_candles["timestamp"].iloc[-1])
         contracts=max(0,min(10,int((max_trade*100)//(entry+fee))))
-        if contracts<1: return {"action":"blocked","reason":"even one contract plus conservative fees exceeds MAX_TRADE_DOLLARS","entry_cents":entry,"fee_cents":fee}
-        stop = max(1.0, entry * (1.0 - stop_pct / 100.0)) if os.getenv("PAPER_STOP_LOSS_ENABLED", "true").lower() == "true" else None
+        if contracts<1:
+            if queued_signal: _mark_gainzalgo(conn, queued_signal["id"], "skipped", "one contract plus fees exceeds MAX_TRADE_DOLLARS")
+            return {"action":"blocked","reason":"even one contract plus conservative fees exceeds MAX_TRADE_DOLLARS","entry_cents":entry,"fee_cents":fee}
+        stop = max(1.0, entry * (1.0 - stop_pct / 100.0)) if os.getenv("PAPER_STOP_LOSS_ENABLED", "false").lower() == "true" else None
         total=contracts*(entry+fee)
         # Include open-risk reservation in daily loss budget before creating a position.
         if realized-open_cost-total <= -max_loss*100:
+            if queued_signal: _mark_gainzalgo(conn, queued_signal["id"], "skipped", "trade would exceed daily loss budget")
             return {"action":"blocked","reason":"trade would exceed daily loss budget when worst-case open risk is reserved"}
-        conn.execute("INSERT INTO paper_trades (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,notes,stop_loss_cents) VALUES (?,?,?,?,?,?,?,?)",
-          (now,m["ticker"],direction,contracts,entry,fee,"AUTO PAPER ENTRY; heuristic score is not a win probability",stop))
+        conn.execute("INSERT INTO paper_trades (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,notes,stop_loss_cents,entry_btc_price,high_water_btc,low_water_btc,last_stop_candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+          (now,m["ticker"],direction,contracts,entry,fee,(f"GainzAlgo paper entry; signal_id={queued_signal['id']}" if queued_signal else "AUTO PAPER ENTRY; heuristic score is not a win probability"),stop,entry_btc_price,entry_btc_price,entry_btc_price,entry_btc_candle_timestamp))
         conn.commit()
-        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"score":signal.score,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else 
-        None,"mode":"SIMULATION_ONLY","warnings":signal.warnings}
+        if queued_signal: _mark_gainzalgo(conn, queued_signal["id"], "processed", f"paper trade opened: {m['ticker']} {direction}")
+        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"source":"GainzAlgo" if queued_signal else "internal_heuristic","signal_id":queued_signal["id"] if queued_signal else None,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else None,"trend_stop_enabled": os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true","entry_btc_price": round(entry_btc_price, 2),"mode":"SIMULATION_ONLY","warnings":warnings}
     except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError) as exc:
         return {"action":"error_wait","reason":str(exc)}
     finally:
