@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from signal_engine import MarketContext, evaluate_signal
@@ -450,3 +450,67 @@ def market_orderbook(ticker: str) -> dict[str, Any]:
         return get_orderbook(ticker)
     except KalshiAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+@app.post("/webhooks/gainzalgo")
+async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
+    """Record GainzAlgo alerts for analysis; never places trades."""
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Expected a JSON alert body.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object.")
+
+    expected_secret = os.getenv("GAINZALGO_WEBHOOK_SECRET", "")
+    supplied_secret = str(payload.get("secret", ""))
+
+    if not expected_secret or supplied_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret.")
+
+    direction_text = str(
+        payload.get("direction")
+        or payload.get("action")
+        or payload.get("signal")
+        or ""
+    ).strip().upper()
+
+    if direction_text not in {"BUY", "SELL", "LONG", "SHORT", "UP", "DOWN"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Unrecognized signal direction; alert was not recorded."
+        )
+
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    with db_connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gainzalgo_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                symbol TEXT,
+                timeframe TEXT,
+                payload_json TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO gainzalgo_signals
+                (created_at, direction, symbol, timeframe, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            created_at,
+            direction_text,
+            str(payload.get("symbol", ""))[:100],
+            str(payload.get("timeframe", ""))[:20],
+            json.dumps(payload)[:10000],
+        ))
+
+    return {
+        "status": "recorded",
+        "source": "GainzAlgo",
+        "direction": direction_text,
+        "created_at": created_at,
+        "mode": "SIMULATION_ONLY",
+        "trade_placed": False,
+    }
