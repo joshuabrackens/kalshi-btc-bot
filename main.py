@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import hashlib
 import os
 import sqlite3
 import threading
@@ -21,6 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from signal_engine import MarketContext, evaluate_signal
+from db_store import connect_database, ensure_schema, backend_name, database_location
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 
@@ -54,75 +56,11 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 86400) ->
 
 
 @contextmanager
-def db_connect() -> Iterator[sqlite3.Connection]:
-    """Open, initialize, commit/rollback, and always close one SQLite connection."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = None
+def db_connect() -> Iterator[Any]:
+    """Open the configured shared database (PostgreSQL or single-service SQLite)."""
+    conn = connect_database()
     try:
-        conn.execute("PRAGMA busy_timeout = 15000")
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS signal_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                market_ticker TEXT,
-                direction TEXT NOT NULL,
-                score INTEGER NOT NULL,
-                btc_price REAL NOT NULL,
-                strike_price REAL NOT NULL,
-                seconds_remaining INTEGER NOT NULL,
-                max_entry_cents REAL,
-                payload_json TEXT NOT NULL
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS paper_trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                settled_at TEXT,
-                market_ticker TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                contracts INTEGER NOT NULL,
-                entry_cents REAL NOT NULL,
-                fee_cents_per_contract REAL NOT NULL,
-                outcome TEXT,
-                pnl_cents REAL,
-                notes TEXT,
-                stop_loss_cents REAL
-            )"""
-        )
-        # Safe migration for databases created before stop_loss_cents existed.
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)").fetchall()}
-        if "stop_loss_cents" not in columns:
-            conn.execute("ALTER TABLE paper_trades ADD COLUMN stop_loss_cents REAL")
-        if "timeframe" not in columns:
-            conn.execute("ALTER TABLE paper_trades ADD COLUMN timeframe TEXT")
-        # Existing BTC 15-minute market records can be identified as 15m contracts,
-        # but this does not pretend to know which TradingView chart timeframe triggered them.
-        conn.execute("""UPDATE paper_trades SET timeframe = '15m contract; TV timeframe unknown'
-                       WHERE timeframe IS NULL AND upper(market_ticker) LIKE '%15M%'""")
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS webhook_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                received_at TEXT NOT NULL,
-                status_code INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                symbol TEXT,
-                timeframe TEXT,
-                direction TEXT
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS gainzalgo_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                symbol TEXT,
-                timeframe TEXT,
-                payload_json TEXT NOT NULL
-            )"""
-        )
+        ensure_schema(conn)
         yield conn
         conn.commit()
     except Exception:
@@ -231,7 +169,8 @@ def dashboard_data() -> dict[str, Any]:
                FROM signal_log ORDER BY id DESC LIMIT 1"""
         ).fetchone()
         external_alert_rows = conn.execute(
-            """SELECT id, created_at, direction, symbol, timeframe, payload_json
+            """SELECT id, created_at, direction, symbol, timeframe, payload_json,
+                      processed_at, processing_status, processing_note
                FROM gainzalgo_signals ORDER BY id DESC LIMIT 10"""
         ).fetchall()
         external_alert_count = int(conn.execute(
@@ -241,6 +180,22 @@ def dashboard_data() -> dict[str, Any]:
             """SELECT received_at, status_code, status, reason, symbol, timeframe, direction
                FROM webhook_events ORDER BY id DESC LIMIT 1"""
         ).fetchone()
+        worker_row = conn.execute(
+            """SELECT last_seen_at, signal_source, mode, last_action, last_reason
+               FROM worker_heartbeat WHERE worker_name = 'paper_worker' LIMIT 1"""
+        ).fetchone()
+
+    worker_age = None
+    if worker_row:
+        try:
+            heartbeat_time = datetime.fromisoformat(str(worker_row[0]).replace("Z", "+00:00"))
+            if heartbeat_time.tzinfo is None:
+                heartbeat_time = heartbeat_time.replace(tzinfo=timezone.utc)
+            worker_age = max(0, int((datetime.now(timezone.utc) - heartbeat_time.astimezone(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            worker_age = None
+    worker_stale_after = max(180, 3 * _env_int("PAPER_WORKER_INTERVAL_SECONDS", 60))
+    worker_is_fresh = worker_age is not None and worker_age <= worker_stale_after
 
     total, settled, wins, losses, pnl, opened, exposure = totals
     signal = None
@@ -280,7 +235,7 @@ def dashboard_data() -> dict[str, Any]:
     # or full arbitrary webhook payloads to the dashboard.
     external_alerts = []
     for row in external_alert_rows:
-        alert_id, received_at, direction, symbol, timeframe, payload_json = row
+        alert_id, received_at, direction, symbol, timeframe, payload_json, processed_at, processing_status, processing_note = row
         try:
             raw_payload = json.loads(payload_json or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -302,6 +257,9 @@ def dashboard_data() -> dict[str, Any]:
             "symbol": symbol or None,
             "timeframe": timeframe or None,
             "details": details,
+            "processed_at": processed_at,
+            "processing_status": processing_status or "queued",
+            "processing_note": processing_note,
         }
         try:
             created = datetime.fromisoformat(str(received_at).replace("Z", "+00:00"))
@@ -315,9 +273,15 @@ def dashboard_data() -> dict[str, Any]:
     return {
         "health": {
             "api_ok": True,
+            "database_backend": backend_name(),
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "worker_enabled": _env_bool("PAPER_WORKER_ENABLED", False),
-            "signal_source": os.getenv("PAPER_SIGNAL_SOURCE", "gainzalgo").strip().lower(),
+            "worker_enabled": _env_bool("PAPER_WORKER_ENABLED", False) or worker_is_fresh,
+            "worker_status": "running" if worker_is_fresh else ("stale" if worker_row else "not_observed"),
+            "worker_last_seen_at": worker_row[0] if worker_row else None,
+            "worker_last_seen_age_seconds": worker_age,
+            "worker_last_action": worker_row[3] if worker_row else None,
+            "worker_last_reason": worker_row[4] if worker_row else None,
+            "signal_source": os.getenv("PAPER_SIGNAL_SOURCE", "internal").strip().lower(),
             "trend_stop_enabled": _env_bool("PAPER_TREND_STOP_LOSS_ENABLED", False),
             "trend_stop_shadow_mode": _env_bool("PAPER_TREND_STOP_SHADOW_MODE", False),
             "kalshi_api": "Public market lookup routes available; check service logs for worker status",
@@ -445,11 +409,12 @@ def recent_external_alerts(limit: int = 25) -> dict[str, Any]:
     )
     with db_connect() as conn:
         rows = conn.execute(
-            """SELECT id, created_at, direction, symbol, timeframe, payload_json
+            """SELECT id, created_at, direction, symbol, timeframe, payload_json,
+                      processed_at, processing_status, processing_note
                FROM gainzalgo_signals ORDER BY id DESC LIMIT ?""", (limit,)
         ).fetchall()
     alerts = []
-    for alert_id, received_at, direction, symbol, timeframe, payload_json in rows:
+    for alert_id, received_at, direction, symbol, timeframe, payload_json, processed_at, processing_status, processing_note in rows:
         try:
             raw_payload = json.loads(payload_json or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -459,7 +424,9 @@ def recent_external_alerts(limit: int = 25) -> dict[str, Any]:
         details = {key: raw_payload[key] for key in allowed_detail_keys
                    if key in raw_payload and isinstance(raw_payload[key], (str, int, float, bool))}
         alerts.append({"id": alert_id, "received_at": received_at, "direction": direction,
-                       "symbol": symbol or None, "timeframe": timeframe or None, "details": details})
+                       "symbol": symbol or None, "timeframe": timeframe or None, "details": details,
+                       "processed_at": processed_at, "processing_status": processing_status or "queued",
+                       "processing_note": processing_note})
     return {"count_returned": len(alerts), "alerts": alerts,
             "note": "These are received webhook alerts, not evaluated trade signals or placed orders."}
 
@@ -469,8 +436,11 @@ def status() -> dict[str, Any]:
     with db_connect() as conn:
         count = conn.execute("SELECT COUNT(*) FROM signal_log").fetchone()[0]
     enabled = _env_bool("PAPER_WORKER_ENABLED", False)
+    with db_connect() as conn:
+        heartbeat = conn.execute("SELECT last_seen_at,last_action,last_reason FROM worker_heartbeat WHERE worker_name='paper_worker' LIMIT 1").fetchone()
     return {
-        "status": "starter-ready", "signals_logged": count, "database_path": str(DB_PATH),
+        "status": "starter-ready", "signals_logged": count, "database_backend": backend_name(), "database_path": database_location(),
+        "worker_heartbeat": ({"last_seen_at": heartbeat[0], "last_action": heartbeat[1], "last_reason": heartbeat[2]} if heartbeat else None),
         "live_market_data": "not automatically connected to the signal engine",
         "telegram_alerts": "not connected",
         "paper_trading": "automatic paper worker enabled" if enabled else "manual ledger; automatic worker disabled",
@@ -685,6 +655,22 @@ def _normalize_webhook_direction(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _webhook_fingerprint(payload: dict[str, Any], direction: str, symbol: str, timeframe: str) -> str | None:
+    """Create an idempotency key only when the source supplies a stable event identity."""
+    identity = None
+    for key in ("alert_id", "alertId", "uuid", "event_id", "timestamp", "bar_time", "time", "timenow"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            identity = f"{key}:{str(value).strip()}"
+            break
+    if identity is None:
+        # Do not collapse distinct legitimate same-direction alerts if TradingView
+        # did not send an event timestamp or id.
+        return None
+    raw = "|".join((identity, direction.upper(), symbol.upper(), timeframe.lower()))
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+
+
 @app.post("/webhooks/gainzalgo")
 async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     """Record incoming TradingView/GainzAlgo alerts for display and analysis; no trades."""
@@ -724,12 +710,28 @@ async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     if len(serialized) > 10000:
         serialized = json.dumps({"truncated": True, "preview": serialized[:9000]}, ensure_ascii=False)
 
+    fingerprint = _webhook_fingerprint(payload, direction_text, symbol, timeframe)
+    duplicate_id = None
     with db_connect() as conn:
-        conn.execute(
-            """INSERT INTO gainzalgo_signals (created_at, direction, symbol, timeframe, payload_json)
-               VALUES (?, ?, ?, ?, ?)""",
-            (created_at, direction_text, symbol, timeframe, serialized),
-        )
+        if fingerprint:
+            existing = conn.execute(
+                "SELECT id FROM gainzalgo_signals WHERE fingerprint = ? LIMIT 1", (fingerprint,)
+            ).fetchone()
+            if existing:
+                duplicate_id = int(existing[0])
+        if duplicate_id is None:
+            conn.execute(
+                """INSERT INTO gainzalgo_signals (created_at, direction, symbol, timeframe, payload_json, fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (created_at, direction_text, symbol, timeframe, serialized, fingerprint),
+            )
+    if duplicate_id is not None:
+        _record_webhook_event(200, "duplicate", f"Duplicate delivery ignored; original alert id {duplicate_id}.", {
+            "symbol": symbol, "timeframe": timeframe, "direction": direction_text,
+        })
+        return {"status": "duplicate_ignored", "source": "TradingView/GainzAlgo", "direction": direction_text,
+                "symbol": symbol or None, "timeframe": timeframe or None, "created_at": created_at,
+                "original_alert_id": duplicate_id, "mode": "SIMULATION_ONLY", "trade_placed": False}
     _record_webhook_event(200, "accepted", "Alert recorded successfully.", {
         "symbol": symbol, "timeframe": timeframe, "direction": direction_text,
     })

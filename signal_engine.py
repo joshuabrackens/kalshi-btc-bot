@@ -240,6 +240,9 @@ def evaluate_signal(
     def result(direction: Direction = "WAIT", score: int = 0,
                allowed_cap: Optional[float] = None,
                observed_ask: Optional[float] = None) -> Signal:
+        # The cap is configuration, not an observed quote; keep it visible on WAIT too.
+        if allowed_cap is None:
+            allowed_cap = float(max_entry_cents)
         return Signal(
             direction=direction, score=int(score), reasons=reasons.copy(),
             warnings=warnings.copy(), btc_price=price, strike_price=strike,
@@ -383,8 +386,10 @@ def evaluate_signal(
         "maximum_theoretical_directional_points": _MAX_DIRECTIONAL_POINTS,
     }
     if scores["up"] == scores["down"]:
+        tied_score = max(0, min(100, round(max(scores.values()) / _MAX_DIRECTIONAL_POINTS * 100)))
+        strategies["evidence_totals"]["display_score"] = tied_score
         reasons.append("Evidence is tied or conflicted; no trade is recommended.")
-        return result()
+        return result(score=tied_score)
 
     side = "up" if scores["up"] > scores["down"] else "down"
     winning = scores[side]
@@ -395,19 +400,19 @@ def evaluate_signal(
     candidate_ask = market.up_ask_cents if side == "up" else market.down_ask_cents
     if separation < 2:
         reasons.append("Evidence is too conflicted to choose a direction (need 2-point separation).")
-        return result(observed_ask=candidate_ask)
+        return result(score=score, observed_ask=candidate_ask)
     if score < minimum_score:
         reasons.append(f"Evidence score {score}/100 is below the configured {minimum_score}/100 threshold.")
-        return result(observed_ask=candidate_ask)
+        return result(score=score, observed_ask=candidate_ask)
     if candidate_ask is None:
         warnings.append("No ask price was supplied for the candidate side; cannot validate an entry.")
-        return result(observed_ask=None)
+        return result(score=score, observed_ask=None)
     if candidate_ask > max_entry_cents:
         reasons.append(f"Contract ask {candidate_ask:.1f}¢ exceeds the configured {max_entry_cents:.1f}¢ entry cap.")
-        return result(observed_ask=candidate_ask)
+        return result(score=score, observed_ask=candidate_ask)
     if candidate_ask + market.estimated_fee_cents >= 100:
         warnings.append("Entry plus estimated fees leaves no positive maximum-payout margin.")
-        return result(observed_ask=candidate_ask)
+        return result(score=score, observed_ask=candidate_ask)
 
     reasons.append(
         f"Final decision: BUY_{side.upper()} based on {winning} directional evidence points "

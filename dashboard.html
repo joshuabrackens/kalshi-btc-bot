@@ -3,325 +3,407 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>Kalshi BTC Paper Bot</title>
+  <meta name="color-scheme" content="light">
+  <title>BTC Practice Bot — Simple Dashboard</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2e; --panel2:#17213a; --line:#283653; --text:#e9eefb; --muted:#a4b0c8; --green:#4bd49a; --red:#ff7585; --amber:#f4c66a; --blue:#91b9ff; }
+    :root {
+      color-scheme: light;
+      --bg:#f4f7fb; --surface:#ffffff; --surface-soft:#f8fafc;
+      --line:#dbe3ee; --text:#152238; --muted:#52627a;
+      --blue:#205bb5; --blue-soft:#eaf2ff; --green:#176b45; --green-soft:#e8f7ef;
+      --red:#a52b37; --red-soft:#fff0f1; --amber:#875400; --amber-soft:#fff5df;
+      --shadow:0 2px 8px rgba(20,38,70,.05);
+    }
     * { box-sizing:border-box; }
-    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    header { padding:24px clamp(16px,4vw,42px); border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; }
-    h1 { margin:0; font-size:clamp(21px,3vw,30px); letter-spacing:-.03em; }
-    h2 { margin:0 0 14px; font-size:17px; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { background:var(--surface); border-bottom:1px solid var(--line); padding:22px clamp(16px,4vw,38px); }
+    .header-inner, main { max-width:1180px; margin:0 auto; }
+    .header-inner { display:flex; gap:16px; justify-content:space-between; align-items:center; flex-wrap:wrap; }
+    h1 { margin:0; font-size:clamp(25px,4vw,34px); line-height:1.2; letter-spacing:-.03em; }
+    h2 { font-size:21px; line-height:1.3; margin:0 0 9px; letter-spacing:-.02em; }
+    h3 { font-size:15px; margin:0 0 7px; }
     p { margin:0; }
-    .sub { color:var(--muted); font-size:13px; margin-top:4px; }
-    .pill { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line); background:var(--panel2); border-radius:999px; padding:6px 10px; font-size:12px; font-weight:700; white-space:nowrap; }
-    .dot { width:8px; height:8px; border-radius:50%; background:var(--amber); display:inline-block; }
-    .dot.ok { background:var(--green); }
-    .dot.bad { background:var(--red); }
-    main { max-width:1500px; margin:auto; padding:22px clamp(12px,3vw,32px) 40px; }
-    .grid { display:grid; gap:14px; grid-template-columns:repeat(4,minmax(0,1fr)); }
-    .layout { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); gap:14px; margin-top:14px; }
-    .panel,.metric { min-width:0; border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:17px; }
-    .metric .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.07em; }
-    .metric .value { font-size:clamp(22px,3vw,30px); letter-spacing:-.04em; font-weight:750; margin-top:7px; overflow-wrap:anywhere; }
-    .metric .detail { color:var(--muted); font-size:12px; margin-top:4px; }
-    .signal-top { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; align-items:flex-start; }
-    .direction { font-size:26px; font-weight:800; letter-spacing:-.035em; }
-    .green { color:var(--green); } .red { color:var(--red); } .amber { color:var(--amber); } .muted { color:var(--muted); }
-    .facts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:16px; }
-    .fact { border:1px solid var(--line); background:var(--panel2); border-radius:10px; padding:10px; min-width:0; }
-    .fact small { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-    .fact strong { display:block; margin-top:3px; font-size:17px; overflow-wrap:anywhere; }
-    .section-gap { margin-top:14px; }
-    .diagnostics { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-    ul { padding-left:20px; margin:0; } li { margin:5px 0; overflow-wrap:anywhere; }
-    .empty { color:var(--muted); }
-    .table-wrap { overflow:auto; }
-    table { border-collapse:collapse; width:100%; min-width:560px; font-size:13px; }
-    th,td { padding:10px 9px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
-    th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; font-weight:650; }
+    .subtitle { margin-top:7px; color:var(--muted); font-size:15px; }
+    main { padding:22px clamp(12px,3vw,26px) 42px; }
+    .section { margin-top:18px; }
+    .section-head { margin-bottom:12px; }
+    .section-desc, .muted { color:var(--muted); }
+    .section-desc { font-size:14px; margin-top:4px; }
+    .card { min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:19px; box-shadow:var(--shadow); }
+    .grid { display:grid; gap:13px; grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .two-col { display:grid; gap:14px; grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr); }
+    .metric-label { color:var(--muted); font-size:14px; font-weight:650; }
+    .metric-value { font-size:clamp(25px,3.3vw,34px); line-height:1.15; font-weight:800; letter-spacing:-.035em; margin-top:7px; overflow-wrap:anywhere; }
+    .metric-note { margin-top:8px; font-size:13px; color:var(--muted); }
+    .badge { display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:999px; padding:6px 11px; font-size:13px; font-weight:750; border:1px solid var(--line); background:var(--surface-soft); color:var(--text); }
+    .badge::before { content:""; width:8px; height:8px; border-radius:50%; background:currentColor; }
+    .good { color:var(--green)!important; background:var(--green-soft)!important; border-color:#b8e3cc!important; }
+    .bad { color:var(--red)!important; background:var(--red-soft)!important; border-color:#f2c4c9!important; }
+    .wait { color:var(--amber)!important; background:var(--amber-soft)!important; border-color:#eed59c!important; }
+    .blue { color:var(--blue)!important; background:var(--blue-soft)!important; border-color:#c7d9fa!important; }
+    .hero { border-width:2px; }
+    .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; }
+    .hero-status { display:flex; align-items:center; gap:8px; font-size:clamp(23px,3.8vw,31px); font-weight:850; letter-spacing:-.025em; margin:14px 0 8px; }
+    .hero-copy { max-width:800px; font-size:16px; }
+    .small-line { color:var(--muted); font-size:13px; margin-top:11px; }
+    .alert-direction { font-size:30px; font-weight:850; line-height:1.1; letter-spacing:-.03em; }
+    .alert-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:17px; }
+    .detail-box { border:1px solid var(--line); border-radius:11px; padding:11px 12px; background:var(--surface-soft); min-width:0; }
+    .detail-box .label { font-size:12px; text-transform:uppercase; letter-spacing:.045em; color:var(--muted); font-weight:700; }
+    .detail-box .value { font-size:18px; font-weight:760; margin-top:4px; overflow-wrap:anywhere; }
+    .detail-box .help { color:var(--muted); font-size:12px; margin-top:3px; }
+    .plain-list { margin:0; padding-left:22px; }
+    .plain-list li { margin:6px 0; }
+    .explain-box { padding:13px 14px; border-radius:12px; background:var(--blue-soft); border:1px solid #c7d9fa; margin-top:12px; }
+    .explain-box strong { display:block; margin-bottom:3px; }
+    .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; }
+    table { border-collapse:collapse; width:100%; min-width:650px; background:var(--surface); font-size:14px; }
+    th,td { text-align:left; vertical-align:top; padding:12px 11px; border-bottom:1px solid var(--line); }
+    th { background:#f0f4fa; color:#3b4b63; font-size:12px; text-transform:uppercase; letter-spacing:.045em; font-weight:750; }
     tr:last-child td { border-bottom:0; }
-    code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
-    footer { color:var(--muted); font-size:12px; padding:20px 0 0; }
-    @media (max-width:1000px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .layout { grid-template-columns:1fr; } }
-    @media (max-width:560px) { .grid { grid-template-columns:1fr 1fr; gap:9px; } .metric,.panel { padding:13px; } .facts { grid-template-columns:repeat(2,minmax(0,1fr)); } .diagnostics { grid-template-columns:1fr; } .direction { font-size:23px; } }
+    td { overflow-wrap:anywhere; }
+    .empty { color:var(--muted); padding:18px; }
+    .green-text { color:var(--green); } .red-text { color:var(--red); } .amber-text { color:var(--amber); }
+    .inline-note { color:var(--muted); font-size:13px; margin-top:10px; }
+    .kv { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .kv .detail-box .value { font-size:16px; }
+    details { border:1px solid var(--line); border-radius:12px; background:var(--surface-soft); padding:13px 15px; }
+    details + details { margin-top:10px; }
+    summary { cursor:pointer; font-weight:750; }
+    summary:focus-visible, a:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+    .glossary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; margin-top:12px; }
+    .glossary-item { background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:12px; }
+    .glossary-item strong { display:block; margin-bottom:4px; }
+    .glossary-item p { color:var(--muted); font-size:14px; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-size:12px; }
+    footer { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; color:var(--muted); font-size:13px; }
+    .refresh { font-size:13px; color:var(--muted); }
+    @media (max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .two-col { grid-template-columns:1fr; } }
+    @media (max-width:560px) { body { font-size:15px; } header { padding:18px 14px; } main { padding:14px 10px 28px; } .card { padding:14px; border-radius:13px; } .grid { gap:9px; } .metric-value { font-size:25px; } .alert-summary,.glossary { grid-template-columns:1fr; } .alert-direction { font-size:26px; } .kv { grid-template-columns:1fr 1fr; } .badge { white-space:normal; text-align:center; } }
   </style>
 </head>
 <body>
 <header>
-  <div>
-    <h1>BTC 15-Minute Paper Bot</h1>
-    <p class="sub">Read-only monitoring · simulated positions only · no real orders</p>
+  <div class="header-inner">
+    <div>
+      <h1>BTC Practice Bot</h1>
+      <p class="subtitle">A simple guide to what the bot is seeing and doing. This is simulated trading — no real orders are placed.</p>
+    </div>
+    <div id="connection-badge" class="badge wait" role="status" aria-live="polite">Connecting to dashboard…</div>
   </div>
-  <div class="pill" id="connection-pill"><span class="dot" id="connection-dot"></span><span id="connection-text">Connecting…</span></div>
 </header>
 <main>
-  <section class="grid" aria-label="Performance summary">
-    <div class="metric"><div class="label">Net paper P&amp;L</div><div class="value" id="pnl">—</div><div class="detail">Settled simulated results, after recorded fees</div></div>
-    <div class="metric"><div class="label">Win rate</div><div class="value" id="win-rate">—</div><div class="detail" id="settled-count">No settled trades yet</div></div>
-    <div class="metric"><div class="label">Open positions</div><div class="value" id="open-count">—</div><div class="detail" id="exposure">Exposure: —</div></div>
-    <div class="metric"><div class="label">Worker</div><div class="value" id="worker">—</div><div class="detail" id="signal-source">Signal source: —</div></div>
-  </section>
-
-  <section class="panel section-gap">
-    <div class="signal-top">
-      <div><h2>Latest TradingView / GainzAlgo alert</h2><p class="sub" id="alert-time">Waiting for a received webhook alert…</p></div>
-      <span class="pill" id="alert-count">0 alerts received</span>
-    </div>
-    <div class="signal-top section-gap">
-      <div><div class="direction" id="alert-direction">—</div><p class="sub" id="alert-symbol">No external alert received yet</p></div>
-      <div style="text-align:right"><div class="label muted">Timeframe</div><div class="direction" id="alert-timeframe">—</div></div>
-    </div>
-    <p class="sub section-gap" id="alert-details">Incoming webhook alerts are shown separately from evaluated signals below. An alert being received does not mean a paper trade was taken.</p>
-    <p class="sub section-gap" id="webhook-status">Webhook delivery status: waiting for first delivery attempt.</p>
-    <div class="table-wrap section-gap"><table><thead><tr><th>Received (local time)</th><th>Direction</th><th>Symbol</th><th>Timeframe</th><th>Details</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No webhook alerts recorded yet.</td></tr></tbody></table></div>
-    <p class="sub section-gap">For diagnostics, <code>/api/alerts/recent</code> returns the recent received alert history without webhook secrets.</p>
-  </section>
-
-  <section class="panel section-gap" id="window-status-panel" aria-live="polite">
-    <div class="signal-top">
-      <div><h2>Current window decision</h2><p class="sub" id="window-status-time">Waiting for alert/status data…</p></div>
-      <span class="pill amber" id="window-status-pill">WAIT THIS WINDOW</span>
-    </div>
-    <div class="direction amber section-gap" id="window-status-title">WAIT THIS WINDOW</div>
-    <p class="sub section-gap" id="window-status-reason">No paper trade has been confirmed for the latest alert. The bot will not assume an alert means a trade occurred.</p>
-  </section>
-
-  <div class="layout">
-    <section class="panel">
-      <div class="signal-top">
-        <div><h2>Last evaluated signal (historical diagnostics)</h2><p class="sub" id="signal-time">Waiting for a recorded signal…</p></div>
-        <span class="pill" id="signal-freshness">No signal yet</span>
+  <section class="card hero section" aria-live="polite">
+    <div class="hero-top">
+      <div>
+        <h2>What’s happening right now?</h2>
+        <p class="muted" id="current-time-line">Checking the latest alert and bot decision…</p>
       </div>
-      <div class="signal-top section-gap">
-        <div><div class="direction" id="signal-direction">—</div><p class="sub" id="signal-market">No market ticker supplied</p></div>
-        <div style="text-align:right"><div class="label muted">Evidence score</div><div class="direction" id="signal-score">—</div><p class="sub">Not a win probability</p></div>
-      </div>
-      <div class="facts">
-        <div class="fact"><small>BTC price</small><strong id="btc-price">—</strong></div>
-        <div class="fact"><small>Strike</small><strong id="strike">—</strong></div>
-        <div class="fact"><small>Distance</small><strong id="distance">—</strong></div>
-        <div class="fact"><small>Seconds left</small><strong id="seconds-left">—</strong></div>
-        <div class="fact"><small>Observed ask</small><strong id="entry-ask">—</strong></div>
-        <div class="fact"><small>Entry cap</small><strong id="entry-cap">—</strong></div>
-      </div>
-      <p class="sub section-gap" id="disclaimer">Signal scores are heuristic evidence scores only.</p>
-    </section>
-
-    <section class="panel">
-      <h2>Runtime and risk</h2>
-      <div class="facts" style="margin-top:0">
-        <div class="fact"><small>API health</small><strong id="api-health">—</strong></div>
-        <div class="fact"><small>Mode</small><strong id="mode">—</strong></div>
-        <div class="fact"><small>Real orders</small><strong id="real-orders">—</strong></div>
-        <div class="fact"><small>Max trade</small><strong id="max-trade">—</strong></div>
-        <div class="fact"><small>Daily loss limit</small><strong id="daily-loss-limit">—</strong></div>
-        <div class="fact"><small>Trend stop</small><strong id="trend-stop">—</strong></div>
-      </div>
-      <p class="sub section-gap" id="updated-at">Last refresh: —</p>
-      <p class="sub">This page refreshes from <code>/api/dashboard</code> every 5 seconds. It does not create or close trades.</p>
-    </section>
-  </div>
-
-  <section class="panel section-gap">
-    <h2>Signal explanation</h2>
-    <div class="diagnostics">
-      <div><h3 class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Reasons</h3><ul id="reasons"><li class="empty">No signal details yet.</li></ul></div>
-      <div><h3 class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Warnings</h3><ul id="warnings"><li class="empty">No warnings recorded.</li></ul></div>
+      <span id="current-status-badge" class="badge wait">WAIT THIS WINDOW</span>
     </div>
-    <details class="section-gap"><summary>Strategy diagnostics</summary><pre id="strategies" style="white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)">No strategy diagnostics yet.</pre></details>
+    <div id="current-status-title" class="hero-status amber-text">WAIT THIS WINDOW</div>
+    <p id="current-status-explanation" class="hero-copy">The dashboard is checking for a recent alert and a recorded decision. Until a paper trade is recorded, do not assume a trade was taken.</p>
+    <p id="current-status-next" class="small-line">Next: the bot will keep checking conditions on its next cycle.</p>
   </section>
 
-  <section class="panel section-gap">
-    <h2>Recent paper trades</h2>
-    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Placed (local time)</th><th>Timeframe</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry</th><th>Outcome</th><th>Net P&amp;L</th><th>Status</th></tr></thead><tbody id="trades"><tr><td colspan="10" class="empty">No paper trades recorded.</td></tr></tbody></table></div>
+  <section class="section" aria-label="Practice results">
+    <div class="section-head"><h2>Your practice results</h2><p class="section-desc">These numbers summarize paper trades recorded in the journal. They are not a prediction of future results.</p></div>
+    <div class="grid">
+      <div class="card"><div class="metric-label">Net practice profit / loss</div><div class="metric-value" id="pnl">—</div><div class="metric-note">Combined result of settled practice trades, after recorded fees.</div></div>
+      <div class="card"><div class="metric-label">Win rate</div><div class="metric-value" id="win-rate">—</div><div class="metric-note" id="settled-count">No completed practice trades yet.</div></div>
+      <div class="card"><div class="metric-label">Trades still open</div><div class="metric-value" id="open-count">—</div><div class="metric-note" id="exposure">Amount spent on open practice positions: —</div></div>
+      <div class="card"><div class="metric-label">Is the bot running?</div><div class="metric-value" id="worker">Checking…</div><div class="metric-note" id="worker-detail">Checking the latest worker heartbeat.</div></div>
+    </div>
   </section>
-  <footer>Paper-trading journal only. Simulated performance is not evidence of future results. Verify entries, fees, and official settlement outcomes.</footer>
+
+  <section class="section two-col">
+    <div class="card">
+      <div class="section-head"><h2>Latest TradingView alert</h2><p class="section-desc">This is what the alert service received. An alert is a suggestion, not proof that the bot traded.</p></div>
+      <div class="hero-top">
+        <div><div id="alert-direction" class="alert-direction">No alert yet</div><p id="alert-symbol" class="muted">Waiting for TradingView / GainzAlgo</p></div>
+        <span id="alert-process-badge" class="badge wait">No alert</span>
+      </div>
+      <div class="alert-summary">
+        <div class="detail-box"><div class="label">Received at</div><div class="value" id="alert-time">—</div><div class="help">Your local time</div></div>
+        <div class="detail-box"><div class="label">Chart timeframe</div><div class="value" id="alert-timeframe">—</div><div class="help">Chart interval used by the alert</div></div>
+        <div class="detail-box"><div class="label">Processing status</div><div class="value" id="alert-processing">—</div><div class="help" id="alert-processing-help">Whether the worker handled it</div></div>
+      </div>
+      <div class="explain-box"><strong>What does this mean?</strong><p id="alert-meaning">When an alert arrives, the bot still checks timing, prices and risk limits before it can create a paper trade.</p></div>
+      <p id="webhook-status" class="inline-note">Webhook status: waiting for first attempt.</p>
+    </div>
+
+    <div class="card">
+      <div class="section-head"><h2>Last bot check</h2><p class="section-desc">The most recent internal review. It may be newer or older than the latest TradingView alert.</p></div>
+      <div class="hero-top">
+        <div><div class="alert-direction" id="signal-direction">No check yet</div><p id="signal-market" class="muted">No market checked yet</p></div>
+        <span id="signal-freshness" class="badge wait">No check yet</span>
+      </div>
+      <div class="alert-summary">
+        <div class="detail-box"><div class="label">Checked at</div><div class="value" id="signal-time">—</div></div>
+        <div class="detail-box"><div class="label">Evidence score</div><div class="value" id="signal-score">—</div><div class="help">Not a win probability</div></div>
+        <div class="detail-box"><div class="label">BTC price</div><div class="value" id="btc-price">—</div></div>
+        <div class="detail-box"><div class="label">Market strike</div><div class="value" id="strike">—</div></div>
+      </div>
+      <div class="explain-box"><strong>Why did the bot decide this?</strong><ul id="reasons" class="plain-list"><li>No explanation recorded yet.</li></ul></div>
+      <p id="disclaimer" class="inline-note">An evidence score is a rules-based rating of the available clues. It is not the chance of winning.</p>
+      <details class="section"><summary>More technical details (optional)</summary>
+        <div class="kv" style="margin-top:12px">
+          <div class="detail-box"><div class="label">BTC vs. strike</div><div class="value" id="distance">—</div><div class="help">How far BTC is above or below the contract strike</div></div>
+          <div class="detail-box"><div class="label">Time remaining</div><div class="value" id="seconds-left">—</div><div class="help">Time left in the 15-minute market</div></div>
+          <div class="detail-box"><div class="label">Contract ask</div><div class="value" id="entry-ask">—</div><div class="help">Displayed price to buy, before fees</div></div>
+          <div class="detail-box"><div class="label">Price cap</div><div class="value" id="entry-cap">—</div><div class="help">Highest allowed entry price in settings</div></div>
+        </div>
+        <h3 class="section">Warnings</h3><ul id="warnings" class="plain-list"><li>No warnings recorded.</li></ul>
+        <details class="section"><summary>Raw strategy diagnostics</summary><pre id="strategies">No diagnostics available.</pre></details>
+      </details>
+    </div>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><h2>Recent practice trades</h2><p class="section-desc">A trade appears here only when it has been saved in the paper-trading journal.</p></div>
+    <div class="table-wrap"><table aria-label="Recent simulated trades"><thead><tr><th>Placed (local time)</th><th>Chart timeframe</th><th>Direction</th><th>Buy price</th><th>Result</th><th>Profit / loss</th><th>Status</th></tr></thead><tbody id="trades"><tr><td colspan="7" class="empty">No paper trades recorded yet.</td></tr></tbody></table></div>
+    <p class="inline-note">The contract is a 15-minute market. The chart timeframe is shown separately when it was recorded; older trades may not have that information.</p>
+  </section>
+
+  <section class="card section">
+    <div class="section-head"><h2>Recent alerts</h2><p class="section-desc">This history helps explain what happened after each alert was received.</p></div>
+    <div class="table-wrap"><table aria-label="Recent received alerts"><thead><tr><th>Received (local time)</th><th>Alert</th><th>Symbol</th><th>Chart timeframe</th><th>What happened</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No alerts recorded yet.</td></tr></tbody></table></div>
+    <p class="inline-note" id="alert-count">0 alerts received</p>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Learn the terms</h2><p class="section-desc">Plain-English definitions for the numbers on this page.</p></div>
+    <div class="glossary">
+      <div class="glossary-item"><strong>TradingView alert</strong><p>A message from your chart indicator. It tells the bot what the indicator noticed, but it does not automatically mean a trade is made.</p></div>
+      <div class="glossary-item"><strong>UP / DOWN</strong><p>The alert’s suggested direction. It describes which outcome the signal points toward; it is not a guarantee.</p></div>
+      <div class="glossary-item"><strong>Timeframe</strong><p>How much time each candle on the indicator chart represents. A 1-minute chart and a 15-minute contract are different things.</p></div>
+      <div class="glossary-item"><strong>Strike price</strong><p>The reference BTC price used to determine the market’s final UP/DOWN outcome according to the market’s rules.</p></div>
+      <div class="glossary-item"><strong>Evidence score</strong><p>A score from the bot’s programmed rules. A score of 60/100 does not mean a 60% chance to win.</p></div>
+      <div class="glossary-item"><strong>Ask price</strong><p>The displayed price to buy one contract, usually shown in cents. Fees may make the total cost higher.</p></div>
+      <div class="glossary-item"><strong>Win rate</strong><p>The share of completed trades that were winners. It does not show how large the wins or losses were, so read it with net profit/loss.</p></div>
+      <div class="glossary-item"><strong>Net profit / loss</strong><p>The combined result of settled practice trades after the fees recorded by the bot. It is only as accurate as the trade and fee records.</p></div>
+    </div>
+  </section>
+
+  <section class="card section">
+    <details>
+      <summary>Safety and bot settings</summary>
+      <div class="kv section" style="margin-top:12px">
+        <div class="detail-box"><div class="label">Run mode</div><div class="value" id="mode">—</div><div class="help">Should say simulation only</div></div>
+        <div class="detail-box"><div class="label">Real orders</div><div class="value" id="real-orders">—</div><div class="help">Should be disabled</div></div>
+        <div class="detail-box"><div class="label">Signal source</div><div class="value" id="signal-source">—</div><div class="help">Which signals the worker uses</div></div>
+        <div class="detail-box"><div class="label">Maximum per trade</div><div class="value" id="max-trade">—</div><div class="help">Configured cost limit for one paper trade</div></div>
+        <div class="detail-box"><div class="label">Daily loss limit</div><div class="value" id="daily-loss-limit">—</div><div class="help">Configured safety limit</div></div>
+        <div class="detail-box"><div class="label">Trend stop</div><div class="value" id="trend-stop">—</div><div class="help">A programmed condition for detecting a possible exit</div></div>
+      </div>
+      <p class="inline-note" id="updated-at">Last dashboard update: —</p>
+    </details>
+  </section>
+  <footer>
+    <strong>Practice mode only.</strong> This dashboard reports what the application has recorded; it cannot guarantee that a displayed price would be filled. Simulated results do not prove a future strategy will be profitable. <span id="last-refresh">Last refreshed: —</span>
+  </footer>
 </main>
 <script>
 (() => {
   'use strict';
-  const byId = (id) => document.getElementById(id);
-  const money = (n) => (Number.isFinite(Number(n)) ? '$' + Number(n).toFixed(2) : '—');
-  const cents = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(1) + '¢' : '—');
-  const num = (n, digits=2) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString(undefined,{maximumFractionDigits:digits}) : '—');
-  const setText = (id, value) => { byId(id).textContent = value == null || value === '' ? '—' : String(value); };
-  function setList(id, values, emptyText) {
-    const list = byId(id); list.replaceChildren();
-    if (!Array.isArray(values) || values.length === 0) {
-      const li = document.createElement('li'); li.className = 'empty'; li.textContent = emptyText; list.appendChild(li); return;
-    }
-    values.forEach(value => { const li = document.createElement('li'); li.textContent = String(value); list.appendChild(li); });
+  const $ = id => document.getElementById(id);
+  const safeNum = value => value !== null && value !== '' && value !== undefined && Number.isFinite(Number(value));
+  const money = value => safeNum(value) ? (Number(value) < 0 ? '-$' + Math.abs(Number(value)).toFixed(2) : '$' + Number(value).toFixed(2)) : '—';
+  const cents = value => safeNum(value) ? Number(value).toFixed(1) + '¢' : '—';
+  const number = (value, digits=2) => safeNum(value) ? Number(value).toLocaleString(undefined, {maximumFractionDigits:digits}) : '—';
+  const dateTime = value => { const t = value ? Date.parse(value) : NaN; return Number.isFinite(t) ? new Date(t).toLocaleString() : 'Time unavailable'; };
+  const ageText = seconds => !safeNum(seconds) ? 'age unknown' : Number(seconds) < 60 ? `${Math.floor(Number(seconds))} seconds ago` : Number(seconds) < 3600 ? `${Math.floor(Number(seconds)/60)} minutes ago` : `${Math.floor(Number(seconds)/3600)} hours ago`;
+  const write = (id, value) => { if ($(id)) $(id).textContent = value === undefined || value === null || value === '' ? '—' : String(value); };
+  const setBadge = (id, text, style='wait') => { write(id, text); $(id).className = 'badge ' + style; };
+  function fillList(id, values, emptyText) {
+    const list = $(id); list.replaceChildren();
+    const clean = Array.isArray(values) ? values : [];
+    if (!clean.length) { const li=document.createElement('li'); li.className='muted'; li.textContent=emptyText; list.appendChild(li); return; }
+    clean.forEach(value => { const li=document.createElement('li'); li.textContent=String(value); list.appendChild(li); });
   }
-  function setPill(text, kind) {
-    setText('connection-text', text);
-    byId('connection-dot').className = 'dot' + (kind ? ' ' + kind : '');
+  function workerCopy(health) {
+    if (health.worker_status === 'running') return ['Running', `Last check-in ${ageText(health.worker_last_seen_age_seconds)}.`];
+    if (health.worker_status === 'stale') return ['Needs checking', `No recent check-in. Last seen ${ageText(health.worker_last_seen_age_seconds)}.`];
+    if (health.worker_enabled) return ['Not confirmed', 'The worker is enabled, but this dashboard cannot see a recent check-in.'];
+    return ['Not confirmed', 'The dashboard has not observed a running worker. Check the worker service.'];
   }
-  function renderTrades(rows) {
-    const tbody = byId('trades'); tbody.replaceChildren();
-    if (!Array.isArray(rows) || rows.length === 0) {
-      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 10; td.className='empty'; td.textContent='No paper trades recorded.'; tr.appendChild(td); tbody.appendChild(tr); return;
+  function directionFriendly(direction) {
+    const d = String(direction || '').toUpperCase();
+    if (d === 'BUY_UP' || d === 'UP' || d === 'BUY' || d === 'LONG') return 'UP signal';
+    if (d === 'BUY_DOWN' || d === 'DOWN' || d === 'SELL' || d === 'SHORT') return 'DOWN signal';
+    if (d === 'WAIT') return 'WAIT — no trade suggested';
+    return d || 'No signal';
+  }
+  function statusFriendly(status) {
+    const s = String(status || 'queued').toLowerCase();
+    const labels = {queued:'Waiting to be checked', processed:'Paper trade opened', skipped:'Not used', vetoed:'Blocked by a safety check', ignored:'Ignored', accepted:'Received', rejected:'Rejected', error:'Processing error'};
+    return labels[s] || s.replaceAll('_',' ');
+  }
+  function cssToneForDirection(direction) {
+    const d=String(direction||'').toUpperCase();
+    return ['BUY_UP','UP','BUY','LONG'].includes(d) ? 'green-text' : ['BUY_DOWN','DOWN','SELL','SHORT'].includes(d) ? 'red-text' : 'amber-text';
+  }
+  function renderAlert(data) {
+    const alert = data.latest_external_alert;
+    const event = data.latest_webhook_event;
+    write('alert-count', `${Number(data.external_alert_count||0).toLocaleString()} alerts have been received in total.`);
+    if (event) {
+      const code = Number(event.status_code);
+      const isOk = code >= 200 && code < 300;
+      write('webhook-status', `Last delivery attempt: ${safeNum(code) ? 'HTTP '+code : 'status unknown'} · ${dateTime(event.received_at)}${event.reason ? ' · ' + event.reason : ''}. A successful response means the endpoint accepted that request; it does not mean a trade was placed.`);
+      $('webhook-status').className = 'inline-note ' + (isOk ? 'green-text' : 'red-text');
+    } else {
+      write('webhook-status', 'No webhook delivery attempt is recorded in this dashboard database. If TradingView sent an alert, check its delivery history and the web service logs.');
+      $('webhook-status').className = 'inline-note amber-text';
     }
-    rows.forEach(r => {
-      const tr = document.createElement('tr');
-      const status = r.settled_at ? 'Settled' : 'Open';
-      const placed = r.created_at ? new Date(r.created_at).toLocaleString() : 'Time not recorded';
-      const timeframe = r.timeframe || (/15M/i.test(String(r.market_ticker || '')) ? '15m contract · TV TF unknown' : 'Not recorded');
-      const values = [r.id, placed, timeframe, r.market_ticker, r.direction, r.contracts, cents(r.entry_cents), r.outcome || '—', r.pnl_dollars == null ? '—' : money(r.pnl_dollars), status];
-      values.forEach((value, i) => {
-        const td = document.createElement('td'); td.textContent = String(value == null ? '—' : value);
-        if (i === 8 && r.pnl_dollars != null) td.className = Number(r.pnl_dollars) > 0 ? 'green' : (Number(r.pnl_dollars) < 0 ? 'red' : '');
-        tr.appendChild(td);
-      });
+    if (!alert) {
+      write('alert-direction','No alert yet'); write('alert-symbol','Waiting for TradingView / GainzAlgo');
+      write('alert-time','—'); write('alert-timeframe','—'); write('alert-processing','—');
+      write('alert-processing-help','No alert has been saved');
+      setBadge('alert-process-badge','No alert recorded','wait');
+      write('alert-meaning','The bot cannot use an alert it has not recorded. Check that TradingView is sending alerts to this application.');
+    } else {
+      write('alert-direction',directionFriendly(alert.direction)); $('alert-direction').className = 'alert-direction ' + cssToneForDirection(alert.direction);
+      write('alert-symbol',alert.symbol || 'Symbol not included in alert');
+      write('alert-time',dateTime(alert.received_at)); write('alert-timeframe',alert.timeframe || 'Not provided');
+      const st=String(alert.processing_status||'queued').toLowerCase();
+      write('alert-processing',statusFriendly(st));
+      write('alert-processing-help',`Received ${ageText(alert.age_seconds)}.`);
+      const tone = ['processed','accepted'].includes(st) ? 'good' : ['skipped','vetoed','ignored','error','rejected'].includes(st) ? 'bad' : 'wait';
+      setBadge('alert-process-badge',statusFriendly(st),tone);
+      const explanations = {
+        queued:'The alert was saved, but it has not yet been marked as processed. Receiving an alert does not mean a trade happened.',
+        processed:'The worker recorded a paper-trade entry for this alert. Check the recent practice trades below for its details.',
+        skipped:`The alert was not used for a new trade. ${alert.processing_note || 'The worker recorded no additional reason.'}`,
+        vetoed:`The internal safety check blocked this alert. ${alert.processing_note || 'No additional reason was recorded.'}`,
+        ignored:`The alert did not meet the worker’s input requirements. ${alert.processing_note || 'No additional reason was recorded.'}`
+      };
+      write('alert-meaning',explanations[st] || `The alert’s current status is “${statusFriendly(st)}”. See the recent alert history for more detail.`);
+    }
+    const tbody=$('external-alerts'); tbody.replaceChildren();
+    const rows=Array.isArray(data.recent_external_alerts)?data.recent_external_alerts:[];
+    if (!rows.length) {
+      const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=5; td.className='empty'; td.textContent='No alerts have been saved yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    rows.forEach(item=>{
+      const tr=document.createElement('tr');
+      const status=statusFriendly(item.processing_status);
+      const detail=item.processing_note || (item.processing_status === 'processed' ? 'Paper-trade entry recorded.' : 'No extra explanation recorded.');
+      [dateTime(item.received_at),directionFriendly(item.direction),item.symbol||'—',item.timeframe||'Not provided',`${status}${detail ? ' — '+detail : ''}`].forEach((v,i)=>{const td=document.createElement('td');td.textContent=String(v);if(i===1)td.className=cssToneForDirection(item.direction);tr.appendChild(td);});
       tbody.appendChild(tr);
     });
   }
-  function renderExternalAlerts(data) {
-    const latest = data.latest_external_alert;
-    const count = Number(data.external_alert_count || 0);
-    setText('alert-count', `${count} alert${count === 1 ? '' : 's'} received`);
-    const delivery = data.latest_webhook_event;
-    if (delivery) {
-      const at = delivery.received_at ? new Date(delivery.received_at).toLocaleString() : 'time unknown';
-      const ok = Number(delivery.status_code) >= 200 && Number(delivery.status_code) < 300;
-      setText('webhook-status', `Latest webhook attempt: ${delivery.status_code} ${delivery.status || ''} · ${at} · ${delivery.reason || 'no details'}${delivery.timeframe ? ` · timeframe ${delivery.timeframe}` : ''}`);
-      byId('webhook-status').className = 'sub section-gap ' + (ok ? 'green' : 'red');
-    } else {
-      setText('webhook-status', 'No webhook delivery attempts have reached this application yet. If TradingView fired alerts, verify the webhook URL and check TradingView delivery logs.');
-      byId('webhook-status').className = 'sub section-gap amber';
+  function renderCurrentStatus(data) {
+    const alert=data.latest_external_alert, sig=data.latest_signal, health=data.health||{}, event=data.latest_webhook_event;
+    const trades=Array.isArray(data.trades)?data.trades:[];
+    const timeOf=v=>v?Date.parse(v):NaN;
+    const alertT=alert?timeOf(alert.received_at):NaN, sigT=sig?timeOf(sig.created_at):NaN, eventT=event?timeOf(event.received_at):NaN;
+    let status='WAIT THIS WINDOW', tone='wait', title='WAIT THIS WINDOW';
+    let explanation='The bot has not confirmed a new paper trade for the latest alert. Waiting is a valid result when a signal is old, unclear, too expensive, or fails a safety check.';
+    let when=alert&&alert.received_at?`Latest alert: ${dateTime(alert.received_at)}`:'No accepted alert recorded yet.';
+    let next='The bot should keep checking on its next scheduled cycle. The dashboard does not force a trade.';
+    const st=String(alert&&alert.processing_status||'').toLowerCase();
+    const matchedTrade=sig&&trades.find(t=>String(t.market_ticker||'')===String(sig.market_ticker||'')&&String(t.direction||'').toUpperCase()===(sig.direction==='BUY_UP'?'UP':sig.direction==='BUY_DOWN'?'DOWN':'')&&Number.isFinite(timeOf(t.created_at))&&Number.isFinite(sigT)&&timeOf(t.created_at)>=sigT);
+    if (event && Number.isFinite(eventT) && (!Number.isFinite(alertT)||eventT>alertT) && Number(event.status_code)>=300) {
+      explanation=`The latest webhook request was rejected (${event.status_code}). ${event.reason||'The application did not provide a reason.'} That alert cannot be used to create a trade.`;
+      when=`Last delivery attempt: ${dateTime(event.received_at)}`;
+      next='Check the webhook result in the recent delivery details before expecting a new trade.';
+    } else if (!alert) {
+      explanation='No TradingView / GainzAlgo alert is currently recorded here. If alerts were sent, confirm that they reached this deployment.';
+      next='Wait for a valid alert to arrive. A blank or disconnected feed is not the same as a market-based WAIT decision.';
+    } else if (['skipped','vetoed','ignored','error','rejected'].includes(st)) {
+      explanation=`The latest alert was ${statusFriendly(st).toLowerCase()}. ${alert.processing_note||'The worker did not record an additional reason.'}`;
+      next='The bot should wait for the next eligible alert rather than forcing this one through.';
+    } else if (matchedTrade) {
+      status='PAPER TRADE RECORDED'; title='PAPER TRADE RECORDED'; tone='good';
+      explanation=`The journal contains paper trade #${matchedTrade.id} for ${matchedTrade.direction} on ${matchedTrade.market_ticker}. This is a simulated entry, not a real order.`;
+      when=`Trade recorded: ${dateTime(matchedTrade.created_at)}`;
+      next='Review its entry cost and status in Recent practice trades below.';
+    } else if (st==='queued' || (Number.isFinite(alertT)&&Number.isFinite(sigT)&&alertT>sigT)) {
+      explanation='A newer alert has arrived than the latest recorded bot check, or the alert is still waiting to be processed. No new entry has been confirmed yet.';
+      next='Wait for the worker to process the alert. Do not treat the alert direction as a completed trade.';
+    } else if (sig && sig.direction==='WAIT') {
+      const r=Array.isArray(sig.reasons)?sig.reasons.slice(0,2).join(' '):'';
+      explanation=`The latest bot check decided not to enter a trade. ${r || 'The available evidence or market conditions did not pass its rules.'}`;
+      when=`Last check: ${dateTime(sig.created_at)}`;
+      next='The bot will look again during a later cycle; it should not enter solely to create activity.';
+    } else if (sig && sig.is_stale) {
+      explanation='The last bot check is old. An older direction should not be treated as a current recommendation.';
+      when=`Last check: ${dateTime(sig.created_at)}`;
+      next='Wait for a new evaluation before relying on the displayed signal.';
+    } else if (sig) {
+      explanation=`The last recorded check says “${directionFriendly(sig.direction)}”, but there is no matching paper-trade record shown. A signal is not a trade.`;
+      when=`Last check: ${dateTime(sig.created_at)}`;
+      next='Until a trade is recorded, the current status remains WAIT THIS WINDOW.';
     }
-    if (latest) {
-      setText('alert-time', latest.received_at ? `Received ${new Date(latest.received_at).toLocaleString()} · ${latest.age_seconds == null ? 'age unknown' : `${latest.age_seconds}s ago`}` : 'Receive timestamp unavailable');
-      setText('alert-direction', latest.direction || '—');
-      byId('alert-direction').className = 'direction ' + (/^(BUY|LONG|UP)$/.test(String(latest.direction || '').toUpperCase()) ? 'green' : (/^(SELL|SHORT|DOWN)$/.test(String(latest.direction || '').toUpperCase()) ? 'red' : 'amber'));
-      setText('alert-symbol', latest.symbol || 'Symbol not provided');
-      setText('alert-timeframe', latest.timeframe || '—');
-      setText('alert-details', 'Latest received webhook alert. This is not proof that the signal was evaluated or traded.');
-    } else {
-      setText('alert-time', 'No received webhook alert recorded yet');
-      setText('alert-direction', '—'); setText('alert-symbol', 'No external alert received yet'); setText('alert-timeframe', '—');
-      setText('alert-details', 'If alerts have fired in TradingView, check that the webhook URL targets this deployment and that it returns HTTP 200.');
+    setBadge('current-status-badge',status,tone); write('current-status-title',title); $('current-status-title').className='hero-status '+(tone==='good'?'green-text':tone==='bad'?'red-text':'amber-text');
+    write('current-status-explanation',explanation); write('current-time-line',when); write('current-status-next',next);
+  }
+  function renderSignal(sig) {
+    if (!sig) {
+      ['signal-direction','signal-market','signal-time','signal-score','btc-price','strike','distance','seconds-left','entry-ask','entry-cap'].forEach(id=>write(id,'—'));
+      setBadge('signal-freshness','No check yet','wait'); fillList('reasons',[],'No bot evaluation has been recorded.'); fillList('warnings',[],'No warnings recorded.'); write('strategies','No diagnostics available yet.');
+      write('disclaimer','When available, the evidence score summarizes programmed rules. It is not a probability of winning.'); return;
     }
-    const tbody = byId('external-alerts'); tbody.replaceChildren();
-    const alerts = Array.isArray(data.recent_external_alerts) ? data.recent_external_alerts : [];
-    if (!alerts.length) {
-      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 5; td.className = 'empty'; td.textContent = 'No webhook alerts recorded yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
-    }
-    alerts.forEach(alert => {
-      const tr = document.createElement('tr');
-      const detail = alert.details && Object.keys(alert.details).length ? JSON.stringify(alert.details) : '—';
-      [alert.received_at ? new Date(alert.received_at).toLocaleString() : '—', alert.direction || '—', alert.symbol || '—', alert.timeframe || '—', detail].forEach(value => {
-        const td = document.createElement('td'); td.textContent = String(value == null ? '—' : value); tr.appendChild(td);
-      });
+    const d=String(sig.direction||'').toUpperCase();
+    write('signal-direction',d==='WAIT'?'WAIT — no trade suggested':d==='BUY_UP'?'UP candidate':d==='BUY_DOWN'?'DOWN candidate':d);
+    $('signal-direction').className='alert-direction '+(d==='BUY_UP'?'green-text':d==='BUY_DOWN'?'red-text':'amber-text');
+    write('signal-market',sig.market_ticker||'Market identifier not recorded'); write('signal-time',dateTime(sig.created_at));
+    write('signal-score',safeNum(sig.score)?`${number(sig.score,0)}/100`:'Not available');
+    setBadge('signal-freshness',sig.is_stale?`Old check · ${ageText(sig.age_seconds)}`:`Recent check · ${ageText(sig.age_seconds)}`,sig.is_stale?'bad':'good');
+    write('btc-price',safeNum(sig.btc_price)?'$'+number(sig.btc_price):'—'); write('strike',safeNum(sig.strike_price)?'$'+number(sig.strike_price):'—');
+    write('distance',safeNum(sig.distance_from_strike)?`${Number(sig.distance_from_strike)>=0?'+':''}$${number(Math.abs(Number(sig.distance_from_strike)))}`:'—');
+    write('seconds-left',safeNum(sig.seconds_remaining)?`${number(sig.seconds_remaining,0)} seconds`: '—');
+    write('entry-ask',cents(sig.entry_ask_cents)); write('entry-cap',cents(sig.max_entry_cents));
+    write('disclaimer',sig.disclaimer||'The score is a heuristic evidence rating only. It is not a calibrated chance of winning.');
+    fillList('reasons',sig.reasons,'No explanation was saved with this check.'); fillList('warnings',sig.warnings,'No warnings were recorded for this check.');
+    write('strategies',JSON.stringify(sig.strategies||{},null,2));
+  }
+  function renderTrades(data) {
+    const tbody=$('trades'); tbody.replaceChildren();
+    const rows=Array.isArray(data.trades)?data.trades:[];
+    if (!rows.length) { const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No paper trades recorded yet. Alerts alone do not appear here as trades.';tr.appendChild(td);tbody.appendChild(tr);return; }
+    rows.forEach(t=>{
+      const tr=document.createElement('tr');
+      const status=t.settled_at?'Completed':'Open';
+      const tf=t.timeframe || (/15M/i.test(String(t.market_ticker||''))?'15-minute contract; chart timeframe not saved':'Not recorded');
+      const pnl=t.pnl_dollars==null?'Not settled':money(t.pnl_dollars);
+      const result=t.outcome?String(t.outcome).replaceAll('_',' '):'Pending';
+      [dateTime(t.created_at),tf,String(t.direction||'—'),cents(t.entry_cents),result,pnl,status].forEach((v,i)=>{const td=document.createElement('td');td.textContent=String(v);if(i===2)td.className=cssToneForDirection(t.direction);if(i===5&&t.pnl_dollars!=null)td.className=Number(t.pnl_dollars)>0?'green-text':Number(t.pnl_dollars)<0?'red-text':'';tr.appendChild(td);});
       tbody.appendChild(tr);
     });
   }
-  function renderWindowStatus(data) {
-    const latest = data.latest_external_alert;
-    const signal = data.latest_signal;
-    const delivery = data.latest_webhook_event;
-    const trades = Array.isArray(data.trades) ? data.trades : [];
-    const pill = byId('window-status-pill');
-    const title = byId('window-status-title');
-    const reason = byId('window-status-reason');
-    const sub = byId('window-status-time');
-    const timeOf = (value) => { const n = value ? Date.parse(value) : NaN; return Number.isFinite(n) ? n : null; };
-    const latestAlertTime = latest ? timeOf(latest.received_at) : null;
-    const evalTime = signal ? timeOf(signal.created_at) : null;
-    const deliveryTime = delivery ? timeOf(delivery.received_at) : null;
-    let status = 'WAIT THIS WINDOW';
-    let explanation = '';
-    let atText = latest && latest.received_at ? `Latest accepted alert: ${new Date(latest.received_at).toLocaleString()}` : 'No accepted alert recorded';
-    let statusClass = 'amber';
-
-    if (delivery && deliveryTime !== null && (latestAlertTime === null || deliveryTime > latestAlertTime) && Number(delivery.status_code) >= 300) {
-      explanation = `The latest webhook attempt was rejected (${delivery.status_code}): ${delivery.reason || 'reason not reported'}. No entry is authorized from a rejected alert.`;
-      atText = `Latest webhook attempt: ${new Date(delivery.received_at).toLocaleString()}`;
-    } else if (!latest) {
-      explanation = 'No accepted TradingView/GainzAlgo alert is recorded by this deployment. Check the webhook delivery status above. Until an alert is received and checked, wait this window.';
-    } else if (!signal || evalTime === null) {
-      explanation = 'The latest alert was received, but there is no recorded evaluated signal to approve an entry. Wait this window.';
-    } else if (latestAlertTime !== null && latestAlertTime > evalTime) {
-      explanation = 'The latest alert is newer than the last evaluated signal. It has not produced a fresh recorded decision, so wait this window.';
-    } else {
-      const direction = String(signal.direction || '').toUpperCase();
-      const expected = direction === 'BUY_UP' ? 'UP' : (direction === 'BUY_DOWN' ? 'DOWN' : null);
-      const matchedTrade = expected && trades.find(t =>
-        String(t.market_ticker || '') === String(signal.market_ticker || '') &&
-        String(t.direction || '').toUpperCase() === expected &&
-        timeOf(t.created_at) !== null && evalTime !== null && timeOf(t.created_at) >= evalTime
-      );
-      if (matchedTrade) {
-        status = 'PAPER TRADE LOGGED'; statusClass = 'green';
-        explanation = 'A paper-trade journal entry with the same market and direction was recorded after this evaluation. Verify the trade details; this dashboard cannot prove the alert caused that trade.';
-        atText = `Evaluation: ${new Date(signal.created_at).toLocaleString()} · Paper trade ID ${matchedTrade.id}`;
-      } else if (direction === 'WAIT') {
-        const why = Array.isArray(signal.reasons) && signal.reasons.length ? ` Reason: ${signal.reasons.slice(0, 2).join(' ')}` : '';
-        explanation = `The most recent evaluation says WAIT; no entry is recommended for this window.${why}`;
-      } else if (signal.is_stale) {
-        explanation = 'The last evaluated signal is stale and no matching paper-trade journal entry is visible. Do not treat the old direction as current; wait this window.';
-      } else {
-        explanation = `The latest evaluation direction is ${signal.direction}, but no matching paper-trade journal entry is visible for this market. A signal is not a trade. Until a paper trade is recorded, wait this window.`;
-      }
-    }
-    setText('window-status-pill', status);
-    setText('window-status-title', status);
-    setText('window-status-reason', explanation);
-    setText('window-status-time', atText);
-    pill.className = 'pill ' + statusClass;
-    title.className = 'direction ' + statusClass;
-  }
-
   function render(data) {
-    const stats = data.stats || {}, risk = data.risk || {}, health = data.health || {}, s = data.latest_signal;
-    renderExternalAlerts(data);
-    renderWindowStatus(data);
-    const pnl = Number(stats.net_pnl_dollars || 0);
-    setText('pnl', money(pnl)); byId('pnl').className = 'value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
-    setText('win-rate', stats.win_rate_percent == null ? '—' : num(stats.win_rate_percent) + '%');
-    setText('settled-count', `${stats.settled_trades || 0} settled · ${stats.wins || 0} wins · ${stats.losses || 0} losses`);
-    setText('open-count', stats.open_positions || 0); setText('exposure', 'Exposure: ' + money(risk.open_exposure_dollars || 0));
-    setText('worker', health.worker_enabled ? 'Enabled' : 'Disabled');
-    setText('signal-source', 'Signal source: ' + (health.signal_source || 'unknown'));
-    setText('api-health', health.api_ok ? 'Healthy' : 'Unavailable');
-    setText('mode', data.mode || '—'); setText('real-orders', data.real_orders_enabled ? 'Enabled' : 'Disabled');
-    setText('max-trade', money(risk.max_trade_dollars)); setText('daily-loss-limit', money(risk.max_daily_loss_dollars));
-    setText('trend-stop', health.trend_stop_enabled ? (health.trend_stop_shadow_mode ? 'Shadow mode' : 'Enabled') : 'Disabled');
-    setText('updated-at', 'Last refresh: ' + new Date().toLocaleTimeString());
-    if (s) {
-      setText('signal-time', s.created_at ? new Date(s.created_at).toLocaleString() : 'Timestamp unavailable');
-      setText('signal-market', s.market_ticker || 'No market ticker supplied');
-      setText('signal-direction', s.direction || '—');
-      byId('signal-direction').className = 'direction ' + (s.direction === 'BUY_UP' ? 'green' : s.direction === 'BUY_DOWN' ? 'red' : 'amber');
-      setText('signal-score', s.score == null ? '—' : `${s.score}/100`);
-      setText('btc-price', num(s.btc_price)); setText('strike', num(s.strike_price));
-      const dist = Number(s.distance_from_strike);
-      setText('distance', Number.isFinite(dist) ? (dist > 0 ? '+' : '') + num(dist) : '—');
-      setText('seconds-left', s.seconds_remaining == null ? '—' : `${s.seconds_remaining}s`);
-      setText('entry-ask', cents(s.entry_ask_cents)); setText('entry-cap', cents(s.max_entry_cents));
-      setText('disclaimer', s.disclaimer || 'Score is heuristic evidence only, not a calibrated win probability.');
-      setText('signal-freshness', s.is_stale ? `Stale · ${s.age_seconds ?? '?'}s old` : `Fresh · ${s.age_seconds ?? '?'}s old`);
-      if (s.is_stale) setText('disclaimer', 'This evaluated signal is stale. New TradingView alerts are listed above, but receiving an alert does not itself run the candle-based signal engine or create a paper trade. ' + (s.disclaimer || 'Evidence score is not a win probability.'));
-      byId('signal-freshness').className = 'pill ' + (s.is_stale ? 'red' : 'green');
-      setList('reasons', s.reasons, 'No reasons recorded.'); setList('warnings', s.warnings, 'No warnings recorded.');
-      setText('strategies', JSON.stringify(s.strategies || {}, null, 2));
-    } else {
-      ['signal-time','signal-market','signal-direction','signal-score','btc-price','strike','distance','seconds-left','entry-ask','entry-cap'].forEach(id => setText(id, '—'));
-      setText('signal-freshness','No signal yet'); setList('reasons', [], 'No signal details yet.');
-      setList('warnings', [], 'No warnings recorded.'); setText('strategies','No strategy diagnostics yet.');
-    }
-    renderTrades(data.trades);
+    const stats=data.stats||{}, risk=data.risk||{}, health=data.health||{};
+    const worker=workerCopy(health);
+    write('pnl',money(stats.net_pnl_dollars||0)); $('pnl').className='metric-value '+(Number(stats.net_pnl_dollars)>0?'green-text':Number(stats.net_pnl_dollars)<0?'red-text':'');
+    write('win-rate',stats.win_rate_percent==null?'Not enough data':number(stats.win_rate_percent,1)+'%');
+    write('settled-count',`${stats.settled_trades||0} completed · ${stats.wins||0} wins · ${stats.losses||0} losses`);
+    write('open-count',stats.open_positions||0); write('exposure','Cost of open positions: '+money(risk.open_exposure_dollars||0));
+    write('worker',worker[0]); write('worker-detail',worker[1]);
+    if (health.worker_status==='running') $('worker').className='metric-value green-text'; else if (health.worker_status==='stale') $('worker').className='metric-value red-text';
+    renderAlert(data); renderSignal(data.latest_signal); renderCurrentStatus(data); renderTrades(data);
+    write('mode',data.mode==='SIMULATION_ONLY'?'Practice / simulation only':data.mode||'Unknown');
+    write('real-orders',data.real_orders_enabled?'Enabled — investigate':'Disabled');
+    write('signal-source',({'hybrid':'TradingView + internal safety checks','gainzalgo':'TradingView / GainzAlgo alerts','internal':'Internal rules only'})[String(health.signal_source||'').toLowerCase()]||health.signal_source||'Not reported');
+    write('max-trade',money(risk.max_trade_dollars)); write('daily-loss-limit',money(risk.max_daily_loss_dollars));
+    write('trend-stop',health.trend_stop_enabled?(health.trend_stop_shadow_mode?'Monitoring only (shadow mode)':'Enabled'):'Disabled');
+    const workerAge=safeNum(health.worker_last_seen_age_seconds)?`Worker last checked in ${ageText(health.worker_last_seen_age_seconds)}${health.worker_last_reason?' · '+health.worker_last_reason:''}`:'Worker heartbeat not visible in this database.';
+    write('updated-at',`Data source: ${health.database_backend||'database status not reported'}. ${workerAge}`);
   }
   async function refresh() {
     try {
-      const response = await fetch('/api/dashboard', {cache:'no-store', headers:{'Accept':'application/json'}});
-      if (!response.ok) throw new Error('Dashboard API returned HTTP ' + response.status);
-      const data = await response.json(); render(data); setPill('API connected', 'ok');
+      const response=await fetch('/api/dashboard',{cache:'no-store',headers:{'Accept':'application/json'}});
+      if (!response.ok) throw new Error(`Dashboard request failed (${response.status})`);
+      const data=await response.json(); render(data);
+      setBadge('connection-badge','Dashboard updated','good');
+      write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Refreshes automatically every 5 seconds.`);
     } catch (error) {
-      setPill('API unavailable', 'bad'); setText('updated-at', 'Refresh failed: ' + (error && error.message ? error.message : 'unknown error'));
+      setBadge('connection-badge','Can’t load latest data','bad');
+      write('last-refresh',`Refresh failed: ${error&&error.message?error.message:'unknown error'}. Try reloading or check the web service.`);
     }
   }
-  refresh(); window.setInterval(refresh, 5000);
+  refresh(); window.setInterval(refresh,5000);
 })();
 </script>
 </body>

@@ -1,0 +1,221 @@
+"""Shared SQLite/PostgreSQL storage adapter for the paper-only Kalshi bot.
+
+Use DATABASE_URL for a database shared by Render's web service and background
+worker. SQLite is supported for local development or a single combined service.
+No live trading code lives in this module.
+"""
+from __future__ import annotations
+
+import os
+import re
+import sqlite3
+import threading
+from hashlib import sha256
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+_INIT_LOCK = threading.Lock()
+_INITIALIZED: set[str] = set()
+
+
+def _database_url() -> str:
+    return (os.getenv("DATABASE_URL") or "").strip()
+
+
+def backend_name() -> str:
+    return "postgresql" if _database_url() else "sqlite"
+
+
+def database_location() -> str:
+    url = _database_url()
+    if url:
+        # Do not expose credentials in logs or status responses.
+        return "DATABASE_URL configured (credentials hidden)"
+    path = Path(os.getenv("BOT_DB_PATH", str(Path(__file__).resolve().parent / "bot_journal.sqlite3"))).expanduser()
+    return str(path)
+
+
+class _Cursor:
+    def __init__(self, cursor: Any, lastrowid: Optional[int] = None):
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+
+    @property
+    def rowcount(self) -> int:
+        return int(getattr(self._cursor, "rowcount", -1))
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+
+class DatabaseConnection:
+    """Small common denominator for sqlite3 and psycopg3 connections."""
+    def __init__(self, raw: Any, backend: str):
+        self.raw = raw
+        self.backend = backend
+
+    def execute(self, sql: str, params: Iterable[Any] | None = None) -> _Cursor:
+        values = tuple(params or ())
+        if self.backend == "sqlite":
+            cur = self.raw.execute(sql, values)
+            return _Cursor(cur, getattr(cur, "lastrowid", None))
+
+        # Convert the application's qmark parameters to psycopg placeholders.
+        # Application SQL currently uses qmarks only for parameter placeholders.
+        pg_sql = sql.replace("?", "%s")
+        match = re.match(r"\s*INSERT\s+INTO\s+[\"`]?([a-zA-Z_][\w]*)", pg_sql, re.IGNORECASE)
+        auto_return_id = bool(match and match.group(1).lower() in _TABLE_COLUMNS and not re.search(r"\bRETURNING\b", pg_sql, re.IGNORECASE))
+        if auto_return_id:
+            pg_sql = pg_sql.rstrip().rstrip(";") + " RETURNING id"
+        cur = self.raw.cursor()
+        cur.execute(pg_sql, values)
+        lastrowid = None
+        if auto_return_id:
+            row = cur.fetchone()
+            if row:
+                try:
+                    lastrowid = int(row[0])
+                except (ValueError, TypeError, IndexError):
+                    lastrowid = None
+        return _Cursor(cur, lastrowid)
+
+    def commit(self) -> None:
+        self.raw.commit()
+
+    def rollback(self) -> None:
+        self.raw.rollback()
+
+    def close(self) -> None:
+        self.raw.close()
+
+
+def connect_database() -> DatabaseConnection:
+    url = _database_url()
+    if url:
+        try:
+            import psycopg  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "DATABASE_URL is set, but psycopg is not installed. Add 'psycopg[binary]>=3.2,<4' to requirements."
+            ) from exc
+        # Render commonly supplies postgres://; libpq/psycopg expect postgresql://.
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        raw = psycopg.connect(url, connect_timeout=10)
+        return DatabaseConnection(raw, "postgresql")
+
+    path = Path(os.getenv("BOT_DB_PATH", str(Path(__file__).resolve().parent / "bot_journal.sqlite3"))).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = sqlite3.connect(str(path), timeout=15)
+    raw.execute("PRAGMA busy_timeout = 15000")
+    raw.execute("PRAGMA foreign_keys = ON")
+    return DatabaseConnection(raw, "sqlite")
+
+
+# Canonical application schema. Column types are deliberately plain numeric/text
+# types so the same model works across SQLite and PostgreSQL.
+_TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "signal_log": [
+        ("created_at", "TEXT"), ("market_ticker", "TEXT"), ("direction", "TEXT"),
+        ("score", "INTEGER"), ("btc_price", "REAL"), ("strike_price", "REAL"),
+        ("seconds_remaining", "INTEGER"), ("max_entry_cents", "REAL"), ("payload_json", "TEXT"),
+    ],
+    "paper_trades": [
+        ("created_at", "TEXT"), ("settled_at", "TEXT"), ("market_ticker", "TEXT"),
+        ("direction", "TEXT"), ("contracts", "INTEGER"), ("entry_cents", "REAL"),
+        ("fee_cents_per_contract", "REAL"), ("outcome", "TEXT"), ("pnl_cents", "REAL"),
+        ("notes", "TEXT"), ("stop_loss_cents", "REAL"), ("timeframe", "TEXT"),
+        ("entry_btc_price", "REAL"), ("high_water_btc", "REAL"), ("low_water_btc", "REAL"),
+        ("trailing_stop_btc", "REAL"), ("last_stop_candle_timestamp", "TEXT"),
+        ("last_trend_check_at", "TEXT"), ("trend_stop_shadow_triggered_at", "TEXT"),
+        ("trend_stop_shadow_trigger_bid_cents", "REAL"), ("trend_stop_shadow_pnl_cents", "REAL"),
+        ("trend_stop_shadow_reason", "TEXT"), ("trend_stop_shadow_candle_timestamp", "TEXT"),
+        ("take_profit_target_cents", "REAL"), ("take_profit_activated_at", "TEXT"),
+        ("take_profit_peak_bid_cents", "REAL"), ("take_profit_last_reversal_candle_timestamp", "TEXT"),
+        ("entry_signal_source", "TEXT"), ("external_signal_id", "INTEGER"),
+    ],
+    "gainzalgo_signals": [
+        ("created_at", "TEXT"), ("direction", "TEXT"), ("symbol", "TEXT"),
+        ("timeframe", "TEXT"), ("payload_json", "TEXT"), ("processed_at", "TEXT"),
+        ("processing_status", "TEXT"), ("processing_note", "TEXT"), ("fingerprint", "TEXT"),
+    ],
+    "webhook_events": [
+        ("received_at", "TEXT"), ("status_code", "INTEGER"), ("status", "TEXT"),
+        ("reason", "TEXT"), ("symbol", "TEXT"), ("timeframe", "TEXT"), ("direction", "TEXT"),
+    ],
+}
+
+
+def _table_ddl(name: str, backend: str) -> str:
+    id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    cols = _TABLE_COLUMNS[name]
+    definitions = [f"id {id_type}"]
+    for col, typ in cols:
+        # PostgreSQL REAL is 32-bit; use DOUBLE PRECISION for prices/P&L.
+        column_type = "DOUBLE PRECISION" if backend == "postgresql" and typ == "REAL" else typ
+        # Required fields in the original journal retain NOT NULL requirements.
+        required = {
+            "signal_log": {"created_at", "direction", "score", "btc_price", "strike_price", "seconds_remaining", "payload_json"},
+            "paper_trades": {"created_at", "market_ticker", "direction", "contracts", "entry_cents", "fee_cents_per_contract"},
+            "gainzalgo_signals": {"created_at", "direction", "payload_json"},
+            "webhook_events": {"received_at", "status_code", "status", "reason"},
+        }[name]
+        suffix = " NOT NULL" if col in required else ""
+        definitions.append(f"{col} {column_type}{suffix}")
+    return f"CREATE TABLE IF NOT EXISTS {name} ({', '.join(definitions)})"
+
+
+def _existing_columns(conn: DatabaseConnection, table: str) -> set[str]:
+    if conn.backend == "sqlite":
+        return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?",
+        (table,),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def ensure_schema(conn: DatabaseConnection) -> None:
+    """Create/migrate schema once per process/database, safely for web + worker."""
+    if _database_url():
+        schema_key = "postgresql:" + sha256(_database_url().encode()).hexdigest()[:16]
+    else:
+        schema_key = "sqlite:" + database_location()
+    with _INIT_LOCK:
+        if schema_key in _INITIALIZED:
+            return
+        backend = conn.backend
+        if backend == "postgresql":
+            # Serialize schema creation/migrations if web and worker boot together.
+            conn.execute("SELECT pg_advisory_xact_lock(872344221)")
+        for table in _TABLE_COLUMNS:
+            conn.execute(_table_ddl(table, backend))
+            present = _existing_columns(conn, table)
+            for col, typ in _TABLE_COLUMNS[table]:
+                col_type = ("DOUBLE PRECISION" if backend == "postgresql" and typ == "REAL" else typ)
+                if col not in present:
+                    if backend == "postgresql":
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                    else:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_gainzalgo_queue ON gainzalgo_signals(processed_at, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_open ON paper_trades(settled_at, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_log_recent ON signal_log(id)")
+        if backend == "postgresql":
+            conn.execute("""CREATE TABLE IF NOT EXISTS worker_heartbeat (
+                worker_name TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, signal_source TEXT,
+                mode TEXT, last_action TEXT, last_reason TEXT)""")
+        else:
+            conn.execute("""CREATE TABLE IF NOT EXISTS worker_heartbeat (
+                worker_name TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, signal_source TEXT,
+                mode TEXT, last_action TEXT, last_reason TEXT)""")
+        # Existing records don't identify the TradingView chart timeframe; don't invent it.
+        conn.execute(
+            "UPDATE paper_trades SET timeframe = '15m contract; TV timeframe unknown' "
+            "WHERE timeframe IS NULL AND upper(market_ticker) LIKE '%15M%'"
+        )
+        conn.commit()
+        _INITIALIZED.add(schema_key)
