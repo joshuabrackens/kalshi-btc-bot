@@ -173,7 +173,8 @@ class WorkerSafetyTests(unittest.TestCase):
                 }
             }
 
-            w._manage_open(conn, 10.00)
+    with patch.dict("os.environ", {"PAPER_STOP_LOSS_ENABLED": "true"}):
+        w._manage_open(conn, 10.0)
 
             trade = conn.execute(
                 "SELECT settled_at, outcome, pnl_cents FROM paper_trades"
