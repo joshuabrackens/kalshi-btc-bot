@@ -315,20 +315,34 @@ th { color: var(--muted); }
   <div class="rows">
     <div class="row"><span>Current decision</span><strong id="reasonDirection">—</strong></div>
     <div class="row"><span>Signal age</span><strong id="reasonAge">—</strong></div>
+    <div class="row"><span>Evidence score</span><strong id="reasonScore">—</strong></div>
   </div>
-  <div class="line"></div>
+  <div class="reasonSummary" id="decisionSummary">
+    <strong>Decision summary</strong>
+    Waiting for a saved signal explanation.
+  </div>
   <div class="reasonGrid">
     <div>
-      <h3>Evidence and strategy reasoning</h3>
-      <ul class="reasonList" id="reasonList"><li class="reasonEmpty">Waiting for a signal payload with reasons.</li></ul>
+      <h3>Strategy checks</h3>
+      <div class="strategyCards" id="strategyCards">
+        <div class="reasonEmpty">Strategy details will appear when a signal is recorded.</div>
+      </div>
+      <h3 class="reasonSectionTitle">Other evidence</h3>
+      <ul class="reasonList" id="reasonList"><li class="reasonEmpty">Waiting for signal details.</li></ul>
     </div>
     <div>
-      <h3>Warnings and blockers</h3>
+      <h3>Why it waited / entry blockers</h3>
+      <ul class="reasonList" id="blockerList"><li class="reasonEmpty">No blocker data yet.</li></ul>
+      <h3 class="reasonSectionTitle">Warnings to note</h3>
       <ul class="reasonList" id="warningList"><li class="reasonEmpty">No warning data yet.</li></ul>
     </div>
   </div>
+  <details class="advanced">
+    <summary>Advanced diagnostics (technical details)</summary>
+    <pre id="advancedDiagnostics">Technical details will appear here when a signal is saved.</pre>
+  </details>
   <div class="line"></div>
-  <div class="callout" id="reasonDisclaimer">The score is a heuristic, not a calibrated probability of winning.</div>
+  <div class="callout" id="reasonDisclaimer">The score is a rule-based evidence score, not a calibrated probability of winning.</div>
   <div class="sub" id="reasoningSource">Reasoning is read from the saved signal payload.</div>
 </section>
 
@@ -380,14 +394,159 @@ function escapeHtml(value) {
 
 function renderReasonList(id, items, emptyText) {
   const list = el(id);
-  if (!Array.isArray(items) || items.length === 0) {
+  const clean = Array.isArray(items) ? items.filter(item => typeof item === "string" && item.trim()) : [];
+  if (!clean.length) {
     list.innerHTML = `<li class="reasonEmpty">${escapeHtml(emptyText)}</li>`;
     return;
   }
-  list.innerHTML = items.map(item => {
-    const text = typeof item === "string" ? item : JSON.stringify(item);
-    return `<li>${escapeHtml(text)}</li>`;
-  }).join("");
+  list.innerHTML = clean.map(item => `<li>${escapeHtml(item)}</li>`).join("");
+}
+
+function labelDirection(value) {
+  if (value === 1 || value === "1") return "Bullish";
+  if (value === -1 || value === "-1") return "Bearish";
+  if (value === 0 || value === "0") return "Mixed / neutral";
+  const text = String(value ?? "").toLowerCase();
+  if (text.includes("bull") || text === "up" || text === "buy_up") return "Bullish";
+  if (text.includes("bear") || text === "down" || text === "buy_down") return "Bearish";
+  if (text.includes("mixed") || text.includes("neutral")) return "Mixed / neutral";
+  return "Not available";
+}
+
+function statusTag(text, mood = "neutral") {
+  return `<span class="statusTag ${mood}">${escapeHtml(text)}</span>`;
+}
+
+function strategyCard(title, status, detail, mood = "neutral") {
+  return `<div class="strategyCard"><div class="strategyTitle"><span>${escapeHtml(title)}</span>${statusTag(status, mood)}</div><div class="strategyDetail">${escapeHtml(detail)}</div></div>`;
+}
+
+function numberText(value, decimals = 2) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: decimals }) : "not available";
+}
+
+function moneyText(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? "$" + n.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 }) : "not available";
+}
+
+function humanStrategyCards(signal) {
+  const strategies = signal?.strategies && typeof signal.strategies === "object" ? signal.strategies : {};
+  const cards = [];
+  const trend = strategies.multi_timeframe_trend;
+  if (trend && typeof trend === "object") {
+    const timeframes = trend.timeframes || {};
+    const parts = ["1m", "5m", "15m"]
+      .filter(tf => timeframes[tf] !== undefined)
+      .map(tf => `${tf}: ${labelDirection(timeframes[tf])}`);
+    const overall = labelDirection(trend.direction);
+    cards.push(strategyCard("Trend across timeframes", overall,
+      parts.length ? parts.join(" · ") : "Timeframe details were not included.",
+      overall === "Bullish" ? "good" : overall === "Bearish" ? "bad" : "neutral"));
+  }
+
+  const momentum = strategies.momentum;
+  if (momentum && typeof momentum === "object") {
+    const rsi = Number(momentum.rsi_1m);
+    let rsiMeaning = "Momentum reading";
+    if (Number.isFinite(rsi)) {
+      if (rsi >= 50 && rsi <= 68) rsiMeaning = "supports upward momentum";
+      else if (rsi >= 32 && rsi < 50) rsiMeaning = "supports downward momentum";
+      else if (rsi > 75) rsiMeaning = "high; chasing a rise may be risky";
+      else if (rsi < 25) rsiMeaning = "very low; chasing a drop may be risky";
+      else rsiMeaning = "mixed momentum";
+    }
+    const vwap = Number(momentum.vwap_1m);
+    const price = Number(signal.btc_price);
+    let vwapText = Number.isFinite(vwap) ? `Recent 1-minute VWAP: ${moneyText(vwap)}.` : "VWAP was not recorded.";
+    if (Number.isFinite(vwap) && Number.isFinite(price)) {
+      vwapText = `BTC is ${price >= vwap ? "above" : "below"} the recent 1-minute VWAP (${moneyText(vwap)}).`;
+    }
+    cards.push(strategyCard("Momentum", Number.isFinite(rsi) ? `RSI ${numberText(rsi, 1)}` : "Checked",
+      `${rsiMeaning}. ${vwapText}`, "neutral"));
+  }
+
+  const volume = strategies.volume_confirmation;
+  if (volume && typeof volume === "object") {
+    const confirmed = volume.confirmed === true;
+    const recent = Number(volume.recent_3_mean);
+    const baseline = Number(volume.baseline_20_mean);
+    const stats = Number.isFinite(recent) && Number.isFinite(baseline)
+      ? `Recent average volume: ${numberText(recent, 3)}; baseline average: ${numberText(baseline, 3)}.`
+      : "Volume comparison values were not recorded.";
+    cards.push(strategyCard("Volume confirmation", confirmed ? "Confirmed" : "Not confirmed",
+      `${confirmed ? "Volume supports the latest directional move." : "Volume does not clearly confirm the move."} ${stats}`,
+      confirmed ? "good" : "neutral"));
+  }
+
+  const box = strategies.box_theory;
+  if (box && typeof box === "object") {
+    const stateMap = {
+      bullish_breakout: "Breakout above range",
+      bearish_breakout: "Breakout below range",
+      consolidation: "Price inside the range",
+      in_range: "Price inside the range",
+      bullish_retest: "Retesting an upward breakout",
+      bearish_retest: "Retesting a downward breakout"
+    };
+    const stateKey = String(box.state || "").toLowerCase();
+    const state = stateMap[stateKey] || (stateKey ? stateKey.replaceAll("_", " ") : "Range analysis completed");
+    const range = Number.isFinite(Number(box.top)) && Number.isFinite(Number(box.bottom))
+      ? `Recent range: ${moneyText(box.bottom)} to ${moneyText(box.top)}.`
+      : "Range boundaries were not recorded.";
+    cards.push(strategyCard("Box theory", state,
+      `${range} This identifies a range or breakout; it does not guarantee continuation.`,
+      stateKey.includes("bullish") ? "good" : stateKey.includes("bearish") ? "bad" : "neutral"));
+  }
+
+  const structure = strategies.market_structure;
+  if (structure && typeof structure === "object") {
+    const label = structure.label || labelDirection(structure.direction);
+    const highsLows = (structure.older_high != null && structure.recent_high != null && structure.older_low != null && structure.recent_low != null)
+      ? `Earlier high ${moneyText(structure.older_high)}; recent high ${moneyText(structure.recent_high)}. Earlier low ${moneyText(structure.older_low)}; recent low ${moneyText(structure.recent_low)}.`
+      : "Based on recent swing highs and lows.";
+    cards.push(strategyCard("Market structure", String(label).replaceAll(" and ", " + "), highsLows,
+      Number(structure.direction) > 0 ? "good" : Number(structure.direction) < 0 ? "bad" : "neutral"));
+  }
+
+  const volatility = strategies.volatility;
+  if (volatility && typeof volatility === "object") {
+    const chase = volatility.chase_warning === true;
+    const movement = Number(volatility.three_candle_abs_move_pct);
+    const detail = Number.isFinite(movement)
+      ? `Move over the last three candles: ${(movement * 100).toFixed(3)}%. ${chase ? "Caution: the move may be extended." : "No oversized-move warning was recorded."}`
+      : (chase ? "The latest move may be extended; avoid chasing." : "No oversized-move warning was recorded.");
+    cards.push(strategyCard("Volatility check", chase ? "Use caution" : "No chase warning", detail,
+      chase ? "bad" : "good"));
+  }
+
+  if (!cards.length) {
+    const fallback = Array.isArray(signal?.reasons)
+      ? signal.reasons.filter(x => typeof x === "string" && !/^\s*[a-z_]+\s*:/i.test(x))
+      : [];
+    if (fallback.length) return fallback.map(x => strategyCard("Signal evidence", "Recorded", x, "neutral")).join("");
+    return '<div class="reasonEmpty">No strategy-by-strategy details were saved for this signal.</div>';
+  }
+  return cards.join("");
+}
+
+function isBlocker(reason) {
+  return /spread exceeds|below the configured|too conflicted|too little time|exceeds the configured|missing an explicit|cannot validate an entry|no live ask|price leaves no positive|outside the expected/i.test(reason);
+}
+
+function decisionSummary(signal, blockers) {
+  if (!signal) return "No saved signal is available yet. The dashboard will explain the decision once the worker records its next evaluation.";
+  const direction = String(signal.direction || "WAIT").toUpperCase();
+  if (direction === "WAIT") {
+    if (blockers.length) {
+      const reason = blockers[0].replace(/[.]$/, "");
+      return `The bot is waiting because ${reason.charAt(0).toLowerCase()}${reason.slice(1)}. It will only consider an entry when the configured checks pass.`;
+    }
+    return "The bot is not entering this market. The saved signal does not include a more specific blocker, so it is safer to wait than infer a reason.";
+  }
+  const side = direction.includes("DOWN") ? "DOWN" : direction.includes("UP") ? "UP" : direction;
+  return `The engine's recorded signal favors ${side}. This is a rule-based assessment of the saved market snapshot, not a guarantee or a measured probability of winning.`;
 }
 
 async function loadDashboard() {
@@ -446,15 +605,20 @@ async function loadDashboard() {
     el("trendStopMode").textContent = health.trend_stop_shadow_mode
       ? "Shadow (observe only)" : (health.trend_stop_enabled ? "Active simulated exits" : "Not active");
 
-    // Render the exact saved explanation that accompanied the latest signal.
-    el("reasonDirection").textContent = signal ? (signal.direction || "Unknown") : "No signal";
+    // Present decision evidence in plain English; keep raw internals tucked away.
+    el("reasonDirection").textContent = signal ? (signal.direction || "Unknown").replaceAll("_", " ") : "No signal";
+    el("reasonScore").textContent = signal && signal.score != null ? `${signal.score} / 100` : "—";
     if (!signal) {
       el("reasoningBadge").textContent = "No signal data";
       el("reasoningBadge").className = "badge warn";
       el("reasonAge").textContent = "—";
-      renderReasonList("reasonList", [], "No saved signal reasoning yet.");
+      el("decisionSummary").innerHTML = `<strong>Decision summary</strong>${escapeHtml(decisionSummary(null, []))}`;
+      el("strategyCards").innerHTML = '<div class="reasonEmpty">Strategy details will appear when a signal is recorded.</div>';
+      renderReasonList("reasonList", [], "No supporting evidence was saved.");
+      renderReasonList("blockerList", [], "No blocker data yet.");
       renderReasonList("warningList", [], "No warning data yet.");
-      el("reasonDisclaimer").textContent = "The score is a heuristic, not a calibrated probability of winning.";
+      el("advancedDiagnostics").textContent = "No signal payload available.";
+      el("reasonDisclaimer").textContent = "The score is a rule-based evidence score, not a calibrated probability of winning.";
       el("reasoningSource").textContent = "The dashboard reads the most recent signal saved in its connected journal.";
     } else {
       const stale = Boolean(signal.is_stale);
@@ -462,18 +626,32 @@ async function loadDashboard() {
       el("reasoningBadge").className = "badge " + (stale ? "warn" : "");
       el("reasonAge").textContent = signal.age_seconds == null ? "Unknown" :
         (signal.age_seconds < 60 ? `${signal.age_seconds}s` : `${Math.floor(signal.age_seconds / 60)}m ${signal.age_seconds % 60}s`);
-      let reasons = Array.isArray(signal.reasons) ? signal.reasons.slice() : [];
-      if (signal.strategies && typeof signal.strategies === "object" && !Array.isArray(signal.strategies)) {
-        for (const [name, detail] of Object.entries(signal.strategies)) {
-          reasons.push(`${name}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
-        }
-      }
-      renderReasonList("reasonList", reasons, "This older signal has no saved reasoning payload. A newer internal signal should populate this panel.");
-      renderReasonList("warningList", signal.warnings, "No warnings were recorded for this signal.");
-      el("reasonDisclaimer").textContent = signal.disclaimer || "Score is heuristic only; it is not a calibrated win probability.";
+      const allReasons = Array.isArray(signal.reasons) ? signal.reasons.filter(x => typeof x === "string") : [];
+      const blockers = allReasons.filter(isBlocker);
+      const evidence = allReasons.filter(x => !isBlocker(x) && !/^\s*[a-z_]+\s*:/i.test(x));
+      el("decisionSummary").innerHTML = `<strong>Decision summary</strong>${escapeHtml(decisionSummary(signal, blockers))}`;
+      el("strategyCards").innerHTML = humanStrategyCards(signal);
+      renderReasonList("reasonList", evidence, "No additional plain-English evidence was saved; open Advanced diagnostics to inspect the recorded values.");
+      renderReasonList("blockerList", blockers, String(signal.direction || "WAIT").toUpperCase() === "WAIT"
+        ? "The saved signal did not include a specific entry blocker. The bot chose not to enter."
+        : "No entry blocker was recorded for this signal.");
+      renderReasonList("warningList", signal.warnings, "No extra warnings were recorded for this signal.");
+      const diagnosticPayload = {
+        direction: signal.direction,
+        score: signal.score,
+        btc_price: signal.btc_price,
+        strike_price: signal.strike_price,
+        seconds_remaining: signal.seconds_remaining,
+        reasons: signal.reasons || [],
+        warnings: signal.warnings || [],
+        strategies: signal.strategies || {},
+        disclaimer: signal.disclaimer || null
+      };
+      el("advancedDiagnostics").textContent = JSON.stringify(diagnosticPayload, null, 2);
+      el("reasonDisclaimer").textContent = signal.disclaimer || "Evidence score only; this is not a calibrated win probability or a promise of profitability.";
       el("reasoningSource").textContent = stale
-        ? "No recent signal was recorded in the dashboard's connected journal. Check that the worker and dashboard use the same service/database."
-        : "Loaded from the saved signal payload; refreshed automatically every 15 seconds.";
+        ? "This is the latest saved signal, but it is old. The dashboard refreshes every 15 seconds; skipped worker cycles may not create a new signal record."
+        : "Plain-English summary of the latest saved signal; dashboard refreshes automatically every 15 seconds.";
     }
 
     const trades = data.trades || [];
