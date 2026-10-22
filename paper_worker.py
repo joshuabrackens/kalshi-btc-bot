@@ -123,6 +123,11 @@ def _ensure_schema(conn):
         ("trailing_stop_btc", "REAL"),
         ("last_stop_candle_timestamp", "TEXT"),
         ("last_trend_check_at", "TEXT"),
+        ("trend_stop_shadow_triggered_at", "TEXT"),
+        ("trend_stop_shadow_trigger_bid_cents", "REAL"),
+        ("trend_stop_shadow_pnl_cents", "REAL"),
+        ("trend_stop_shadow_reason", "TEXT"),
+        ("trend_stop_shadow_candle_timestamp", "TEXT"),
     )
     for col, definition in migrations:
         if col not in cols:
@@ -161,16 +166,21 @@ def _limits(conn, max_trade_dollars, max_daily_loss_dollars):
 def _manage_open(conn, max_daily_loss_dollars: float):
     rows=conn.execute(
         "SELECT id,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,stop_loss_cents, "
-        "entry_btc_price,high_water_btc,low_water_btc,trailing_stop_btc,last_stop_candle_timestamp,last_trend_check_at "
+        "entry_btc_price,high_water_btc,low_water_btc,trailing_stop_btc,last_stop_candle_timestamp,last_trend_check_at, "
+        "trend_stop_shadow_triggered_at "
         "FROM paper_trades WHERE settled_at IS NULL"
     ).fetchall()
     trend_enabled = os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true"
+    # Shadow mode records the hypothetical stop trigger and observed Kalshi bid,
+    # but never closes a position. Keep this separate from actual stop execution.
+    shadow_enabled = os.getenv("PAPER_TREND_STOP_SHADOW_MODE", "false").lower() == "true"
     check_seconds = max(30.0, min(180.0, float(os.getenv("PAPER_TREND_STOP_CHECK_SECONDS", "45"))))
     atr_multiplier = float(os.getenv("PAPER_TREND_STOP_ATR_MULTIPLIER", "2.5"))
     swing_lookback = max(8, min(100, int(os.getenv("PAPER_TREND_STOP_SWING_LOOKBACK", "30"))))
     for row in rows:
         (trade_id,ticker,direction,contracts,entry,fee,static_stop,entry_btc,high_water,low_water,
-         trailing_stop,last_candle_ts,last_check_at) = row
+         trailing_stop,last_candle_ts,last_check_at,shadow_triggered_at) = row
+        current_stop_candle_ts = None
         try:
             # Settlement always takes precedence and uses only Kalshi's official final result.
             market_payload=get_market(ticker)
@@ -199,7 +209,9 @@ def _manage_open(conn, max_daily_loss_dollars: float):
             # is OFF by default and is separate from the legacy fixed-contract stop.
             last_check = _parse_time(last_check_at)
             due = last_check is None or (now_dt - last_check).total_seconds() >= check_seconds
-            if trend_enabled and entry_btc is not None and due:
+            shadow_already_recorded = bool(shadow_triggered_at)
+            should_monitor_trend = trend_enabled or (shadow_enabled and not shadow_already_recorded)
+            if should_monitor_trend and entry_btc is not None and due:
                 # Persist the throttle before the request so a failed feed won't hammer Binance.
                 conn.execute("UPDATE paper_trades SET last_trend_check_at=? WHERE id=?",
                              (now_dt.isoformat(), trade_id))
@@ -207,6 +219,7 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                 try:
                     candles = fetch_closed_candles("1m", 100)
                     candle_ts = str(candles["timestamp"].iloc[-1])
+                    current_stop_candle_ts = candle_ts
                     if candle_ts != last_candle_ts:
                         update = update_trend_stop(
                             candles, direction,
@@ -223,8 +236,10 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                         trailing_stop = update["trailing_stop_btc"]
                         trend_reason = update["reason"]
                         trend_triggered = bool(update["triggered"])
-                        log.info("Paper trade %s chart-stop update: %s; enabled=%s; trigger=%s",
-                                 trade_id, trend_reason, trend_enabled, trend_triggered)
+                        log.info(
+                            "Paper trade %s chart-stop update: %s; stop_enabled=%s; shadow_mode=%s; trigger=%s",
+                            trade_id, trend_reason, trend_enabled, shadow_enabled, trend_triggered,
+                        )
                     elif trailing_stop is not None:
                         # Re-check an already processed candle in case a previous cycle
                         # persisted the trail but was interrupted before marking the exit.
@@ -243,7 +258,34 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                 os.getenv("PAPER_STOP_LOSS_ENABLED", "false").lower() == "true"
                 and static_stop is not None and bid <= float(static_stop)
             )
-            if trend_triggered or static_triggered:
+
+            # In shadow-only mode, persist the first chart-stop breach for later
+            # comparison with official settlement. Never mark the trade settled or
+            # count hypothetical P&L as realized P&L.
+            if trend_triggered and shadow_enabled:
+                exit_fee = float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"))
+                shadow_pnl = (float(bid) - float(entry) - float(fee) - exit_fee) * int(contracts)
+                shadow_now = _utcnow().isoformat()
+                candle_ts = current_stop_candle_ts
+                cur = conn.execute(
+                    """UPDATE paper_trades
+                       SET trend_stop_shadow_triggered_at=?,
+                           trend_stop_shadow_trigger_bid_cents=?,
+                           trend_stop_shadow_pnl_cents=?,
+                           trend_stop_shadow_reason=?,
+                           trend_stop_shadow_candle_timestamp=?
+                       WHERE id=? AND trend_stop_shadow_triggered_at IS NULL""",
+                    (shadow_now, float(bid), shadow_pnl, trend_reason, candle_ts, trade_id),
+                )
+                conn.commit()
+                if cur.rowcount:
+                    log.info(
+                        "Paper trade %s TREND STOP SHADOW ONLY: would exit at Kalshi bid %.2fc; "
+                        "hypothetical pnl %.2fc; trade remains OPEN; %s",
+                        trade_id, float(bid), shadow_pnl, trend_reason,
+                    )
+
+            if (trend_triggered and trend_enabled) or static_triggered:
                 # Chart trigger decides *when* to exit; the observed Kalshi bid
                 # models the paper exit price. BTC price is never substituted for it.
                 exit_fee=float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"))
@@ -395,7 +437,7 @@ def run_once() -> dict:
           (now,m["ticker"],direction,contracts,entry,fee,(f"GainzAlgo paper entry; signal_id={queued_signal['id']}" if queued_signal else "AUTO PAPER ENTRY; heuristic score is not a win probability"),stop,entry_btc_price,entry_btc_price,entry_btc_price,entry_btc_candle_timestamp))
         conn.commit()
         if queued_signal: _mark_gainzalgo(conn, queued_signal["id"], "processed", f"paper trade opened: {m['ticker']} {direction}")
-        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"source":"GainzAlgo" if queued_signal else "internal_heuristic","signal_id":queued_signal["id"] if queued_signal else None,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else None,"trend_stop_enabled": os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true","entry_btc_price": round(entry_btc_price, 2),"mode":"SIMULATION_ONLY","warnings":warnings}
+        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"source":"GainzAlgo" if queued_signal else "internal_heuristic","signal_id":queued_signal["id"] if queued_signal else None,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else None,"trend_stop_enabled": os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true","trend_stop_shadow_mode": os.getenv("PAPER_TREND_STOP_SHADOW_MODE", "false").lower() == "true","entry_btc_price": round(entry_btc_price, 2),"mode":"SIMULATION_ONLY","warnings":warnings}
     except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError) as exc:
         return {"action":"error_wait","reason":str(exc)}
     finally:
