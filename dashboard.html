@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>BTC Practice Bot — Simple Dashboard</title>
+  <meta name="color-scheme" content="dark">
+  <title>BTC Practice Bot — Paper Trading Dashboard</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg:#f4f7fb; --surface:#ffffff; --surface-soft:#f8fafc;
-      --line:#dbe3ee; --text:#152238; --muted:#52627a;
-      --blue:#205bb5; --blue-soft:#eaf2ff; --green:#176b45; --green-soft:#e8f7ef;
-      --red:#a52b37; --red-soft:#fff0f1; --amber:#875400; --amber-soft:#fff5df;
-      --shadow:0 2px 8px rgba(20,38,70,.05);
+      color-scheme: dark;
+      --bg:#0a0f1b; --surface:#111827; --surface-soft:#182235;
+      --line:#2a3850; --text:#e8eef8; --muted:#a6b4c9;
+      --blue:#9bbcff; --blue-soft:#172b49; --green:#6fe0a4; --green-soft:#123425;
+      --red:#ff929b; --red-soft:#3b1c27; --amber:#ffd27d; --amber-soft:#392d18;
+      --shadow:0 8px 24px rgba(0,0,0,.18);
     }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
@@ -37,10 +37,10 @@
     .metric-note { margin-top:8px; font-size:13px; color:var(--muted); }
     .badge { display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:999px; padding:6px 11px; font-size:13px; font-weight:750; border:1px solid var(--line); background:var(--surface-soft); color:var(--text); }
     .badge::before { content:""; width:8px; height:8px; border-radius:50%; background:currentColor; }
-    .good { color:var(--green)!important; background:var(--green-soft)!important; border-color:#b8e3cc!important; }
-    .bad { color:var(--red)!important; background:var(--red-soft)!important; border-color:#f2c4c9!important; }
-    .wait { color:var(--amber)!important; background:var(--amber-soft)!important; border-color:#eed59c!important; }
-    .blue { color:var(--blue)!important; background:var(--blue-soft)!important; border-color:#c7d9fa!important; }
+    .good { color:var(--green)!important; background:var(--green-soft)!important; border-color:#285d43!important; }
+    .bad { color:var(--red)!important; background:var(--red-soft)!important; border-color:#71323d!important; }
+    .wait { color:var(--amber)!important; background:var(--amber-soft)!important; border-color:#6d542b!important; }
+    .blue { color:var(--blue)!important; background:var(--blue-soft)!important; border-color:#2f4c77!important; }
     .hero { border-width:2px; }
     .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; }
     .hero-status { display:flex; align-items:center; gap:8px; font-size:clamp(23px,3.8vw,31px); font-weight:850; letter-spacing:-.025em; margin:14px 0 8px; }
@@ -54,12 +54,12 @@
     .detail-box .help { color:var(--muted); font-size:12px; margin-top:3px; }
     .plain-list { margin:0; padding-left:22px; }
     .plain-list li { margin:6px 0; }
-    .explain-box { padding:13px 14px; border-radius:12px; background:var(--blue-soft); border:1px solid #c7d9fa; margin-top:12px; }
+    .explain-box { padding:13px 14px; border-radius:12px; background:var(--blue-soft); border:1px solid #2f4c77; margin-top:12px; }
     .explain-box strong { display:block; margin-bottom:3px; }
     .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; }
     table { border-collapse:collapse; width:100%; min-width:650px; background:var(--surface); font-size:14px; }
     th,td { text-align:left; vertical-align:top; padding:12px 11px; border-bottom:1px solid var(--line); }
-    th { background:#f0f4fa; color:#3b4b63; font-size:12px; text-transform:uppercase; letter-spacing:.045em; font-weight:750; }
+    th { background:#1b2940; color:#c4d0e1; font-size:12px; text-transform:uppercase; letter-spacing:.045em; font-weight:750; }
     tr:last-child td { border-bottom:0; }
     td { overflow-wrap:anywhere; }
     .empty { color:var(--muted); padding:18px; }
@@ -80,6 +80,18 @@
     .refresh { font-size:13px; color:var(--muted); }
     @media (max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .two-col { grid-template-columns:1fr; } }
     @media (max-width:560px) { body { font-size:15px; } header { padding:18px 14px; } main { padding:14px 10px 28px; } .card { padding:14px; border-radius:13px; } .grid { gap:9px; } .metric-value { font-size:25px; } .alert-summary,.glossary { grid-template-columns:1fr; } .alert-direction { font-size:26px; } .kv { grid-template-columns:1fr 1fr; } .badge { white-space:normal; text-align:center; } }
+    .section-head h2 { margin-bottom:5px; }
+    .section-head .section-desc { max-width:78ch; }
+    .card { box-shadow:var(--shadow); }
+    .hero { background:linear-gradient(135deg, #121d30 0%, #101827 75%); }
+    .metric-value, .detail-box .value { font-variant-numeric:tabular-nums; }
+    .metric-card-accent { border-top:3px solid #354a69; }
+    .metric-card-accent.pnl { border-top-color:#6fe0a4; }
+    .metric-card-accent.rate { border-top-color:#9bbcff; }
+    .metric-card-accent.open { border-top-color:#ffd27d; }
+    .metric-card-accent.worker { border-top-color:#6fe0a4; }
+    a { color:var(--blue); }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior:auto!important; animation-duration:.01ms!important; transition-duration:.01ms!important; } }
   </style>
 </head>
 <body>
@@ -109,10 +121,10 @@
   <section class="section" aria-label="Practice results">
     <div class="section-head"><h2>Your practice results</h2><p class="section-desc">These numbers summarize paper trades recorded in the journal. They are not a prediction of future results.</p></div>
     <div class="grid">
-      <div class="card"><div class="metric-label">Net practice profit / loss</div><div class="metric-value" id="pnl">—</div><div class="metric-note">Combined result of settled practice trades, after recorded fees.</div></div>
-      <div class="card"><div class="metric-label">Win rate</div><div class="metric-value" id="win-rate">—</div><div class="metric-note" id="settled-count">No completed practice trades yet.</div></div>
-      <div class="card"><div class="metric-label">Trades still open</div><div class="metric-value" id="open-count">—</div><div class="metric-note" id="exposure">Amount spent on open practice positions: —</div></div>
-      <div class="card"><div class="metric-label">Is the bot running?</div><div class="metric-value" id="worker">Checking…</div><div class="metric-note" id="worker-detail">Checking the latest worker heartbeat.</div></div>
+      <div class="card metric-card-accent pnl"><div class="metric-label">Net practice profit / loss</div><div class="metric-value" id="pnl">—</div><div class="metric-note">Combined result of settled practice trades, after recorded fees.</div></div>
+      <div class="card metric-card-accent rate"><div class="metric-label">Win rate</div><div class="metric-value" id="win-rate">—</div><div class="metric-note" id="settled-count">No completed practice trades yet.</div></div>
+      <div class="card metric-card-accent open"><div class="metric-label">Trades still open</div><div class="metric-value" id="open-count">—</div><div class="metric-note" id="exposure">Amount spent on open practice positions: —</div></div>
+      <div class="card metric-card-accent worker"><div class="metric-label">Is the bot running?</div><div class="metric-value" id="worker">Checking…</div><div class="metric-note" id="worker-detail">Checking the latest worker heartbeat.</div></div>
     </div>
   </section>
 
