@@ -158,7 +158,7 @@ def _manage_open(conn, max_daily_loss_dollars: float):
             payload=get_orderbook(ticker)
             bid=_top_bid(payload, "yes" if direction=="UP" else "no")
             if bid is None: continue
-            if stop is not None and bid <= float(stop):
+            if os.getenv("PAPER_STOP_LOSS_ENABLED", "true").lower() == "true" and stop is not None and bid <= float(stop):
                 # Simulated exit at observed top bid, minus conservative exit fee.
                 exit_fee=float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"))
                 pnl=(bid-float(entry)-float(fee)-exit_fee)*int(contracts)
@@ -226,7 +226,7 @@ def run_once() -> dict:
         entry=yes_ask if direction=="UP" else no_ask
         contracts=max(0,min(10,int((max_trade*100)//(entry+fee))))
         if contracts<1: return {"action":"blocked","reason":"even one contract plus conservative fees exceeds MAX_TRADE_DOLLARS","entry_cents":entry,"fee_cents":fee}
-        stop=max(1.0,entry*(1.0-stop_pct/100.0))
+        stop = max(1.0, entry * (1.0 - stop_pct / 100.0)) if os.getenv("PAPER_STOP_LOSS_ENABLED", "true").lower() == "true" else None
         total=contracts*(entry+fee)
         # Include open-risk reservation in daily loss budget before creating a position.
         if realized-open_cost-total <= -max_loss*100:
@@ -234,9 +234,8 @@ def run_once() -> dict:
         conn.execute("INSERT INTO paper_trades (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,notes,stop_loss_cents) VALUES (?,?,?,?,?,?,?,?)",
           (now,m["ticker"],direction,contracts,entry,fee,"AUTO PAPER ENTRY; heuristic score is not a win probability",stop))
         conn.commit()
-        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"score":signal.score,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents":round(stop,2),"mode":"SIMULATION_ONLY","warnings":signal.warnings}
+        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"score":signal.score,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else None,"mode":"SIMULATION_ONLY","warnings":signal.warnings}
     except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError) as exc:
-        log.exception("Paper worker cycle failed closed")
         return {"action":"error_wait","reason":str(exc)}
     finally:
         conn.close()
