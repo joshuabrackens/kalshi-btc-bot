@@ -234,7 +234,8 @@ def run_once() -> dict:
         conn.execute("INSERT INTO paper_trades (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,notes,stop_loss_cents) VALUES (?,?,?,?,?,?,?,?)",
           (now,m["ticker"],direction,contracts,entry,fee,"AUTO PAPER ENTRY; heuristic score is not a win probability",stop))
         conn.commit()
-        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"score":signal.score,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else None,"mode":"SIMULATION_ONLY","warnings":signal.warnings}
+        return {"action":"paper_opened","ticker":m["ticker"],"direction":direction,"score":signal.score,"contracts":contracts,"entry_cents":entry,"fee_cents_per_contract":fee,"total_entry_cost_dollars":round(total/100,4),"stop_loss_trigger_bid_cents": round(stop, 2) if stop is not None else 
+        None,"mode":"SIMULATION_ONLY","warnings":signal.warnings}
     except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError) as exc:
         return {"action":"error_wait","reason":str(exc)}
     finally:
