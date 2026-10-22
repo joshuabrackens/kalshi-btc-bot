@@ -144,7 +144,7 @@ def evaluate_signal(
     candles_15m: pd.DataFrame,
     market: MarketContext,
     *,
-    minimum_score: int = 63,
+    minimum_score: int = 55,
     max_entry_cents: float = 78.0,
     max_spread_cents: float = 5.0,
     min_seconds_remaining: int = 30,
