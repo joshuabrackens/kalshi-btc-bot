@@ -78,10 +78,19 @@
     <p class="sub section-gap">For diagnostics, <code>/api/alerts/recent</code> returns the recent received alert history without webhook secrets.</p>
   </section>
 
+  <section class="panel section-gap" id="window-status-panel" aria-live="polite">
+    <div class="signal-top">
+      <div><h2>Current window decision</h2><p class="sub" id="window-status-time">Waiting for alert/status data…</p></div>
+      <span class="pill amber" id="window-status-pill">WAIT THIS WINDOW</span>
+    </div>
+    <div class="direction amber section-gap" id="window-status-title">WAIT THIS WINDOW</div>
+    <p class="sub section-gap" id="window-status-reason">No paper trade has been confirmed for the latest alert. The bot will not assume an alert means a trade occurred.</p>
+  </section>
+
   <div class="layout">
     <section class="panel">
       <div class="signal-top">
-        <div><h2>Latest evaluated signal (separate from alerts)</h2><p class="sub" id="signal-time">Waiting for a recorded signal…</p></div>
+        <div><h2>Last evaluated signal (historical diagnostics)</h2><p class="sub" id="signal-time">Waiting for a recorded signal…</p></div>
         <span class="pill" id="signal-freshness">No signal yet</span>
       </div>
       <div class="signal-top section-gap">
@@ -207,9 +216,66 @@
       tbody.appendChild(tr);
     });
   }
+  function renderWindowStatus(data) {
+    const latest = data.latest_external_alert;
+    const signal = data.latest_signal;
+    const delivery = data.latest_webhook_event;
+    const trades = Array.isArray(data.trades) ? data.trades : [];
+    const pill = byId('window-status-pill');
+    const title = byId('window-status-title');
+    const reason = byId('window-status-reason');
+    const sub = byId('window-status-time');
+    const timeOf = (value) => { const n = value ? Date.parse(value) : NaN; return Number.isFinite(n) ? n : null; };
+    const latestAlertTime = latest ? timeOf(latest.received_at) : null;
+    const evalTime = signal ? timeOf(signal.created_at) : null;
+    const deliveryTime = delivery ? timeOf(delivery.received_at) : null;
+    let status = 'WAIT THIS WINDOW';
+    let explanation = '';
+    let atText = latest && latest.received_at ? `Latest accepted alert: ${new Date(latest.received_at).toLocaleString()}` : 'No accepted alert recorded';
+    let statusClass = 'amber';
+
+    if (delivery && deliveryTime !== null && (latestAlertTime === null || deliveryTime > latestAlertTime) && Number(delivery.status_code) >= 300) {
+      explanation = `The latest webhook attempt was rejected (${delivery.status_code}): ${delivery.reason || 'reason not reported'}. No entry is authorized from a rejected alert.`;
+      atText = `Latest webhook attempt: ${new Date(delivery.received_at).toLocaleString()}`;
+    } else if (!latest) {
+      explanation = 'No accepted TradingView/GainzAlgo alert is recorded by this deployment. Check the webhook delivery status above. Until an alert is received and checked, wait this window.';
+    } else if (!signal || evalTime === null) {
+      explanation = 'The latest alert was received, but there is no recorded evaluated signal to approve an entry. Wait this window.';
+    } else if (latestAlertTime !== null && latestAlertTime > evalTime) {
+      explanation = 'The latest alert is newer than the last evaluated signal. It has not produced a fresh recorded decision, so wait this window.';
+    } else {
+      const direction = String(signal.direction || '').toUpperCase();
+      const expected = direction === 'BUY_UP' ? 'UP' : (direction === 'BUY_DOWN' ? 'DOWN' : null);
+      const matchedTrade = expected && trades.find(t =>
+        String(t.market_ticker || '') === String(signal.market_ticker || '') &&
+        String(t.direction || '').toUpperCase() === expected &&
+        timeOf(t.created_at) !== null && evalTime !== null && timeOf(t.created_at) >= evalTime
+      );
+      if (matchedTrade) {
+        status = 'PAPER TRADE LOGGED'; statusClass = 'green';
+        explanation = 'A paper-trade journal entry with the same market and direction was recorded after this evaluation. Verify the trade details; this dashboard cannot prove the alert caused that trade.';
+        atText = `Evaluation: ${new Date(signal.created_at).toLocaleString()} · Paper trade ID ${matchedTrade.id}`;
+      } else if (direction === 'WAIT') {
+        const why = Array.isArray(signal.reasons) && signal.reasons.length ? ` Reason: ${signal.reasons.slice(0, 2).join(' ')}` : '';
+        explanation = `The most recent evaluation says WAIT; no entry is recommended for this window.${why}`;
+      } else if (signal.is_stale) {
+        explanation = 'The last evaluated signal is stale and no matching paper-trade journal entry is visible. Do not treat the old direction as current; wait this window.';
+      } else {
+        explanation = `The latest evaluation direction is ${signal.direction}, but no matching paper-trade journal entry is visible for this market. A signal is not a trade. Until a paper trade is recorded, wait this window.`;
+      }
+    }
+    setText('window-status-pill', status);
+    setText('window-status-title', status);
+    setText('window-status-reason', explanation);
+    setText('window-status-time', atText);
+    pill.className = 'pill ' + statusClass;
+    title.className = 'direction ' + statusClass;
+  }
+
   function render(data) {
     const stats = data.stats || {}, risk = data.risk || {}, health = data.health || {}, s = data.latest_signal;
     renderExternalAlerts(data);
+    renderWindowStatus(data);
     const pnl = Number(stats.net_pnl_dollars || 0);
     setText('pnl', money(pnl)); byId('pnl').className = 'value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
     setText('win-rate', stats.win_rate_percent == null ? '—' : num(stats.win_rate_percent) + '%');
