@@ -64,8 +64,10 @@ class DatabaseConnection:
             return _Cursor(cur, getattr(cur, "lastrowid", None))
 
         # Convert the application's qmark parameters to psycopg placeholders.
-        # Application SQL currently uses qmarks only for parameter placeholders.
-        pg_sql = sql.replace("?", "%s")
+        # Psycopg uses percent formatting for parameters, so literal percent signs
+        # in SQL (for example LIKE '%15M%') must be escaped as '%%' whenever a
+        # parameter sequence is supplied. Escape literals before inserting %s.
+        pg_sql = sql.replace("%", "%%").replace("?", "%s")
         match = re.match(r"\s*INSERT\s+INTO\s+[\"`]?([a-zA-Z_][\w]*)", pg_sql, re.IGNORECASE)
         auto_return_id = bool(match and match.group(1).lower() in _TABLE_COLUMNS and not re.search(r"\bRETURNING\b", pg_sql, re.IGNORECASE))
         if auto_return_id:
