@@ -30,4 +30,4 @@ jobs:
           pip install -r requirements.txt
 
           - name: Run paper worker safety tests
-      run: python -m unittest -v test_paper_worker.py test_trend_stop.py
+            run: python -m unittest -v test_paper_worker.py test_trend_stop.py
