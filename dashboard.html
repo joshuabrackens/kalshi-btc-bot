@@ -63,6 +63,20 @@
     <div class="metric"><div class="label">Worker</div><div class="value" id="worker">—</div><div class="detail" id="signal-source">Signal source: —</div></div>
   </section>
 
+  <section class="panel section-gap">
+    <div class="signal-top">
+      <div><h2>Latest TradingView / GainzAlgo alert</h2><p class="sub" id="alert-time">Waiting for a received webhook alert…</p></div>
+      <span class="pill" id="alert-count">0 alerts received</span>
+    </div>
+    <div class="signal-top section-gap">
+      <div><div class="direction" id="alert-direction">—</div><p class="sub" id="alert-symbol">No external alert received yet</p></div>
+      <div style="text-align:right"><div class="label muted">Timeframe</div><div class="direction" id="alert-timeframe">—</div></div>
+    </div>
+    <p class="sub section-gap" id="alert-details">Incoming webhook alerts are shown separately from evaluated signals below. An alert being received does not mean a paper trade was taken.</p>
+    <div class="table-wrap section-gap"><table><thead><tr><th>Received (UTC)</th><th>Direction</th><th>Symbol</th><th>Timeframe</th><th>Details</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No webhook alerts recorded yet.</td></tr></tbody></table></div>
+    <p class="sub section-gap">For diagnostics, <code>/api/alerts/recent</code> returns the recent received alert history without webhook secrets.</p>
+  </section>
+
   <div class="layout">
     <section class="panel">
       <div class="signal-top">
@@ -150,8 +164,39 @@
       tbody.appendChild(tr);
     });
   }
+  function renderExternalAlerts(data) {
+    const latest = data.latest_external_alert;
+    const count = Number(data.external_alert_count || 0);
+    setText('alert-count', `${count} alert${count === 1 ? '' : 's'} received`);
+    if (latest) {
+      setText('alert-time', latest.received_at ? `Received ${new Date(latest.received_at).toLocaleString()} · ${latest.age_seconds == null ? 'age unknown' : `${latest.age_seconds}s ago`}` : 'Receive timestamp unavailable');
+      setText('alert-direction', latest.direction || '—');
+      byId('alert-direction').className = 'direction ' + (/^(BUY|LONG|UP)$/.test(String(latest.direction || '').toUpperCase()) ? 'green' : (/^(SELL|SHORT|DOWN)$/.test(String(latest.direction || '').toUpperCase()) ? 'red' : 'amber'));
+      setText('alert-symbol', latest.symbol || 'Symbol not provided');
+      setText('alert-timeframe', latest.timeframe || '—');
+      setText('alert-details', 'Latest received webhook alert. This is not proof that the signal was evaluated or traded.');
+    } else {
+      setText('alert-time', 'No received webhook alert recorded yet');
+      setText('alert-direction', '—'); setText('alert-symbol', 'No external alert received yet'); setText('alert-timeframe', '—');
+      setText('alert-details', 'If alerts have fired in TradingView, check that the webhook URL targets this deployment and that it returns HTTP 200.');
+    }
+    const tbody = byId('external-alerts'); tbody.replaceChildren();
+    const alerts = Array.isArray(data.recent_external_alerts) ? data.recent_external_alerts : [];
+    if (!alerts.length) {
+      const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 5; td.className = 'empty'; td.textContent = 'No webhook alerts recorded yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    alerts.forEach(alert => {
+      const tr = document.createElement('tr');
+      const detail = alert.details && Object.keys(alert.details).length ? JSON.stringify(alert.details) : '—';
+      [alert.received_at ? new Date(alert.received_at).toLocaleString() : '—', alert.direction || '—', alert.symbol || '—', alert.timeframe || '—', detail].forEach(value => {
+        const td = document.createElement('td'); td.textContent = String(value == null ? '—' : value); tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
   function render(data) {
     const stats = data.stats || {}, risk = data.risk || {}, health = data.health || {}, s = data.latest_signal;
+    renderExternalAlerts(data);
     const pnl = Number(stats.net_pnl_dollars || 0);
     setText('pnl', money(pnl)); byId('pnl').className = 'value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
     setText('win-rate', stats.win_rate_percent == null ? '—' : num(stats.win_rate_percent) + '%');

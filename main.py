@@ -211,6 +211,13 @@ def dashboard_data() -> dict[str, Any]:
                       strike_price, seconds_remaining, max_entry_cents, payload_json
                FROM signal_log ORDER BY id DESC LIMIT 1"""
         ).fetchone()
+        external_alert_rows = conn.execute(
+            """SELECT id, created_at, direction, symbol, timeframe, payload_json
+               FROM gainzalgo_signals ORDER BY id DESC LIMIT 10"""
+        ).fetchall()
+        external_alert_count = int(conn.execute(
+            "SELECT COUNT(*) FROM gainzalgo_signals"
+        ).fetchone()[0] or 0)
 
     total, settled, wins, losses, pnl, opened, exposure = totals
     signal = None
@@ -244,6 +251,44 @@ def dashboard_data() -> dict[str, Any]:
             signal["age_seconds"] = None
             signal["is_stale"] = True
 
+    # External TradingView/GainzAlgo alerts are stored separately from evaluated
+    # signals. Expose them independently so webhook traffic does not look stale
+    # simply because /evaluate has not been called recently. Never return secrets
+    # or full arbitrary webhook payloads to the dashboard.
+    external_alerts = []
+    for row in external_alert_rows:
+        alert_id, received_at, direction, symbol, timeframe, payload_json = row
+        try:
+            raw_payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_payload = {}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+        allowed_detail_keys = (
+            "action", "signal", "message", "strategy", "interval", "exchange",
+            "ticker", "market_ticker", "price", "close", "bar_time", "timestamp"
+        )
+        details = {
+            key: raw_payload[key] for key in allowed_detail_keys
+            if key in raw_payload and isinstance(raw_payload[key], (str, int, float, bool))
+        }
+        alert = {
+            "id": alert_id,
+            "received_at": received_at,
+            "direction": direction,
+            "symbol": symbol or None,
+            "timeframe": timeframe or None,
+            "details": details,
+        }
+        try:
+            created = datetime.fromisoformat(str(received_at).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            alert["age_seconds"] = max(0, int((datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            alert["age_seconds"] = None
+        external_alerts.append(alert)
+
     return {
         "health": {
             "api_ok": True,
@@ -269,6 +314,9 @@ def dashboard_data() -> dict[str, Any]:
             "net_pnl_dollars": round(float(pnl or 0) / 100, 2),
         },
         "latest_signal": signal,
+        "latest_external_alert": external_alerts[0] if external_alerts else None,
+        "external_alert_count": external_alert_count,
+        "recent_external_alerts": external_alerts,
         "trades": [
             {"id": r[0], "created_at": r[1], "settled_at": r[2], "market_ticker": r[3],
              "direction": r[4], "contracts": r[5], "entry_cents": r[6], "outcome": r[7],
@@ -354,6 +402,36 @@ def recent_signals(limit: int = 25) -> dict[str, Any]:
         item["warnings"] = payload.get("warnings", []) if isinstance(payload, dict) else []
         signals.append(item)
     return {"signals": signals}
+
+
+@app.get("/api/alerts/recent")
+def recent_external_alerts(limit: int = 25) -> dict[str, Any]:
+    """Return recent received external alerts, with secrets and raw payload omitted."""
+    if not 1 <= limit <= 250:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 250")
+    allowed_detail_keys = (
+        "action", "signal", "message", "strategy", "interval", "exchange",
+        "ticker", "market_ticker", "price", "close", "bar_time", "timestamp"
+    )
+    with db_connect() as conn:
+        rows = conn.execute(
+            """SELECT id, created_at, direction, symbol, timeframe, payload_json
+               FROM gainzalgo_signals ORDER BY id DESC LIMIT ?""", (limit,)
+        ).fetchall()
+    alerts = []
+    for alert_id, received_at, direction, symbol, timeframe, payload_json in rows:
+        try:
+            raw_payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_payload = {}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+        details = {key: raw_payload[key] for key in allowed_detail_keys
+                   if key in raw_payload and isinstance(raw_payload[key], (str, int, float, bool))}
+        alerts.append({"id": alert_id, "received_at": received_at, "direction": direction,
+                       "symbol": symbol or None, "timeframe": timeframe or None, "details": details})
+    return {"count_returned": len(alerts), "alerts": alerts,
+            "note": "These are received webhook alerts, not evaluated trade signals or placed orders."}
 
 
 @app.get("/status")
