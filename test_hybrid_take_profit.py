@@ -158,7 +158,11 @@ class TakeProfitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             w._take_profit_target_cents(50, 2, 2, 0)
 
-    def test_paper_take_profit_closes_at_observed_bid_after_fees(self):
+    def test_trailing_floor_rises_with_peak_and_never_drops_below_target(self):
+        self.assertAlmostEqual(w._take_profit_trailing_floor(64.4, 80, 5), 76.0)
+        self.assertAlmostEqual(w._take_profit_trailing_floor(64.4, 65, 5), 64.4)
+
+    def test_first_touch_arms_take_profit_without_closing_trade(self):
         tmp = tempfile.TemporaryDirectory()
         old_db = w.DB_PATH
         old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
@@ -178,25 +182,144 @@ class TakeProfitTests(unittest.TestCase):
             w.get_market = lambda ticker: {"market": {"status": "active"}}
             w.get_orderbook = lambda ticker: {"orderbook_fp": {"yes_dollars": [["0.6500", "5"]]}}
             with patch.dict(os.environ, {
-                "TRADING_MODE": "paper",
-                "LIVE_TRADING_ENABLED": "false",
-                "PAPER_TAKE_PROFIT_ENABLED": "true",
-                "PAPER_TAKE_PROFIT_PERCENT": "20",
-                "PAPER_TREND_STOP_LOSS_ENABLED": "false",
-                "PAPER_TREND_STOP_SHADOW_MODE": "false",
-                "PAPER_STOP_LOSS_ENABLED": "false",
-                "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
+                "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+                "PAPER_TAKE_PROFIT_ENABLED": "true", "PAPER_TAKE_PROFIT_PERCENT": "20",
+                "PAPER_TAKE_PROFIT_TRAIL_PERCENT": "5",
+                "PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED": "false",
+                "PAPER_TREND_STOP_LOSS_ENABLED": "false", "PAPER_TREND_STOP_SHADOW_MODE": "false",
+                "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
             }, clear=False):
                 conn = w._connect()
                 w._manage_open(conn, 10)
-                row = conn.execute("SELECT settled_at,outcome,pnl_cents FROM paper_trades").fetchone()
+                row = conn.execute(
+                    "SELECT settled_at,outcome,take_profit_activated_at,take_profit_peak_bid_cents FROM paper_trades"
+                ).fetchone()
                 conn.close()
-            self.assertIsNotNone(row[0])
-            self.assertEqual(row[1], "TAKE_PROFIT")
-            self.assertAlmostEqual(row[2], (65 - 50 - 2 - 2) * 2)
+            self.assertIsNone(row[0], "first target touch must arm the trail, not immediately exit")
+            self.assertIsNone(row[1])
+            self.assertIsNotNone(row[2])
+            self.assertAlmostEqual(row[3], 65.0)
         finally:
             w.DB_PATH = old_db
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
+            tmp.cleanup()
+
+    def test_trailing_take_profit_exits_after_pullback_from_peak(self):
+        tmp = tempfile.TemporaryDirectory()
+        old_db = w.DB_PATH
+        old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
+        try:
+            w.DB_PATH = Path(tmp.name) / "tp_trail.sqlite3"
+            conn = w._connect()
+            now = w._utcnow().isoformat()
+            conn.execute(
+                """INSERT INTO paper_trades
+                   (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,
+                    notes,stop_loss_cents,take_profit_target_cents)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (now, "KXBTC15M-TEST", "UP", 1, 50, 2, "test", None, 64.4),
+            )
+            conn.commit()
+            conn.close()
+            bids = {"value": 65.0}
+            w.get_market = lambda ticker: {"market": {"status": "active"}}
+            w.get_orderbook = lambda ticker: {"orderbook_fp": {"yes_dollars": [[f"{bids['value']/100:.4f}", "5"]]}}
+            env = {
+                "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+                "PAPER_TAKE_PROFIT_ENABLED": "true", "PAPER_TAKE_PROFIT_PERCENT": "20",
+                "PAPER_TAKE_PROFIT_TRAIL_PERCENT": "5",
+                "PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED": "false",
+                "PAPER_TREND_STOP_LOSS_ENABLED": "false", "PAPER_TREND_STOP_SHADOW_MODE": "false",
+                "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                conn = w._connect()
+                w._manage_open(conn, 10)  # target first reached: arm only
+                bids["value"] = 80.0
+                w._manage_open(conn, 10)  # new peak moves floor up to 76c
+                not_closed = conn.execute("SELECT settled_at,take_profit_peak_bid_cents FROM paper_trades").fetchone()
+                self.assertIsNone(not_closed[0])
+                self.assertAlmostEqual(not_closed[1], 80.0)
+                bids["value"] = 75.9
+                w._manage_open(conn, 10)  # pullback through trailing floor triggers simulated exit
+                row = conn.execute("SELECT settled_at,outcome,pnl_cents,notes FROM paper_trades").fetchone()
+                conn.close()
+            self.assertIsNotNone(row[0])
+            self.assertEqual(row[1], "TAKE_PROFIT")
+            self.assertAlmostEqual(row[2], 75.9 - 50 - 2 - 2)
+            self.assertIn("trailing floor", row[3])
+        finally:
+            w.DB_PATH = old_db
+            w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
+            tmp.cleanup()
+
+    def test_major_internal_reversal_can_exit_after_target_armed(self):
+        tmp = tempfile.TemporaryDirectory()
+        old_db = w.DB_PATH
+        old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
+        old_fetch, old_evaluate, old_stop = w.fetch_signal_candles, w.evaluate_signal, w.update_trend_stop
+        try:
+            w.DB_PATH = Path(tmp.name) / "tp_reversal.sqlite3"
+            conn = w._connect()
+            now = w._utcnow().isoformat()
+            conn.execute(
+                """INSERT INTO paper_trades
+                   (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,
+                    notes,stop_loss_cents,take_profit_target_cents,take_profit_activated_at,take_profit_peak_bid_cents)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (now, "KXBTC15M-TEST", "UP", 1, 50, 2, "test", None, 64.4,
+                 (w._utcnow() - timedelta(minutes=2)).isoformat(), 70.0),
+            )
+            conn.commit()
+            conn.close()
+            close_time = (w._utcnow() + timedelta(minutes=7)).isoformat()
+            w.get_market = lambda ticker: {"market": {
+                "ticker": ticker, "status": "active", "title": "BTC price up in next 15 mins?",
+                "close_time": close_time, "floor_strike": 65000,
+                "yes_ask": 69, "no_ask": 31,
+            }}
+            w.get_orderbook = lambda ticker: {"orderbook_fp": {
+                "yes_dollars": [["0.6800", "5"]], "no_dollars": [["0.2700", "5"]],
+            }}
+            frame = pd.DataFrame({
+                "timestamp": [f"2026-10-22T00:{i:02d}:00+00:00" for i in range(25)],
+                "open": [65000.0] * 25, "high": [65100.0] * 25,
+                "low": [64900.0] * 25, "close": [65010.0] * 25,
+                "volume": [100.0] * 25,
+            })
+            w.fetch_signal_candles = lambda: {"candles_1m": frame, "candles_5m": frame, "candles_15m": frame}
+            opposing_payload = {"strategies": {
+                "multi_timeframe_trend": {"timeframes": {"1m": -1, "5m": -1, "15m": -1}},
+                "evidence_totals": {"up_points": 2, "down_points": 7},
+                "box_theory": {"state": "inside_box", "direction": 0},
+                "market_structure": {"direction": 0}, "volume_confirmation": {"confirmed": False},
+            }}
+            w.evaluate_signal = lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: opposing_payload)
+            w.update_trend_stop = lambda *args, **kwargs: {
+                "high_water_btc": 65100.0, "low_water_btc": 64900.0,
+                "trailing_stop_btc": 64000.0, "reason": "test trail", "triggered": False,
+            }
+            with patch.dict(os.environ, {
+                "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+                "PAPER_TAKE_PROFIT_ENABLED": "true", "PAPER_TAKE_PROFIT_PERCENT": "20",
+                "PAPER_TAKE_PROFIT_TRAIL_PERCENT": "5",
+                "PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED": "true",
+                "PAPER_HYBRID_VETO_MIN_POINTS": "4",
+                "PAPER_TREND_STOP_LOSS_ENABLED": "false", "PAPER_TREND_STOP_SHADOW_MODE": "false",
+                "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
+            }, clear=False):
+                conn = w._connect()
+                w._manage_open(conn, 10)
+                row = conn.execute("SELECT settled_at,outcome,pnl_cents,notes FROM paper_trades").fetchone()
+                conn.close()
+            self.assertIsNotNone(row[0])
+            self.assertEqual(row[1], "TAKE_PROFIT")
+            self.assertAlmostEqual(row[2], 68 - 50 - 2 - 2)
+            self.assertIn("major opposing setup", row[3])
+        finally:
+            w.DB_PATH = old_db
+            w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
+            w.fetch_signal_candles, w.evaluate_signal, w.update_trend_stop = old_fetch, old_evaluate, old_stop
             tmp.cleanup()
 
     def test_take_profit_does_not_close_below_target(self):

@@ -129,6 +129,9 @@ def _ensure_schema(conn):
         ("trend_stop_shadow_reason", "TEXT"),
         ("trend_stop_shadow_candle_timestamp", "TEXT"),
         ("take_profit_target_cents", "REAL"),
+        ("take_profit_activated_at", "TEXT"),
+        ("take_profit_peak_bid_cents", "REAL"),
+        ("take_profit_last_reversal_candle_timestamp", "TEXT"),
         ("entry_signal_source", "TEXT"),
         ("external_signal_id", "INTEGER"),
     )
@@ -190,6 +193,25 @@ def _take_profit_target_cents(
         raise ValueError("PAPER_TAKE_PROFIT_PERCENT must be greater than 0 and at most 200")
     entry_cost = entry + entry_fee
     return round(entry + entry_fee + exit_fee + entry_cost * percent / 100.0, 2)
+
+
+def _take_profit_trailing_floor(target_cents: float, peak_bid_cents: float, trail_percent: float) -> float:
+    """Protect the target return while allowing gains to run beyond it.
+
+    The floor is the higher of the net-return target bid and a configurable
+    percentage trail below the best observed Kalshi bid. This is a simulated
+    trigger floor, not a guarantee of an executable fill at that price.
+    """
+    target = float(target_cents)
+    peak = float(peak_bid_cents)
+    trail = float(trail_percent)
+    if not 0 < target <= 100:
+        raise ValueError("take-profit target must be between 0 and 100 cents")
+    if not target <= peak <= 100:
+        raise ValueError("take-profit peak bid must be between target and 100 cents")
+    if not 0 < trail <= 50:
+        raise ValueError("PAPER_TAKE_PROFIT_TRAIL_PERCENT must be greater than 0 and at most 50")
+    return round(max(target, peak * (1.0 - trail / 100.0)), 2)
 
 
 def _major_flaw_veto(
@@ -283,13 +305,16 @@ def _manage_open(conn, max_daily_loss_dollars: float):
     rows = conn.execute(
         "SELECT id,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,stop_loss_cents, "
         "entry_btc_price,high_water_btc,low_water_btc,trailing_stop_btc,last_stop_candle_timestamp,last_trend_check_at, "
-        "trend_stop_shadow_triggered_at,take_profit_target_cents "
+        "trend_stop_shadow_triggered_at,take_profit_target_cents,take_profit_activated_at,"
+        "take_profit_peak_bid_cents,take_profit_last_reversal_candle_timestamp "
         "FROM paper_trades WHERE settled_at IS NULL"
     ).fetchall()
     trend_enabled = os.getenv("PAPER_TREND_STOP_LOSS_ENABLED", "false").lower() == "true"
     shadow_enabled = os.getenv("PAPER_TREND_STOP_SHADOW_MODE", "false").lower() == "true"
     take_profit_enabled = os.getenv("PAPER_TAKE_PROFIT_ENABLED", "false").lower() == "true"
     take_profit_percent = float(os.getenv("PAPER_TAKE_PROFIT_PERCENT", "20"))
+    take_profit_trail_percent = float(os.getenv("PAPER_TAKE_PROFIT_TRAIL_PERCENT", "5"))
+    reversal_exit_enabled = os.getenv("PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED", "true").lower() == "true"
     exit_fee = max(0.0, float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0")))
     check_seconds = max(30.0, min(180.0, float(os.getenv("PAPER_TREND_STOP_CHECK_SECONDS", "45"))))
     atr_multiplier = float(os.getenv("PAPER_TREND_STOP_ATR_MULTIPLIER", "2.5"))
@@ -298,7 +323,8 @@ def _manage_open(conn, max_daily_loss_dollars: float):
     for row in rows:
         (trade_id, ticker, direction, contracts, entry, fee, static_stop,
          entry_btc, high_water, low_water, trailing_stop, last_candle_ts,
-         last_check_at, shadow_triggered_at, stored_tp_target) = row
+         last_check_at, shadow_triggered_at, stored_tp_target, tp_activated_at,
+         stored_tp_peak_bid, tp_last_reversal_candle_ts) = row
         current_stop_candle_ts = None
         try:
             # An official Kalshi settlement always takes precedence over simulated exits.
@@ -326,6 +352,11 @@ def _manage_open(conn, max_daily_loss_dollars: float):
 
             tp_target = None
             tp_triggered = False
+            tp_exit_reason = None
+            tp_activated_this_cycle = False
+            tp_armed = bool(tp_activated_at)
+            tp_peak_bid = float(stored_tp_peak_bid) if stored_tp_peak_bid is not None else None
+            tp_trailing_floor = None
             if take_profit_enabled:
                 tp_target = float(stored_tp_target) if stored_tp_target is not None else _take_profit_target_cents(
                     entry, fee, exit_fee, take_profit_percent
@@ -336,8 +367,43 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                         (tp_target, trade_id),
                     )
                     conn.commit()
-                # A target over 100 cents is not attainable for a binary contract.
-                tp_triggered = tp_target <= 100.0 and float(bid) >= tp_target
+                # A target over 100 cents is impossible for a binary contract.
+                # First touch arms the trailing protection; it never exits immediately.
+                if tp_target <= 100.0 and not tp_armed and float(bid) >= tp_target:
+                    tp_armed = True
+                    tp_activated_this_cycle = True
+                    tp_peak_bid = float(bid)
+                    tp_activated_at = _utcnow().isoformat()
+                    conn.execute(
+                        "UPDATE paper_trades SET take_profit_activated_at=?,take_profit_peak_bid_cents=? WHERE id=?",
+                        (tp_activated_at, tp_peak_bid, trade_id),
+                    )
+                    conn.commit()
+                    log.info(
+                        "Paper trade %s take-profit ARMED at bid %.2fc (target %.2fc, target net return %.2f%%); "
+                        "holding for trailing/reversal exit",
+                        trade_id, float(bid), tp_target, take_profit_percent,
+                    )
+                elif tp_armed and tp_target <= 100.0:
+                    # Persist the best observed bid so the trailing floor only ratchets up.
+                    if tp_peak_bid is None:
+                        tp_peak_bid = max(tp_target, float(bid))
+                    else:
+                        tp_peak_bid = max(tp_peak_bid, float(bid))
+                    conn.execute(
+                        "UPDATE paper_trades SET take_profit_peak_bid_cents=? WHERE id=?",
+                        (tp_peak_bid, trade_id),
+                    )
+                    conn.commit()
+                    tp_trailing_floor = _take_profit_trailing_floor(
+                        tp_target, tp_peak_bid, take_profit_trail_percent
+                    )
+                    if float(bid) <= tp_trailing_floor:
+                        tp_triggered = True
+                        tp_exit_reason = (
+                            f"Kalshi bid pulled back to {float(bid):.2f}c, at/below the protected trailing floor "
+                            f"{tp_trailing_floor:.2f}c; best observed bid was {tp_peak_bid:.2f}c"
+                        )
 
             trend_triggered = False
             trend_reason = None
@@ -345,8 +411,11 @@ def _manage_open(conn, max_daily_loss_dollars: float):
             last_check = _parse_time(last_check_at)
             due = last_check is None or (now_dt - last_check).total_seconds() >= check_seconds
             shadow_already_recorded = bool(shadow_triggered_at)
-            should_monitor_trend = trend_enabled or (shadow_enabled and not shadow_already_recorded)
-            if should_monitor_trend and entry_btc is not None and due:
+            should_monitor_trend = (
+                trend_enabled or (shadow_enabled and not shadow_already_recorded)
+                or (take_profit_enabled and tp_armed and reversal_exit_enabled and not tp_activated_this_cycle)
+            )
+            if should_monitor_trend and due:
                 # Persist throttle before the request so feed errors do not hammer Binance.
                 conn.execute(
                     "UPDATE paper_trades SET last_trend_check_at=? WHERE id=?",
@@ -354,10 +423,19 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                 )
                 conn.commit()
                 try:
-                    candles = fetch_closed_candles("1m", 100)
+                    reversal_check_due = (
+                        take_profit_enabled and tp_armed and reversal_exit_enabled
+                        and not tp_activated_this_cycle
+                    )
+                    if reversal_check_due:
+                        candle_bundle = fetch_signal_candles()
+                        candles = candle_bundle["candles_1m"]
+                    else:
+                        candles = fetch_closed_candles("1m", 100)
+                        candle_bundle = None
                     candle_ts = str(candles["timestamp"].iloc[-1])
                     current_stop_candle_ts = candle_ts
-                    if candle_ts != last_candle_ts:
+                    if entry_btc is not None and (trend_enabled or shadow_enabled) and candle_ts != last_candle_ts:
                         update = update_trend_stop(
                             candles, direction,
                             high_water_btc=float(high_water) if high_water is not None else float(entry_btc),
@@ -381,7 +459,7 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                             "Paper trade %s chart-stop update: %s; stop_enabled=%s; shadow_mode=%s; trigger=%s",
                             trade_id, trend_reason, trend_enabled, shadow_enabled, trend_triggered,
                         )
-                    elif trailing_stop is not None:
+                    elif entry_btc is not None and (trend_enabled or shadow_enabled) and trailing_stop is not None:
                         last_close = float(candles["close"].iloc[-1])
                         trend_triggered = (
                             (direction == "UP" and last_close <= float(trailing_stop))
@@ -392,9 +470,63 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                                 f"Previously stored {direction} chart stop {float(trailing_stop):.2f} "
                                 f"breached by latest closed BTC candle {last_close:.2f}"
                             )
+                    # Once take profit is armed, a fresh internal analysis may close early
+                    # only for the same strict "major flaw" conditions used to veto entries.
+                    if (
+                        take_profit_enabled and tp_armed and reversal_exit_enabled
+                        and not tp_activated_this_cycle
+                        and candle_ts != tp_last_reversal_candle_ts
+                        and tp_target is not None and tp_target <= 100.0
+                    ):
+                        trade_market = _extract_market(market_payload)
+                        if trade_market is not None:
+                            yes_bid = _top_bid(orderbook, "yes")
+                            no_bid = _top_bid(orderbook, "no")
+                            yes_ask = trade_market.get("yes_ask")
+                            no_ask = trade_market.get("no_ask")
+                            spread_values = []
+                            if yes_bid is not None and yes_ask is not None:
+                                spread_values.append(float(yes_ask) - float(yes_bid))
+                            if no_bid is not None and no_ask is not None:
+                                spread_values.append(float(no_ask) - float(no_bid))
+                            spread_now = max(spread_values) if len(spread_values) == 2 else None
+                            reversal_signal = evaluate_signal(
+                                candle_bundle["candles_1m"], candle_bundle["candles_5m"],
+                                candle_bundle["candles_15m"],
+                                MarketContext(
+                                    strike_price=trade_market["strike"],
+                                    seconds_remaining=trade_market["seconds"],
+                                    up_ask_cents=yes_ask, down_ask_cents=no_ask,
+                                    spread_cents=spread_now,
+                                    estimated_fee_cents=float(fee),
+                                ),
+                                minimum_score=int(os.getenv("PAPER_MINIMUM_SCORE", "65")),
+                                max_entry_cents=float(os.getenv("PAPER_MAX_ENTRY_CENTS", "78")),
+                                max_spread_cents=float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5")),
+                            )
+                            reversal_payload = reversal_signal.to_dict()
+                            reversal_veto_min = max(2, min(12, int(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"))))
+                            major_reversal, reversal_reasons = _major_flaw_veto(
+                                direction, reversal_payload, reversal_veto_min
+                            )
+                            conn.execute(
+                                "UPDATE paper_trades SET take_profit_last_reversal_candle_timestamp=? WHERE id=?",
+                                (candle_ts, trade_id),
+                            )
+                            conn.commit()
+                            log.info(
+                                "Paper trade %s take-profit reversal check: major_reversal=%s; evidence=%s",
+                                trade_id, major_reversal, "; ".join(reversal_reasons) if reversal_reasons else "no major contradiction",
+                            )
+                            if major_reversal and not tp_triggered:
+                                tp_triggered = True
+                                tp_exit_reason = (
+                                    "internal system detected a fresh major opposing setup after take-profit activation: "
+                                    + "; ".join(reversal_reasons)
+                                )
                 except (CandleFeedError, ValueError, TypeError, KeyError) as exc:
                     log.warning(
-                        "Trend stop check unavailable for paper trade %s; no chart-stop exit: %s",
+                        "Trend/profit-protection check unavailable for paper trade %s; no reversal-based exit: %s",
                         trade_id, exc,
                     )
 
@@ -439,9 +571,10 @@ def _manage_open(conn, max_daily_loss_dollars: float):
                 else:
                     outcome = "TAKE_PROFIT"
                     note = (
-                        f" | paper take-profit triggered; target {float(tp_target):.2f}c; "
-                        f"observed Kalshi exit bid {float(bid):.2f}c; target return {take_profit_percent:.2f}% "
-                        "after fees; simulated exit only"
+                        f" | paper trailing take-profit triggered; reason={tp_exit_reason or 'profit protection triggered'}; "
+                        f"target {float(tp_target):.2f}c; peak bid {float(tp_peak_bid if tp_peak_bid is not None else bid):.2f}c; "
+                        f"trail {take_profit_trail_percent:.2f}%; observed Kalshi exit bid {float(bid):.2f}c; "
+                        f"target net return {take_profit_percent:.2f}% after fees; simulated exit only"
                     )
                 conn.execute(
                     "UPDATE paper_trades SET settled_at=?,outcome=?,pnl_cents=?,notes=COALESCE(notes,'') || ? WHERE id=?",
@@ -514,10 +647,13 @@ def run_once() -> dict:
     max_spread = float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"))
     take_profit_enabled = os.getenv("PAPER_TAKE_PROFIT_ENABLED", "false").lower() == "true"
     take_profit_percent = float(os.getenv("PAPER_TAKE_PROFIT_PERCENT", "20"))
+    take_profit_trail_percent = float(os.getenv("PAPER_TAKE_PROFIT_TRAIL_PERCENT", "5"))
+    reversal_exit_enabled = os.getenv("PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED", "true").lower() == "true"
     if take_profit_enabled:
-        # Validate the target before opening a position; bad env values fail closed.
+        # Validate the target and trailing settings before opening a position; fail closed.
         try:
             _take_profit_target_cents(50.0, fee, exit_fee, take_profit_percent)
+            _take_profit_trailing_floor(60.0, 65.0, take_profit_trail_percent)
         except ValueError as exc:
             return {"action": "blocked", "reason": str(exc)}
 
@@ -685,7 +821,10 @@ def run_once() -> dict:
                     "reasons": [f"TradingView indicator signaled {direction}; market and risk checks passed."],
                     "warnings": [],
                     "take_profit": {"enabled": take_profit_enabled,
-                                    "target_return_percent": take_profit_percent if take_profit_enabled else None},
+                                    "mode": "trailing_after_target_activation",
+                                    "target_return_percent": take_profit_percent if take_profit_enabled else None,
+                                    "trail_percent": take_profit_trail_percent if take_profit_enabled else None,
+                                    "major_reversal_exit_enabled": reversal_exit_enabled if take_profit_enabled else False},
                     "disclaimer": "External indicator direction; paper mode only.",
                 }
                 _record_signal_log(
