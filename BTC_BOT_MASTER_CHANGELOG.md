@@ -11,6 +11,7 @@ Consolidate reliability fixes and the Phase 3–6 research/analytics work agains
 - When market discovery or an order book is temporarily unavailable, the worker logs why it is waiting and retains a retryable pending alert where appropriate.
 - Dashboard analytics operate on the latest 10,000 trade and signal records rather than accidentally analyzing the oldest 10,000 after the journal grows.
 - FastAPI startup uses a lifespan handler to avoid deprecated startup-event usage.
+- Adaptive-policy evaluations use a high-water mark for newer hybrid trade IDs, so backfilling old settlements cannot repeatedly tighten the entry target against the same sample.
 
 ## Phase 3 — Decision audit and outcomes
 - A `decision_audit` stream records decision-related events and includes reason/context fields for post-hoc review.
@@ -30,7 +31,7 @@ Consolidate reliability fixes and the Phase 3–6 research/analytics work agains
 ## Phase 6 — Dashboard, APIs, and operations
 - Read-only `/api/analytics`, `/api/decision-audit` and `/api/category-readiness` surfaces support observation and analysis. The dashboard API separately returns `latest_directional_signal` and the open `active_position` linked to its saved entry signal.
 - Manual journal/evaluation write routes are fail-closed when the optional admin secret is unset.
-- The final dashboard UI update separates current 15-minute window status, latest directional evaluation, and currently open position. A previous direction stays visible only with a historical/expired label; the active position preserves its entry-linked rationale and warnings when the window status changes to WAIT.
+- The final dashboard UI update places Realized P&L, Engine Connection, and Risk Limits in the very first content row immediately below the global header and before the intro heading; the Active Paper Position card follows the intro. It separates current 15-minute window status, latest directional evaluation, and currently open position. A previous direction stays visible only with a historical/expired label; the active position preserves its entry-linked rationale and warnings when the window status changes to WAIT.
 - GitHub Actions compiles the repository, runs each test module in isolated processes, checks category/security/analytics tests, and runs an offline end-to-end smoke test.
 
 ## Phase 7 — Multi-category preparation (not live/active)
@@ -38,7 +39,7 @@ Consolidate reliability fixes and the Phase 3–6 research/analytics work agains
 - Only the existing BTC 15-minute strategy is marked paper-enabled. Non-BTC categories remain research-only and are not connected to the worker's order/entry path. This is an architecture scaffold, not a completed or profitable strategy for those categories.
 
 ## Test/validation status
-The final validation report accompanies this package. All repository test modules, including the post-trade learning and dashboard-context suites, are run separately to prevent unittest mocks from leaking across modules. Compile, workflow YAML checks, the HTTP integration tests, database migration/idempotency tests, and the offline webhook-to-paper-entry smoke test are included.
+The final validation report accompanies this package. All repository test modules, including adaptive-policy, post-trade learning, and dashboard-context suites, are run separately to prevent unittest mocks from leaking across modules. Compile, workflow YAML checks, HTTP integration tests, database migration/idempotency tests, and the offline webhook-to-paper-entry smoke test are included.
 
 ## Deployment checklist
 1. Use a branch or backup of `main` before applying the patch.
@@ -53,5 +54,5 @@ The final validation report accompanies this package. All repository test module
 ## Post-trade learning and current/next-signal dashboard update
 - Added a `trade_learning` table and `trade_learning.py` to create one idempotent post-trade review per settled paper trade, including entry-time feature snapshots and realized P&L labels.
 - Worker syncs and backfills settled trade outcomes in bounded batches each cycle, and can recover linked entry context through the external alert ID for legacy trades without `entry_signal_log_id`; `/api/learning` is read-only and never writes on dashboard polls.
-- Adds cohort comparisons for chart-trend alignment, entry price, evidence score, volume and momentum. Single-trade observations are never treated as causal proof and rule changes are not applied automatically.
-- Dashboard waiting state now explicitly reads “Waiting For Next Available Signal”, maintains a response/window countdown and reasons, and adds a post-trade learning summary and cohort table. Historical-direction placement was not rearranged.
+- Adds cohort comparisons for chart-trend alignment, entry price, evidence score, volume and momentum, plus a bounded adaptive price-target adjustment. After at least 20 settled hybrid trades, the policy can tighten the preferred entry target by 1¢ only if at least 8 recent trades in the active high-price zone have negative net P&L of at least 8¢ and losses are at least as common as wins. It evaluates again only after 10 additional newer hybrid trade IDs, never loosens the target automatically, and tightens by no more than 5¢ below the original target. The 92¢ hard cap, trade budget, daily loss limit, and live-trading permission are not changed.
+- Dashboard now places Realized P&L, Engine Connection, and Risk Limits first in the overview row, then the Active Paper Position card. It shows the effective adaptive target/status in the Risk Limits card and the learning panel. The “Waiting For Next Available Signal” panel retains its countdown and reasons; the historical direction remains where it was.

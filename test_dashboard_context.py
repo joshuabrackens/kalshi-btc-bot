@@ -67,6 +67,15 @@ def test_wait_window_does_not_erase_last_directional_or_open_position_reasoning(
                     (older, "KXBTC15M-DOWN", "DOWN", 1, 74, 2, 81700, "1m", "hybrid", 77,
                      entry_signal_id, 82, "test open position"),
                 )
+                conn.execute(
+                    """INSERT INTO adaptive_policy_state
+                       (policy_key,base_target_cents,effective_target_cents,last_evaluated_trade_count,
+                        last_evaluated_latest_trade_id,adjustment_count,last_sample_count,last_sample_net_pnl_cents,
+                        last_reason,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    ("btc_hybrid_entry_target", 80, 78, 20, 150, 2, 20, -52,
+                     "Automatically tightened the preferred entry target from 79¢ to 78¢.", when),
+                )
                 conn.commit()
             data = main.dashboard_data()
             assert data["current_window_decision"]["status"] == "WAIT THIS WINDOW"
@@ -81,6 +90,10 @@ def test_wait_window_does_not_erase_last_directional_or_open_position_reasoning(
             assert position["entry_signal"]["reasons"] == entry_payload["reasons"]
             assert position["entry_signal"]["chart_trend_at_decision"]["candidate_bias"] == "DOWN"
             assert position["entry_cost_dollars"] == 0.76
+            assert data["risk"]["configured_hard_max_entry_cents"] == 92.0
+            assert data["risk"]["configured_entry_target_max_cents"] == 80.0
+            assert data["risk"]["entry_target_max_cents"] == 78.0
+            assert data["risk"]["adaptive_entry_target_adjustment_count"] == 2
 
 
 def test_dashboard_has_separate_historical_signal_active_position_and_window_context():
@@ -106,7 +119,8 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
         "current-window-status", "current-window-reason", "signal-age-badge", "decision-section-title",
         "signal-eyebrow", "active-position-summary", "strategy-checks-title",
         "next-signal-countdown", "next-signal-reasons", "learning-reviewed", "learning-latest-observations",
-        "learning-cohorts", "learning-recent-reviews",
+        "learning-cohorts", "learning-recent-reviews", "adaptive-entry-target", "adaptive-entry-note",
+        "learning-effective-target", "learning-adjustment-count", "learning-policy-sample",
     ):
         assert element_id in parser.ids, f"Missing dashboard element {element_id}"
     assert "latest_directional_signal" in html
@@ -115,14 +129,16 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
     assert "Waiting For Next Available Signal" in html
     assert "renderLearning(report)" in html
     assert "getJSON('/api/learning')" in html
-    assert "automatic_strategy_changes_enabled" in html or "No trade result changes rules automatically." in html
-    # Active position is the most operationally important view, so keep it
-    # immediately after the page intro and before overview/signal details.
+    assert "Automatic tightenings" in html and "preferred entry target may tighten" in html
+    # KPI/status/guardrail row is the first content after the header; the intro
+    # follows it, then the active-position panel remains near the top.
     active_pos = html.index('id="active-position-section"')
     intro_end = html.index('</section>', html.index('<section class="intro">'))
     engine_overview = html.index('aria-label="Engine overview"')
     latest_signal = html.index('aria-label="Latest directional signal context"')
-    assert intro_end < active_pos < engine_overview < latest_signal
+    assert engine_overview < intro_end < active_pos < latest_signal
+    overview = html[engine_overview:html.index('</section>', engine_overview)]
+    assert overview.index('Realized P&amp;L') < overview.index('Engine connection') < overview.index('Risk limits')
 
 
 def test_dashboard_connection_badge_distinguishes_api_failure_from_panel_render_error():

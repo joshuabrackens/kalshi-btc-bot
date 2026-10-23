@@ -12,6 +12,7 @@ This repository includes the existing BTC-only hybrid paper-trading flow plus re
 ### Phase 4 — Historical performance analytics
 - Adds read-only `/api/analytics`: actual net P&L, win rate, average net per settled trade, profit factor, drawdown, rolling last-20/last-50, entry-price cohorts, trend-alignment cohorts, evidence-score cohorts, and decision-status totals.
 - Adds `/api/learning` backed by an idempotent `trade_learning` table, which records one snapshot per settled paper trade and compares outcome cohorts across entry price, chart trend, evidence score, volume, and momentum. The worker updates this after settlement and backfills older settled trades in bounded batches.
+- The paper-only adaptive policy can tighten the preferred entry target after at least 20 settled hybrid trades and a negative high-price cohort (at least 8 recent target-zone trades, at least 8¢ net cohort loss, losses at least as numerous as wins). It tightens by 1¢ per qualifying review, no more often than every 10 additional newer hybrid trade IDs, with a maximum 5¢ tightening below the initial configured target. It cannot raise the target or change the hard cap, trade budget, daily loss limit, or live-trading state. A watermark prevents older journal backfills from being counted as new live observations.
 - Pulls the most recent journal rows when applying the 10,000-row analysis limit.
 - The analytics are descriptive. Scores/asks are not calibrated probabilities; small samples are not evidence of edge.
 
@@ -65,7 +66,7 @@ No manual SQL migration is required; `ensure_schema()` applies the schema change
 
 ## Post-trade learning boundary
 
-Every settled paper trade is recorded once with an entry-time feature snapshot and a realized P&L label. The report supplies per-trade observations and sample-gated cohort comparisons; it does not automatically alter strategy parameters after each result. Any proposed rule change must be reviewed, regression-tested, and validated on an out-of-sample paper sample. Counterfactual rejected-signal results and shadow exits remain separate from actual trade outcomes.
+Every settled paper trade is recorded once with an entry-time feature snapshot and a realized P&L label. The report supplies per-trade observations and sample-gated cohort comparisons. The only automatic adjustment in this version is a bounded tightening of the preferred entry target when repeated high-price hybrid outcomes meet the documented negative-cohort rule. This review requires 20 recent settled hybrid trades and a minimum 8-trade target-zone cohort; the target may tighten by 1¢ per review, no more than once per 10 additional newer hybrid trade IDs, and no more than 5¢ below its initial target. It never loosens automatically or changes the 92¢ hard cap, trade size budget, daily loss cap, or live-trading permission. This is a conservative paper-mode heuristic, not proof of positive expected value. All other strategy changes remain manual and require regression tests and out-of-sample paper validation. Counterfactual rejected-signal results and shadow exits remain separate from actual trade outcomes.
 
 ## Interpretation and safety
 

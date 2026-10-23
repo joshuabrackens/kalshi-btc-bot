@@ -33,7 +33,7 @@ The 92¢ value is the hard cap; 80¢ is the lower preferred entry target. The wo
 - `kalshi_api.py` / `market_discovery.py`: public Kalshi market discovery, current order-book quotes and market results.
 - `db_store.py`: shared SQLite/PostgreSQL adapter and schema migrations.
 - `performance_analytics.py`: descriptive historical P&L and decision cohort analysis.
-- `trade_learning.py`: idempotent per-settled-trade feature snapshots, outcome reviews, and sample-gated cohort insights; it recovers legacy entries by external alert ID and never automatically changes strategy rules.
+- `trade_learning.py`: idempotent per-settled-trade feature snapshots, outcome reviews, cohort insights, and a bounded paper-only adaptive entry-target policy. It can tighten the preferred target after repeated poor high-price hybrid outcomes; it never loosens the target or changes the hard cap/dollar risk limits.
 - `market_category_registry.py`: Phase 7 readiness scaffold. BTC 15m is the only paper-enabled profile; all non-BTC categories are research-only.
 - `payload_safety.py`: recursive sensitive-key removal for untrusted webhook payloads.
 - `dashboard.html`: current-window state, preserved latest directional evaluation, active-position entry rationale, trend and decision detail, journal, and analytics UI.
@@ -58,7 +58,7 @@ Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `PO
 - `GET /health`, `GET /status` — health/runtime status.
 - `GET /api/dashboard` — heartbeat, separate current-window status, latest directional evaluation, linked active-position entry context, trend monitor, risk and paper-trade journal.
 - `GET /api/analytics` — actual paper performance cohorts, rolling results, exit-shadow review and separately labeled rejected-signal counterfactuals.
-- `GET /api/learning` — persistent post-trade outcome feedback, entry-feature snapshots, cohort summaries, and research notes. The worker backfills settled journal rows idempotently; the endpoint is read-only and never tunes rules or alters trade permissions.
+- `GET /api/learning` — persistent post-trade outcome feedback, entry-feature snapshots, cohort summaries, research notes, and the active bounded adaptive-entry policy. The endpoint is read-only; the worker applies the policy after settled outcomes are journaled.
 - `GET /api/decision-audit` — recent audit events, read-only.
 - `GET /api/category-readiness` — research readiness profiles; this endpoint never enables or routes trades.
 - `GET /diagnostics/market-data` — cached public-market diagnostic; it never places or modifies trades.

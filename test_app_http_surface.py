@@ -41,7 +41,8 @@ def test_read_only_routes_work_and_manual_writes_are_disabled_by_default():
                 learning = client.get("/api/learning")
                 assert learning.status_code == 200, learning.text
                 assert learning.json()["mode"] == "SIMULATION_ONLY"
-                assert learning.json()["automatic_strategy_changes_enabled"] is False
+                assert learning.json()["automatic_strategy_changes_enabled"] is True
+                assert learning.json()["adaptive_policy"]["effective_target_cents"] == 80.0
                 denied_open = client.post("/paper/open", json={
                     "market_ticker": "KXBTC15M-TEST", "direction": "UP", "contracts": 1,
                     "entry_cents": 50, "fee_cents_per_contract": 2,

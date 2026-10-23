@@ -23,7 +23,7 @@ from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 from db_store import connect_database, ensure_schema, backend_name, record_decision_audit
 from payload_safety import sanitize_sensitive_payload
-from trade_learning import sync_settled_trade_learning
+from trade_learning import sync_settled_trade_learning, update_adaptive_entry_policy
 
 log = logging.getLogger("paper_worker")
 
@@ -919,18 +919,34 @@ def run_once() -> dict[str, Any]:
             return {"action": "blocked", "reason": str(exc)}
 
     conn = None
+    adaptive_policy: dict[str, Any] | None = None
     try:
         conn = _connect()
         _manage_open(conn)
-        # Record newly settled trades and backfill older settled journal rows. This
-        # only snapshots features/outcomes for analysis; it cannot modify strategy
-        # parameters or authorize trades. Failures must not change trade decisions.
+        # Record every newly settled trade before recomputing the bounded
+        # paper-only entry-price policy. The learner can only tighten the target;
+        # it never changes the 92c hard cap, dollar limits, or live-trading state.
         try:
             learned_count = sync_settled_trade_learning(conn, batch_size=250)
             if learned_count:
-                log.info("Trade-learning journal recorded %s newly settled outcome(s); paper-only, rules unchanged", learned_count)
+                log.info("Trade-learning journal recorded %s newly settled outcome(s)", learned_count)
         except Exception as learning_exc:
-            log.warning("Trade-learning journal sync failed; trading rules and decision flow unchanged: %s", learning_exc)
+            log.warning("Trade-learning journal sync failed; adaptive policy keeps its last safe state: %s", learning_exc)
+        if source == "hybrid":
+            try:
+                adaptive_policy = update_adaptive_entry_policy(
+                    conn, configured_target_cents=max_entry, hard_cap_cents=hard_max_entry,
+                    enabled=_truthy("PAPER_ADAPTIVE_ENTRY_TARGET_ENABLED", True),
+                )
+                effective_target = float(adaptive_policy.get("effective_target_cents", max_entry))
+                max_entry = min(max_entry, effective_target)
+                if adaptive_policy.get("status") == "tightened":
+                    log.warning("Adaptive paper entry target tightened to %.2fc based on settled hybrid outcomes: %s",
+                                max_entry, adaptive_policy.get("reason", "sample criteria met"))
+            except Exception as adaptive_exc:
+                # Learning analytics are fail-safe: a policy error does not alter
+                # the user's configured 80c target or any other gate.
+                log.warning("Adaptive entry policy unavailable; using configured target %.2fc: %s", max_entry, adaptive_exc)
         # Keep chart trends precomputed even when no TradingView alert is waiting.
         # Retain this exact snapshot for the entry decision later in this cycle.
         trend_snapshot = _refresh_btc_trend_monitor(conn)
@@ -1099,6 +1115,7 @@ def run_once() -> dict[str, Any]:
                         "age_seconds": (trend_snapshot or {}).get("age_seconds"),
                     },
                     "reasons": [note], "final_decision_reason": note,
+                    "adaptive_learning_policy": adaptive_policy,
                     "disclaimer": "No paper entry opened at this price; hypothetical outcome is evaluated separately from actual trading.",
                 }
                 _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
@@ -1163,6 +1180,7 @@ def run_once() -> dict[str, Any]:
                     "reasons": list(fused.get("reasons", [])) + [f"Internal diagnostics: {r}" for r in internal_payload.get("reasons", [])],
                     "warnings": list(internal_payload.get("warnings", [])) + list(fused.get("warnings", [])),
                     "final_decision_reason": "; ".join(fused.get("reasons", [])),
+                    "adaptive_learning_policy": adaptive_policy,
                     "disclaimer": "TradingView primary; internal rules veto only major conflicts. Score is not a win probability. Paper mode only.",
                 }
                 entry_signal_log_id = _record_signal_log(
@@ -1237,6 +1255,7 @@ def run_once() -> dict[str, Any]:
             wait_payload = dict(payload or {})
             wait_payload["entry_price_gate"] = {"decision": "wait_for_better_price", "current_ask_cents": float(entry),
                                                  "target_max_cents": max_entry, "reason": price_note}
+            wait_payload["adaptive_learning_policy"] = adaptive_policy
             wait_payload["reasons"] = list(wait_payload.get("reasons", [])) + [price_note]
             wait_signal_id = _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
                                score=score, btc_price=entry_btc, strike=market["strike"],

@@ -131,6 +131,41 @@
   </div>
 </header>
 <main>
+  <section class="grid-3" aria-label="Engine overview">
+    <article class="card accent-green">
+      <div class="card-titleline"><h2>Realized P&amp;L</h2><span class="badge blue">After recorded fees</span></div>
+      <div class="metric" id="pnl">—</div>
+      <p class="small">Cumulative result from settled paper trades.</p>
+      <div class="rule"></div>
+      <div class="rowline"><span class="label">Win rate</span><span class="value" id="win-rate">—</span></div>
+      <div class="rowline"><span class="label">Settled trades</span><span class="value" id="settled-trades">—</span></div>
+      <div class="rowline"><span class="label">Wins / losses</span><span class="value" id="wins-losses">—</span></div>
+      <div class="rowline"><span class="label">All trades recorded</span><span class="value" id="total-trades">—</span></div>
+      <p class="small" style="margin-top:10px">Historical performance describes the sample so far; it is not a forecast for the next signal.</p>
+    </article>
+    <article class="card accent-green">
+      <div class="card-titleline"><h2>Engine connection</h2><span class="badge wait" id="engine-badge">Checking</span></div>
+      <div class="big-line" id="engine-status">Connecting…</div>
+      <p class="small" id="engine-updated">Checking API and worker heartbeat.</p>
+      <div class="rule"></div>
+      <div class="rowline"><span class="label">Paper worker</span><span class="value" id="worker-enabled">Checking</span></div>
+      <div class="rowline"><span class="label">Last heartbeat</span><span class="value" id="worker-heartbeat">—</span></div>
+      <div class="rowline"><span class="label">Last action</span><span class="value" id="worker-action">—</span></div>
+      <div class="rowline"><span class="label">Kalshi API</span><span class="value" id="kalshi-status">Checking</span></div>
+      <div class="rowline"><span class="label">Real orders</span><span class="value positive" id="real-orders">Disabled</span></div>
+    </article>
+    <article class="card accent-amber">
+      <div class="card-titleline"><h2>Risk limits</h2><span class="badge green">Guardrails</span></div>
+      <div class="rowline"><span class="label">Max cost / trade</span><span class="value" id="max-trade">—</span></div>
+      <div class="rowline"><span class="label">Daily loss limit</span><span class="value" id="daily-loss-limit">—</span></div>
+      <div class="rowline"><span class="label">Effective entry target</span><span class="value" id="adaptive-entry-target">—</span></div>
+      <p class="small" id="adaptive-entry-note" style="margin-top:6px">Adaptive paper-only policy status will appear here.</p>
+      <div class="rowline"><span class="label">Open exposure</span><span class="value" id="exposure">—</span></div>
+      <div class="rowline"><span class="label">Open positions</span><span class="value" id="open-positions">—</span></div>
+      <div class="notice"><strong>Safety lock:</strong> This dashboard is read-only. It cannot place, close, or enable real orders.</div>
+    </article>
+  </section>
+
   <section class="intro">
     <div class="eyebrow">Engine overview / trading journal</div>
     <h1>Your engine. One clear view.</h1>
@@ -190,41 +225,6 @@
         <div><h3>Entry-time warnings</h3><ul class="reason-list" id="active-position-warnings"><li>No entry-time warnings recorded.</li></ul></div>
       </div>
     </div>
-  </section>
-
-  <section class="grid-3" aria-label="Engine overview">
-    <article class="card accent-green">
-      <div class="card-titleline"><h2>Engine connection</h2><span class="badge wait" id="engine-badge">Checking</span></div>
-      <div class="big-line" id="engine-status">Connecting…</div>
-      <p class="small" id="engine-updated">Checking API and worker heartbeat.</p>
-      <div class="rule"></div>
-      <div class="rowline"><span class="label">Paper worker</span><span class="value" id="worker-enabled">Checking</span></div>
-      <div class="rowline"><span class="label">Last heartbeat</span><span class="value" id="worker-heartbeat">—</span></div>
-      <div class="rowline"><span class="label">Last action</span><span class="value" id="worker-action">—</span></div>
-      <div class="rowline"><span class="label">Kalshi API</span><span class="value" id="kalshi-status">Checking</span></div>
-      <div class="rowline"><span class="label">Real orders</span><span class="value positive" id="real-orders">Disabled</span></div>
-    </article>
-
-    <article class="card accent-green">
-      <div class="card-titleline"><h2>Realized P&amp;L</h2><span class="badge blue">After recorded fees</span></div>
-      <div class="metric" id="pnl">—</div>
-      <p class="small">Cumulative result from settled paper trades.</p>
-      <div class="rule"></div>
-      <div class="rowline"><span class="label">Win rate</span><span class="value" id="win-rate">—</span></div>
-      <div class="rowline"><span class="label">Settled trades</span><span class="value" id="settled-trades">—</span></div>
-      <div class="rowline"><span class="label">Wins / losses</span><span class="value" id="wins-losses">—</span></div>
-      <div class="rowline"><span class="label">All trades recorded</span><span class="value" id="total-trades">—</span></div>
-      <p class="small" style="margin-top:10px">Historical performance describes the sample so far; it is not a forecast for the next signal.</p>
-    </article>
-
-    <article class="card accent-amber">
-      <div class="card-titleline"><h2>Risk limits</h2><span class="badge green">Guardrails</span></div>
-      <div class="rowline"><span class="label">Max cost / trade</span><span class="value" id="max-trade">—</span></div>
-      <div class="rowline"><span class="label">Daily loss limit</span><span class="value" id="daily-loss-limit">—</span></div>
-      <div class="rowline"><span class="label">Open exposure</span><span class="value" id="exposure">—</span></div>
-      <div class="rowline"><span class="label">Open positions</span><span class="value" id="open-positions">—</span></div>
-      <div class="notice"><strong>Safety lock:</strong> This dashboard is read-only. It cannot place, close, or enable real orders.</div>
-    </article>
   </section>
 
   <section class="section card hero" aria-label="Latest directional signal context">
@@ -376,7 +376,7 @@
 
   <section class="card section" aria-label="Post-trade learning feedback">
     <div class="section-head">
-      <div><h2>Post-trade learning loop</h2><p class="section-desc">Each settled paper trade is recorded with its entry-time chart/features and net outcome. This learns through structured records and recurring cohorts; it does not automatically change trading rules after one result.</p></div>
+      <div><h2>Post-trade learning loop</h2><p class="section-desc">Each settled paper trade is recorded once with entry-time chart/features and net outcome. The learning loop reviews cohorts and can conservatively tighten the preferred entry target after repeated fee-inclusive underperformance; it never loosens the target automatically.</p></div>
       <span class="badge blue" id="learning-badge">Loading learning journal</span>
     </div>
     <div class="mini-grid">
@@ -394,9 +394,14 @@
       </article>
       <article class="learning-review">
         <div class="card-kicker">How the bot learns</div>
-        <h3 style="margin-top:7px">Record first; adjust only with evidence</h3>
-        <p id="learning-policy">Every outcome adds one observation. Patterns are compared by trend alignment, entry price, evidence score, volume, and momentum. No trade result changes rules automatically.</p>
-        <div class="notice" style="margin-top:10px"><strong>Safety rule:</strong> one trade is not proof of cause. Threshold updates remain manual, require larger cohorts, regression tests, and out-of-sample paper validation.</div>
+        <h3 id="learning-policy-title" style="margin-top:7px">Bounded adaptive entry policy</h3>
+        <p id="learning-policy">Each settled result becomes one observation. Target adjustments require a sufficiently large, repeatedly poor high-price cohort.</p>
+        <div class="mini-grid" style="margin-top:10px">
+          <div class="mini"><div class="label">Current target</div><div class="value" id="learning-effective-target">—</div></div>
+          <div class="mini"><div class="label">Automatic tightenings</div><div class="value" id="learning-adjustment-count">0</div></div>
+          <div class="mini"><div class="label">Last reviewed sample</div><div class="value" id="learning-policy-sample">—</div></div>
+        </div>
+        <div class="notice" style="margin-top:10px"><strong>Safety rules:</strong> only the preferred entry target may tighten, by at most 1¢ per qualifying review and at most 5¢ below its initial configured value. The 92¢ hard cap, trade budget, daily loss limit, and live-trading permissions are never changed by learning.</div>
       </article>
     </div>
     <div style="margin-top:15px">
@@ -596,7 +601,7 @@
     },null,2));
   }
 
-  let nextSignalCountdownState={phase:'',capturedAt:0,responseRemaining:null,windowEndMs:NaN,windowStart:null,direction:'',alertAge:null,reason:''};
+  let nextSignalCountdownState={phase:'',capturedAt:0,responseRemaining:null,windowEndMs:NaN,windowStart:null,direction:'',alertAge:null,maxAge:300,reason:'',waitingForPrice:false,selectedDirection:'',entryAsk:null,targetAsk:null};
   function configureNextSignalCountdown(cw,dataForCountdown={}){
     cw=cw||{};
     const phase=String(cw.phase||'');
@@ -610,9 +615,20 @@
     const latest=dataForCountdown.latest_directional_signal||{};
     const start=cw.window_start?Date.parse(cw.window_start):NaN, end=cw.window_end?Date.parse(cw.window_end):NaN;
     const created=latest.created_at?Date.parse(latest.created_at):NaN;
+    const latestSide=direction(latest.proposed_direction||latest.direction);
     const matching=Number.isFinite(created)&&(!Number.isFinite(start)||created>=start)&&(!Number.isFinite(end)||created<end)&&
-      direction(latest.direction||latest.proposed_direction)===direction(cw.direction);
-    window.__btcLatestDecisionStatus=(phase==='signal_received'&&matching)?String(latest.decision_status||''):'';
+      latestSide===direction(cw.direction);
+    const latestStatus=String(latest.decision_status||'').toLowerCase();
+    const waitingForPrice=phase==='signal_received'&&matching&&!latest.is_stale&&latestStatus==='wait_for_better_price'&&
+      ['BUY UP','BUY DOWN'].includes(latestSide)&&hasNum(cw.alert_age_seconds)&&
+      Number(cw.alert_age_seconds)<=(hasNum(cw.max_age_seconds)?Number(cw.max_age_seconds):300);
+    nextSignalCountdownState.waitingForPrice=waitingForPrice;
+    nextSignalCountdownState.selectedDirection=latestSide;
+    nextSignalCountdownState.maxAge=hasNum(cw.max_age_seconds)?Number(cw.max_age_seconds):300;
+    nextSignalCountdownState.entryAsk=hasNum(latest.entry_ask_cents)?Number(latest.entry_ask_cents):null;
+    nextSignalCountdownState.targetAsk=hasNum(latest.max_entry_cents)?Number(latest.max_entry_cents):
+      (hasNum(dataForCountdown.risk?.entry_target_max_cents)?Number(dataForCountdown.risk.entry_target_max_cents):null);
+    window.__btcLatestDecisionStatus=(phase==='signal_received'&&matching)?latestStatus:'';
     updateNextSignalCountdown();
   }
   function nextQuarterBoundaryMs(nowMs){return (Math.floor(nowMs/900000)+1)*900000;}
@@ -620,6 +636,17 @@
     const panel=$('next-signal-waiting');
     if(!panel||panel.style.display==='none') return;
     const st=nextSignalCountdownState,now=Date.now();
+    if(st.phase==='signal_received'&&st.waitingForPrice&&['BUY UP','BUY DOWN'].includes(st.selectedDirection)&&st.alertAge!==null){
+      const elapsed=Math.max(0,(now-st.capturedAt)/1000);
+      const left=Math.max(0,Math.ceil(st.maxAge-st.alertAge-elapsed));
+      const mm=Math.floor(left/60),ss=left%60;
+      write('next-signal-countdown-label',`${st.selectedDirection} alert validity remaining`);
+      write('next-signal-countdown',`${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`);
+      write('next-signal-countdown-help',left>0
+        ?`Waiting for the ${st.selectedDirection} side ask to reach ${st.targetAsk===null?'the configured entry target':cents(st.targetAsk)}. Current ask: ${st.entryAsk===null?'not recorded':cents(st.entryAsk)}. This alert expires when its freshness window ends; it will not be carried into a later 15-minute window.`
+        :'The alert freshness window has expired. The bot must discard it rather than reuse this direction.');
+      return;
+    }
     if(st.phase==='signal_received'&&['BUY UP','BUY DOWN'].includes(st.direction)&&st.alertAge!==null&&st.alertAge<=300){
       const latestStatus=String((window.__btcLatestDecisionStatus||''));
       if(latestStatus){
@@ -670,11 +697,21 @@
       (!Number.isFinite(windowEndMs)||lastEvalMs<windowEndMs)&&
       direction(lastEval.direction||lastEval.proposed_direction)===directionNow;
     const evaluatedStatus=String(lastEval.decision_status||'').toLowerCase();
-    const alreadyEvaluated=hasFreshAlert&&evalInThisWindow&&Boolean(evaluatedStatus);
+    const lastSide=direction(lastEval.proposed_direction||lastEval.direction);
+    const waitingForPrice=hasFreshAlert&&evalInThisWindow&&!lastEval.is_stale&&
+      evaluatedStatus==='wait_for_better_price'&&['BUY UP','BUY DOWN'].includes(lastSide)&&lastSide===directionNow;
+    const currentAsk=hasNum(lastEval.entry_ask_cents)?Number(lastEval.entry_ask_cents):null;
+    const targetAsk=hasNum(lastEval.max_entry_cents)?Number(lastEval.max_entry_cents):
+      (hasNum(data.risk?.entry_target_max_cents)?Number(data.risk.entry_target_max_cents):null);
+    const validityLeft=hasNum(cw.alert_age_seconds)?Math.max(0,(hasNum(cw.max_age_seconds)?Number(cw.max_age_seconds):300)-Number(cw.alert_age_seconds)):null;
     let status='Waiting For Next Available Signal';
     let summary='No paper position is open. The bot is waiting for a fresh indicator alert. No previous directional signal is reused as a new entry.';
     let badge='Waiting for signal',badgeTone='amber';
-    if(hasFreshAlert&&!alreadyEvaluated){
+    if(waitingForPrice){
+      status=`${lastSide} · WAITING FOR BETTER ENTRY PRICE`;
+      summary=`The indicator selected ${lastSide}. The current executable ask is ${currentAsk===null?'not available':cents(currentAsk)}${targetAsk===null?'':`; the preferred entry target is ${cents(targetAsk)}`}. No paper position has been opened yet. The worker may keep rechecking the price only while this alert is fresh and belongs to the current 15-minute window; if the ask does not reach the target in time, the signal must be skipped rather than reused.`;
+      badge='Waiting for better price';badgeTone='amber';
+    }else if(hasFreshAlert&&!alreadyEvaluated){
       status=`${directionNow} ALERT RECEIVED · EVALUATION PENDING`;
       summary='A fresh alert is registered for this 15-minute window. It is not a trade confirmation: current market quotes, trend data, entry price, spread, signal freshness, and risk checks must still pass.';
       badge='Alert received',badgeTone='green';
@@ -695,18 +732,26 @@
     write('next-signal-summary',summary);
     setBadge('active-position-badge',badge,badgeTone);
     const reasons=[];
-    if(cw.reason) reasons.push(String(cw.reason));
-    if(phase==='awaiting_indicator') reasons.push('The current 15-minute window has not yet recorded a fresh directional alert.');
-    else if(phase==='no_fresh_signal') reasons.push('The expected response grace period has expired without a current-window direction.');
-    else if(phase==='indicator_wait') reasons.push('The indicator explicitly told the bot to wait; this is not an entry signal.');
-    else if(phase==='signal_received') reasons.push('A fresh alert was received, but evaluation and safety checks may still be pending.');
-    if(!hasFreshAlert) reasons.push('Any older UP/DOWN evaluation is historical context only and cannot be carried into a new entry.');
-    if(phase!=='signal_received') reasons.push('No new position will open until a valid alert and all market, trend, price, spread, and risk checks pass.');
+    if(waitingForPrice){
+      reasons.push(`The current indicator direction is ${lastSide}; it is a pending entry candidate, not an open position.`);
+      if(currentAsk!==null&&targetAsk!==null) reasons.push(`Current ask ${cents(currentAsk)} is above the target ${cents(targetAsk)}; the worker is waiting instead of chasing the price.`);
+      else if(lastEval.reasons?.length) reasons.push(...lastEval.reasons.slice(0,3).map(formatReason));
+      if(validityLeft!==null) reasons.push(validityLeft>0?`The alert has approximately ${Math.ceil(validityLeft)} seconds of freshness remaining.`:'The alert freshness window has expired and it must not be reused.');
+      reasons.push('If the target is not reached while the alert remains fresh and in the same window, the alert will be skipped.');
+    }else{
+      if(cw.reason) reasons.push(String(cw.reason));
+      if(phase==='awaiting_indicator') reasons.push('The current 15-minute window has not yet recorded a fresh directional alert.');
+      else if(phase==='no_fresh_signal') reasons.push('The expected response grace period has expired without a current-window direction.');
+      else if(phase==='indicator_wait') reasons.push('The indicator explicitly told the bot to wait; this is not an entry signal.');
+      else if(phase==='signal_received') reasons.push('A fresh alert was received, but evaluation and safety checks may still be pending.');
+      if(!hasFreshAlert) reasons.push('Any older UP/DOWN evaluation is historical context only and cannot be carried into a new entry.');
+      if(phase!=='signal_received') reasons.push('No new position will open until a valid alert and all market, trend, price, spread, and risk checks pass.');
+    }
     const latest=data.latest_signal||{};
     if(latest.is_stale===true||latest.is_current_window===false) reasons.push('The latest saved evaluation is marked stale or outside the current window; it is not eligible as a new signal.');
     const unique=[...new Set(reasons.filter(Boolean))];
     setList('next-signal-reasons',unique,'Waiting for a current-window status reason from the server.');
-    write('next-signal-window-meta',`${cw.window_start&&cw.window_end?`Current window: ${time(cw.window_start)} – ${time(cw.window_end)}`:'Current window timing unavailable'}${hasNum(cw.window_elapsed_seconds)?` · elapsed ${Math.floor(Number(cw.window_elapsed_seconds)/60)}m ${Math.floor(Number(cw.window_elapsed_seconds)%60)}s`:''}${hasNum(cw.max_age_seconds)?` · maximum alert age ${nfmt(cw.max_age_seconds,0)}s`:''}`);
+    write('next-signal-window-meta',`${cw.window_start&&cw.window_end?`Current window: ${time(cw.window_start)} – ${time(cw.window_end)}`:'Current window timing unavailable'}${hasNum(cw.window_elapsed_seconds)?` · elapsed ${Math.floor(Number(cw.window_elapsed_seconds)/60)}m ${Math.floor(Number(cw.window_elapsed_seconds)%60)}s`:''}${hasNum(cw.max_age_seconds)?` · maximum alert age ${nfmt(cw.max_age_seconds,0)}s`:''}${waitingForPrice?` · pending direction: ${lastSide}`:''}`);
     configureNextSignalCountdown(cw,data);
   }
   function renderActivePosition(data){
@@ -804,7 +849,12 @@
     write('learning-net-pnl',money(s.net_pnl_dollars));
     if($('learning-net-pnl'))$('learning-net-pnl').className='value '+(Number(s.net_pnl_dollars)>0?'positive':Number(s.net_pnl_dollars)<0?'negative':'');
     write('learning-win-rate',hasNum(s.win_rate_percent)?`${nfmt(s.win_rate_percent,1)}%`:'—');
-    write('learning-policy',report.policy||'Each settled trade is recorded once with entry features. Rule changes are never automatic.');
+    const adaptive=report.adaptive_policy||{};
+    write('learning-policy',adaptive.reason||report.policy||'Learning policy status is not available.');
+    write('learning-policy-title',adaptive.enabled===false?'Adaptive target adjustment disabled':adaptive.status==='tightened'?'Entry target tightened from recent outcomes':adaptive.status==='floor_reached'?'Conservative target floor reached':'Bounded adaptive entry policy');
+    write('learning-effective-target',hasNum(adaptive.effective_target_cents)?cents(adaptive.effective_target_cents):'—');
+    write('learning-adjustment-count',adaptive.adjustment_count??0);
+    write('learning-policy-sample',`${adaptive.last_sample_count??0} reviewed · ${hasNum(adaptive.last_sample_net_pnl_cents)?signedMoneyCents(adaptive.last_sample_net_pnl_cents):'net P&L not yet available'}`);
     const latest=report.latest_review||null;
     if(latest){
       const feature=latest.features||{},review=latest.review||{};
@@ -897,7 +947,12 @@
     write('pnl',money(s.net_pnl_dollars||0));if($('pnl'))$('pnl').className='metric '+(Number(s.net_pnl_dollars)>0?'positive':Number(s.net_pnl_dollars)<0?'negative':'');
     write('win-rate',hasNum(s.win_rate_percent)?`${nfmt(s.win_rate_percent,1)}%`:'Not enough data');
     write('settled-trades',s.settled_trades??0);write('wins-losses',`${s.wins??0} / ${s.losses??0}`);write('total-trades',s.total_trades??0);
-    write('max-trade',money(r.max_trade_dollars));write('daily-loss-limit',money(r.max_daily_loss_dollars));write('exposure',money(r.open_exposure_dollars));write('open-positions',s.open_positions??0);
+    write('max-trade',money(r.max_trade_dollars));write('daily-loss-limit',money(r.max_daily_loss_dollars));
+    write('adaptive-entry-target',hasNum(r.entry_target_max_cents)?cents(r.entry_target_max_cents):'—');
+    write('adaptive-entry-note',r.adaptive_entry_target_enabled
+      ?`${Number(r.adaptive_entry_target_adjustment_count||0)} automatic tightenings · ${r.adaptive_entry_target_reason||'Collecting settled hybrid trade outcomes.'}`
+      :'Configured target active; automatic target adjustment is disabled.');
+    write('exposure',money(r.open_exposure_dollars));write('open-positions',s.open_positions??0);
     write('next-worker-status',worker==='running'?'Worker running':worker==='stale'?'Heartbeat stale':'Worker not confirmed');
     write('next-last-signal',d.latest_signal?.created_at?time(d.latest_signal.created_at):'No saved signal');
     write('api-status',h.api_ok?'Healthy':'Check API');if($('api-status'))$('api-status').className='value '+(h.api_ok?'positive':'negative');

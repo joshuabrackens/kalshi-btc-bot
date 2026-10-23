@@ -487,6 +487,11 @@ def dashboard_data() -> dict[str, Any]:
             "SELECT updated_at, status, snapshot_json FROM btc_trend_monitor WHERE monitor_key=? LIMIT 1",
             ("btc_15m",),
         ).fetchone()
+        adaptive_policy_row = conn.execute(
+            """SELECT effective_target_cents,adjustment_count,last_sample_count,last_sample_net_pnl_cents,
+                      last_reason,updated_at FROM adaptive_policy_state WHERE policy_key=? LIMIT 1""",
+            ("btc_hybrid_entry_target",),
+        ).fetchone()
 
     trend_monitor = None
     if trend_monitor_row:
@@ -632,6 +637,27 @@ def dashboard_data() -> dict[str, Any]:
                              "No linked signal-log row was available for this older position; the trade notes are shown without guessing a rationale."),
         }
 
+    hard_entry_cap = min(99.0, max(1.0, _env_float("PAPER_MAX_ENTRY_CENTS", 92.0, 1.0)))
+    configured_entry_target = min(hard_entry_cap, max(1.0, min(99.0, _env_float("PAPER_ENTRY_TARGET_MAX_CENTS", 80.0, 1.0))))
+    adaptive_policy_enabled = (
+        os.getenv("PAPER_SIGNAL_SOURCE", "internal").strip().lower() == "hybrid"
+        and _env_bool("PAPER_ADAPTIVE_ENTRY_TARGET_ENABLED", True)
+    )
+    adaptive_entry_target = configured_entry_target
+    adaptive_adjustment_count = 0
+    adaptive_entry_reason = (
+        "Bounded adaptation is enabled in hybrid paper mode; it waits for at least 20 settled hybrid trades before considering a conservative price-target adjustment."
+        if adaptive_policy_enabled else "Adaptive entry targeting is inactive; configured entry target is in effect."
+    )
+    if adaptive_policy_row:
+        adaptive_adjustment_count = int(adaptive_policy_row[1] or 0)
+        adaptive_entry_reason = str(adaptive_policy_row[4] or adaptive_entry_reason)
+        if adaptive_policy_enabled:
+            try:
+                adaptive_entry_target = min(configured_entry_target, float(adaptive_policy_row[0]))
+            except (TypeError, ValueError, OverflowError):
+                adaptive_entry_target = configured_entry_target
+
     return {
         "health": {
             "api_ok": True,
@@ -652,8 +678,12 @@ def dashboard_data() -> dict[str, Any]:
             "max_trade_dollars": round(_env_float("MAX_TRADE_DOLLARS", 1.00, 0.01), 2),
             "max_daily_loss_dollars": round(_env_float("MAX_DAILY_LOSS_DOLLARS", 10.00, 0.01), 2),
             "open_exposure_dollars": round(float(exposure or 0) / 100, 2),
-            "configured_hard_max_entry_cents": round(_env_float("PAPER_MAX_ENTRY_CENTS", 92.0, 1.0), 2),
-            "entry_target_max_cents": round(min(_env_float("PAPER_MAX_ENTRY_CENTS", 92.0, 1.0), _env_float("PAPER_ENTRY_TARGET_MAX_CENTS", 80.0, 1.0)), 2),
+            "configured_hard_max_entry_cents": round(hard_entry_cap, 2),
+            "configured_entry_target_max_cents": round(configured_entry_target, 2),
+            "entry_target_max_cents": round(adaptive_entry_target, 2),
+            "adaptive_entry_target_enabled": adaptive_policy_enabled,
+            "adaptive_entry_target_adjustment_count": adaptive_adjustment_count,
+            "adaptive_entry_target_reason": adaptive_entry_reason,
         },
         "stats": {
             "total_trades": int(total or 0),

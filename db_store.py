@@ -269,6 +269,23 @@ def ensure_schema(conn: DatabaseConnection) -> None:
         )""")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_learning_trade_id ON trade_learning(trade_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_settled ON trade_learning(settled_at, trade_id)")
+        # Bounded adaptive entry-target state. It can only tighten the preferred
+        # paper entry target; the configured 92c hard cap and dollar risk limits
+        # are never modified by this policy.
+        conn.execute("""CREATE TABLE IF NOT EXISTS adaptive_policy_state (
+            policy_key TEXT PRIMARY KEY, base_target_cents REAL NOT NULL,
+            effective_target_cents REAL NOT NULL, last_evaluated_trade_count INTEGER NOT NULL DEFAULT 0,
+            last_evaluated_latest_trade_id INTEGER NOT NULL DEFAULT 0,
+            adjustment_count INTEGER NOT NULL DEFAULT 0, last_sample_count INTEGER NOT NULL DEFAULT 0,
+            last_sample_net_pnl_cents REAL, last_reason TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
+        adaptive_policy_columns = _existing_columns(conn, "adaptive_policy_state")
+        if "last_evaluated_latest_trade_id" not in adaptive_policy_columns:
+            if backend == "postgresql":
+                conn.execute("ALTER TABLE adaptive_policy_state ADD COLUMN IF NOT EXISTS last_evaluated_latest_trade_id INTEGER NOT NULL DEFAULT 0")
+            else:
+                conn.execute("ALTER TABLE adaptive_policy_state ADD COLUMN last_evaluated_latest_trade_id INTEGER NOT NULL DEFAULT 0")
         # Existing records don't identify the TradingView chart timeframe; don't invent it.
         conn.execute(
             "UPDATE paper_trades SET timeframe = '15m contract; TV timeframe unknown' "

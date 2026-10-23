@@ -1,13 +1,15 @@
-"""Persistent post-trade feedback for the BTC paper bot.
+"""Persistent post-trade feedback and bounded paper-only adaptation.
 
-This module records an immutable snapshot of each settled paper trade and its
-entry-time features, then summarizes outcomes by observable cohorts. It never
-changes entry thresholds, enables trading, or edits strategy rules automatically.
+Every settled trade is recorded once with entry-time features. A conservative
+adaptive policy may tighten the preferred entry target after a minimum cohort
+shows sufficiently poor fee-inclusive outcomes. It never loosens the configured
+target, changes the hard cap/dollar risk limits, or enables live trading.
 One trade is one observation, not proof of cause.
 """
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from math import isfinite
@@ -297,6 +299,173 @@ def sync_settled_trade_learning(conn: Any, *, batch_size: int = 250) -> int:
     return added
 
 
+
+_ADAPTIVE_POLICY_KEY = "btc_hybrid_entry_target"
+_ADAPTIVE_MIN_TRADES = 20
+_ADAPTIVE_REEVALUATE_EVERY = 10
+_ADAPTIVE_TARGET_STEP_CENTS = 1.0
+_ADAPTIVE_MAX_TIGHTEN_CENTS = 5.0
+_ADAPTIVE_FLOOR_CENTS = 65.0
+
+
+def _configured_target() -> float:
+    try:
+        value = float(os.getenv("PAPER_ENTRY_TARGET_MAX_CENTS", "80"))
+        return min(99.0, max(1.0, value))
+    except (TypeError, ValueError, OverflowError):
+        return 80.0
+
+
+def update_adaptive_entry_policy(
+    conn: Any, *, configured_target_cents: float, hard_cap_cents: float, enabled: bool = True,
+) -> dict[str, Any]:
+    """Update a one-way, bounded entry-target policy from settled hybrid trades.
+
+    It evaluates the last 20 settled hybrid outcomes after the first 20 and
+    then once per 10 additional newer hybrid trade IDs. A settled-journal backfill
+    of older trades does not trigger repeated adjustments. Only if at least 8 observations fall in the top $0.05
+    of the active target band, that subgroup has net loss of at least 8 cents,
+    and losses are at least as common as wins, the preferred target tightens by
+    one cent. It can tighten at most five cents below the initial configured
+    target and never raises the target automatically. Hard cap and dollar limits
+    are never altered.
+    """
+    configured = min(float(hard_cap_cents), max(1.0, min(99.0, float(configured_target_cents))))
+    if not enabled:
+        return {
+            "enabled": False, "status": "disabled", "configured_target_cents": round(configured, 2),
+            "effective_target_cents": round(configured, 2), "hard_cap_cents": round(float(hard_cap_cents), 2),
+            "adjustment_count": 0,
+            "last_sample_count": 0, "last_sample_net_pnl_cents": None,
+            "reason": "Automatic target adjustment is disabled; the configured target is used unchanged.",
+            "automatic_changes_scope": "preferred entry target only; hard cap and dollar risk limits are unchanged",
+        }
+
+    total = int(conn.execute("SELECT COUNT(*) FROM trade_learning WHERE signal_source='hybrid'").fetchone()[0] or 0)
+    latest_trade_id = int(conn.execute("SELECT COALESCE(MAX(trade_id),0) FROM trade_learning WHERE signal_source='hybrid'").fetchone()[0] or 0)
+    state = conn.execute(
+        """SELECT base_target_cents,effective_target_cents,last_evaluated_trade_count,
+                  last_evaluated_latest_trade_id,adjustment_count,last_sample_count,
+                  last_sample_net_pnl_cents,last_reason
+           FROM adaptive_policy_state WHERE policy_key=? LIMIT 1""", (_ADAPTIVE_POLICY_KEY,)
+    ).fetchone()
+    if state:
+        original_base = min(float(state[0]), configured)
+        effective = min(configured, float(state[1]), original_base)
+        last_evaluated_count = int(state[2] or 0)
+        last_evaluated_latest_trade_id = int(state[3] or 0)
+        adjustments = int(state[4] or 0)
+        last_sample_count = int(state[5] or 0)
+        last_sample_net = _number(state[6])
+        reason = str(state[7] or "No adaptive review has run yet.")
+    else:
+        original_base = configured
+        effective = configured
+        last_evaluated_count = 0
+        last_evaluated_latest_trade_id = 0
+        adjustments = 0
+        last_sample_count = 0
+        last_sample_net = None
+        reason = f"Collecting settled hybrid outcomes; {max(0, _ADAPTIVE_MIN_TRADES-total)} more trade(s) required before the first adaptive review."
+
+    # Never loosen the persisted policy after it has tightened. An explicit
+    # operator change to a lower configured target is applied immediately.
+    floor = max(_ADAPTIVE_FLOOR_CENTS, original_base - _ADAPTIVE_MAX_TIGHTEN_CENTS)
+    effective = max(floor, effective) if effective < original_base else original_base
+    if effective > configured:
+        effective = configured
+
+    newer_hybrid_trades = int(conn.execute(
+        "SELECT COUNT(*) FROM trade_learning WHERE signal_source='hybrid' AND trade_id>?",
+        (last_evaluated_latest_trade_id,),
+    ).fetchone()[0] or 0)
+    should_evaluate = total >= _ADAPTIVE_MIN_TRADES and (
+        last_evaluated_latest_trade_id == 0 or newer_hybrid_trades >= _ADAPTIVE_REEVALUATE_EVERY
+    )
+    status = "collecting_sample" if total < _ADAPTIVE_MIN_TRADES else "holding"
+    sample_rows: list[tuple[Any, ...]] = []
+    if should_evaluate:
+        sample_rows = conn.execute(
+            """SELECT entry_cents,pnl_cents FROM trade_learning WHERE signal_source='hybrid'
+               ORDER BY settled_at DESC,trade_id DESC LIMIT ?""", (_ADAPTIVE_MIN_TRADES,)
+        ).fetchall()
+        last_sample_count = len(sample_rows)
+        last_sample_net = round(sum(_number(r[1]) or 0.0 for r in sample_rows), 4)
+        target_zone = [r for r in sample_rows if _number(r[0]) is not None and
+                       effective - 5.0 <= float(r[0]) <= effective]
+        target_zone_pnls = [_number(r[1]) or 0.0 for r in target_zone]
+        target_zone_losses = sum(1 for value in target_zone_pnls if value < -0.005)
+        target_zone_wins = sum(1 for value in target_zone_pnls if value > 0.005)
+        zone_net = sum(target_zone_pnls)
+        last_evaluated_count = total
+        last_evaluated_latest_trade_id = latest_trade_id
+        if (len(sample_rows) >= _ADAPTIVE_MIN_TRADES and len(target_zone) >= 8
+                and zone_net <= -8.0 and target_zone_losses >= target_zone_wins
+                and effective > floor):
+            old = effective
+            effective = max(floor, effective - _ADAPTIVE_TARGET_STEP_CENTS)
+            adjustments += 1
+            status = "tightened" if effective < old else "floor_reached"
+            reason = (
+                f"Automatically tightened the preferred entry target from {old:.0f}¢ to {effective:.0f}¢: "
+                f"the last {len(sample_rows)} settled hybrid trades contained {len(target_zone)} trades at "
+                f"{old-5:.0f}–{old:.0f}¢ with {zone_net:.1f}¢ net P&L and {target_zone_losses} losses vs {target_zone_wins} wins. "
+                "Adjustment is one-way and capped; the hard cap and dollar risk limits are unchanged."
+            )
+        elif effective <= floor:
+            status = "floor_reached"
+            reason = f"Adaptive entry target is at its configured conservative floor of {floor:.0f}¢; no further tightening is allowed."
+        else:
+            status = "holding"
+            if len(target_zone) < 8:
+                reason = (f"Reviewed {len(sample_rows)} recent settled hybrid trades; only {len(target_zone)} fell in the active target zone, "
+                          "so evidence is insufficient for an automatic adjustment. Target unchanged.")
+            else:
+                reason = (f"Reviewed {len(sample_rows)} recent settled hybrid trades; target-zone net P&L was {zone_net:.1f}¢ "
+                          f"with {target_zone_wins} wins and {target_zone_losses} losses. Conservative adjustment criteria not met; target unchanged.")
+    elif total < _ADAPTIVE_MIN_TRADES:
+        status = "collecting_sample"
+        reason = (f"Collected {total}/{_ADAPTIVE_MIN_TRADES} settled hybrid trades for the adaptive review. "
+                  "Target remains at the configured value until the minimum sample is reached.")
+    else:
+        status = "holding"
+        reason = (f"No new adaptive review due: {newer_hybrid_trades} of {_ADAPTIVE_REEVALUATE_EVERY} additional newer settled hybrid trades collected. "
+                  f"Current preferred entry target remains {effective:.0f}¢.")
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        """INSERT INTO adaptive_policy_state
+           (policy_key,base_target_cents,effective_target_cents,last_evaluated_trade_count,
+            last_evaluated_latest_trade_id,adjustment_count,last_sample_count,last_sample_net_pnl_cents,last_reason,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(policy_key) DO UPDATE SET
+             base_target_cents=excluded.base_target_cents,
+             effective_target_cents=excluded.effective_target_cents,
+             last_evaluated_trade_count=excluded.last_evaluated_trade_count,
+             last_evaluated_latest_trade_id=excluded.last_evaluated_latest_trade_id,
+             adjustment_count=excluded.adjustment_count,last_sample_count=excluded.last_sample_count,
+             last_sample_net_pnl_cents=excluded.last_sample_net_pnl_cents,
+             last_reason=excluded.last_reason,updated_at=excluded.updated_at""",
+        (_ADAPTIVE_POLICY_KEY, original_base, effective, last_evaluated_count,
+         last_evaluated_latest_trade_id, adjustments, last_sample_count, last_sample_net, reason, now),
+    )
+    conn.commit()
+    persisted = conn.execute(
+        "SELECT effective_target_cents FROM adaptive_policy_state WHERE policy_key=?", (_ADAPTIVE_POLICY_KEY,)
+    ).fetchone()
+    effective = min(configured, float(persisted[0])) if persisted else effective
+    return {
+        "enabled": True, "status": status, "configured_target_cents": round(configured, 2),
+        "initial_target_cents": round(original_base, 2), "effective_target_cents": round(effective, 2),
+        "hard_cap_cents": round(float(hard_cap_cents), 2), "adjustment_count": adjustments,
+        "settled_hybrid_trades": total, "minimum_sample_required": _ADAPTIVE_MIN_TRADES,
+        "reevaluate_every_additional_trades": _ADAPTIVE_REEVALUATE_EVERY,
+        "last_sample_count": last_sample_count, "last_sample_net_pnl_cents": last_sample_net,
+        "reason": reason,
+        "automatic_changes_scope": "preferred entry target only; hard cap, trade dollar budget, daily loss limit, and live-trading permissions are never altered",
+        "policy_key": _ADAPTIVE_POLICY_KEY, "updated_at": now,
+    }
+
 def _parse_json_dict(value: Any) -> dict[str, Any]:
     return _payload(value)
 
@@ -400,13 +569,46 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         values = _cohort_rows(rows, field, label)
         cohorts[output_key] = values
         flat_cohorts.extend(values)
-    # Do not adapt parameters automatically; research notes are deliberately gated by sample size.
+    adaptive_row = conn.execute(
+        """SELECT base_target_cents,effective_target_cents,last_evaluated_trade_count,adjustment_count,
+                  last_sample_count,last_sample_net_pnl_cents,last_reason,updated_at
+           FROM adaptive_policy_state WHERE policy_key=? LIMIT 1""", (_ADAPTIVE_POLICY_KEY,)
+    ).fetchone()
+    adaptive_enabled = os.getenv("PAPER_ADAPTIVE_ENTRY_TARGET_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    configured = min(_configured_target(), _number(os.getenv("PAPER_MAX_ENTRY_CENTS", "92")) or 92.0)
+    if adaptive_row:
+        adaptive_policy = {
+            "enabled": adaptive_enabled,
+            "status": ("disabled" if not adaptive_enabled else
+                       "floor_reached" if "floor of" in str(adaptive_row[6] or "").lower() else
+                       "tightened" if str(adaptive_row[6] or "").startswith("Automatically tightened") else
+                       "holding" if int(adaptive_row[2] or 0) else "collecting_sample"),
+            "initial_target_cents": _number(adaptive_row[0]),
+            "configured_target_cents": configured,
+            "effective_target_cents": configured if not adaptive_enabled else min(configured, _number(adaptive_row[1]) or configured),
+            "adjustment_count": int(adaptive_row[3] or 0),
+            "last_sample_count": int(adaptive_row[4] or 0),
+            "last_sample_net_pnl_cents": _number(adaptive_row[5]),
+            "reason": ("Automatic target adjustment is disabled; configured target is active." if not adaptive_enabled else str(adaptive_row[6] or "Waiting for data.")),
+            "updated_at": adaptive_row[7],
+            "automatic_changes_scope": "preferred entry target only; hard cap, trade dollar budget, daily loss limit, and live-trading permissions are never altered",
+        }
+    else:
+        adaptive_policy = {
+            "enabled": adaptive_enabled, "status": "collecting_sample" if adaptive_enabled else "disabled",
+            "initial_target_cents": configured, "configured_target_cents": configured,
+            "effective_target_cents": configured, "adjustment_count": 0, "last_sample_count": 0,
+            "last_sample_net_pnl_cents": None,
+            "reason": ("No adaptive state exists yet. Worker initializes it and collects at least 20 settled hybrid trades before considering a change." if adaptive_enabled else "Automatic target adjustment is disabled."),
+            "automatic_changes_scope": "preferred entry target only; hard cap, trade dollar budget, daily loss limit, and live-trading permissions are never altered",
+        }
     return {
         "mode": "SIMULATION_ONLY",
-        "system": "post_trade_feedback_v1",
+        "system": "post_trade_feedback_v2",
         "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "automatic_strategy_changes_enabled": False,
-        "policy": "Every settled paper trade is stored once with its entry-time feature snapshot and net outcome. Cohort insights are descriptive and are never applied automatically to entry thresholds or trade permissions.",
+        "automatic_strategy_changes_enabled": adaptive_enabled,
+        "adaptive_policy": adaptive_policy,
+        "policy": "Every settled paper trade is stored once with its entry-time feature snapshot and net outcome. The bounded paper-only adaptation can only tighten the preferred entry target after a minimum sample and repeated negative fee-inclusive outcomes in the high-price cohort. It never loosens the target or changes the hard entry cap, trade budget, daily loss limit, or live-trading permissions.",
         "summary": summary,
         "cohorts": cohorts,
         "cohort_rows": flat_cohorts,
@@ -415,6 +617,6 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         "recent_reviews": rows[:10],
         "important": (
             "A result is classified by recorded net P&L; this is separate from the official market direction and from exit reason labels. "
-            "Entry features are observations, not proven causes. No threshold changes happen after a single trade. Hypothetical rejected-signal and shadow-exit outcomes remain separate."
+            "Entry features are observations, not proven causes. Adaptation requires at least 20 settled hybrid trades, a sufficient high-price cohort, and negative net outcomes; reviews occur no more than once per 10 additional settled hybrid trades. Hypothetical rejected-signal and shadow-exit outcomes remain separate."
         ),
     }

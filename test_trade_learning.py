@@ -103,7 +103,7 @@ def test_learning_classifies_realized_pnl_separately_from_exit_reason():
                 report = build_learning_report(conn)
                 assert report["summary"]["profitable"] == 1
                 assert report["summary"]["unprofitable"] == 0
-                assert report["automatic_strategy_changes_enabled"] is False
+                assert report["automatic_strategy_changes_enabled"] is True
             finally:
                 conn.close()
 
@@ -127,7 +127,7 @@ def test_unsettled_trade_is_not_learned_until_result_exists():
                 conn.close()
 
 
-def test_learning_report_exposes_research_cohorts_but_never_auto_tunes_rules():
+def test_learning_report_exposes_cohorts_and_bounded_adaptive_policy():
     with tempfile.TemporaryDirectory() as tmp:
         with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "cohorts.sqlite3")}):
             conn = _new_db(tmp)
@@ -137,14 +137,17 @@ def test_learning_report_exposes_research_cohorts_but_never_auto_tunes_rules():
                 sync_settled_trade_learning(conn)
                 report = build_learning_report(conn)
                 assert report["mode"] == "SIMULATION_ONLY"
-                assert report["automatic_strategy_changes_enabled"] is False
+                assert report["automatic_strategy_changes_enabled"] is True
+                assert report["adaptive_policy"]["effective_target_cents"] == 80.0
+                assert report["adaptive_policy"]["status"] == "collecting_sample"
                 assert len(report["recent_reviews"]) == 2
                 assert report["summary"]["trades_reviewed"] == 2
                 assert report["summary"]["profitable"] == 1
                 assert report["summary"]["unprofitable"] == 1
                 assert report["cohorts"]["trend_alignment"]
                 assert report["research_notes"]
-                assert "never applied automatically" in report["policy"]
+                assert "preferred entry target" in report["policy"]
+                assert "never loosens" in report["policy"]
             finally:
                 conn.close()
 
@@ -185,5 +188,112 @@ def test_legacy_settled_trade_uses_external_signal_link_when_signal_log_id_missi
                 features = json.loads(row[1])
                 assert features["entry_reasons"] == ["Linked through prior external alert id."]
                 assert features["trend_evidence_score"] == 74
+            finally:
+                conn.close()
+
+
+
+def _insert_learning_observation(conn, trade_id: int, *, entry: float = 78.0, pnl: float = -3.0):
+    stamp = f"2026-10-23T00:{trade_id % 60:02d}:00+00:00"
+    conn.execute(
+        """INSERT INTO trade_learning
+           (trade_id,created_at,settled_at,market_ticker,direction,contracts,entry_cents,
+            fee_cents_per_contract,trade_outcome,pnl_result,pnl_cents,signal_source,
+            feature_snapshot_json,review_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (trade_id, stamp, stamp, f"KXBTC15M-POLICY-{trade_id}", "UP", 1, entry, 2.0,
+         "DOWN" if pnl < 0 else "UP", "loss" if pnl < 0 else "profit", pnl, "hybrid", "{}", "{}"),
+    )
+    conn.commit()
+
+
+def test_adaptive_policy_tightens_only_after_minimum_negative_price_cohort_and_not_every_cycle():
+    from trade_learning import update_adaptive_entry_policy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "adaptive.sqlite3")}, clear=False):
+            conn = _new_db(tmp)
+            try:
+                for trade_id in range(1, 20):
+                    _insert_learning_observation(conn, trade_id, entry=78.0, pnl=-3.0)
+                first = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert first["effective_target_cents"] == 80.0
+                assert first["status"] == "collecting_sample"
+
+                _insert_learning_observation(conn, 20, entry=78.0, pnl=-3.0)
+                second = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert second["status"] == "tightened"
+                assert second["effective_target_cents"] == 79.0
+                assert second["adjustment_count"] == 1
+                assert second["hard_cap_cents"] == 92.0
+
+                same_cycle = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert same_cycle["effective_target_cents"] == 79.0
+                assert same_cycle["adjustment_count"] == 1
+
+                for trade_id in range(21, 31):
+                    _insert_learning_observation(conn, trade_id, entry=78.0, pnl=-3.0)
+                next_review = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert next_review["effective_target_cents"] == 78.0
+                assert next_review["adjustment_count"] == 2
+            finally:
+                conn.close()
+
+
+def test_adaptive_policy_does_not_loosen_and_never_changes_hard_cap_or_dollar_limits():
+    from trade_learning import update_adaptive_entry_policy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "adaptive-bounds.sqlite3")}, clear=False):
+            conn = _new_db(tmp)
+            try:
+                for trade_id in range(1, 21):
+                    _insert_learning_observation(conn, trade_id, entry=78.0, pnl=-3.0)
+                first = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert first["effective_target_cents"] == 79.0
+                # A later higher environment target must not override the persisted tighter target.
+                changed_env = update_adaptive_entry_policy(conn, configured_target_cents=82, hard_cap_cents=92)
+                assert changed_env["effective_target_cents"] == 79.0
+                disabled = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92, enabled=False)
+                assert disabled["effective_target_cents"] == 80.0
+                assert disabled["hard_cap_cents"] == 92.0
+            finally:
+                conn.close()
+
+
+def test_historical_backfill_does_not_repeat_adaptive_adjustments_on_same_latest_sample():
+    from trade_learning import update_adaptive_entry_policy
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "adaptive-backfill.sqlite3")}, clear=False):
+            conn = _new_db(tmp)
+            try:
+                # Seed the most recent/highest-ID 20 hybrid outcomes, representing
+                # the live sample that first activates the policy.
+                for trade_id in range(81, 101):
+                    _insert_learning_observation(conn, trade_id, entry=78.0, pnl=-3.0)
+                first = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert first["effective_target_cents"] == 79.0
+                assert first["adjustment_count"] == 1
+
+                # Backfill 80 older trade IDs with older settlement timestamps.
+                # This must not look like 80 new live outcomes and must not
+                # repeatedly tighten against an unchanged recent sample.
+                for trade_id in range(1, 81):
+                    stamp = f"2026-10-22T00:{trade_id % 60:02d}:00+00:00"
+                    conn.execute(
+                        """INSERT INTO trade_learning
+                           (trade_id,created_at,settled_at,market_ticker,direction,contracts,entry_cents,
+                            fee_cents_per_contract,trade_outcome,pnl_result,pnl_cents,signal_source,
+                            feature_snapshot_json,review_json)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (trade_id, stamp, stamp, f"KXBTC15M-BACKFILL-{trade_id}", "UP", 1, 78.0, 2.0,
+                         "DOWN", "loss", -3.0, "hybrid", "{}", "{}"),
+                    )
+                conn.commit()
+                after_backfill = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
+                assert after_backfill["effective_target_cents"] == 79.0
+                assert after_backfill["adjustment_count"] == 1
+                assert "No new adaptive review due" in after_backfill["reason"]
             finally:
                 conn.close()

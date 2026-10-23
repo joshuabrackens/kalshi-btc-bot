@@ -2,16 +2,16 @@
 
 ## Final status
 
-- **27 isolated test modules passed: 108 test cases.** Each module was run as a separate process to avoid global/module stub state leaking between tests.
+- **27 isolated test modules passed: 111 test cases.** Each module was run as a separate process to avoid global/module stub state leaking between tests.
 - **Offline end-to-end smoke test passed** from signed webhook intake through shared alert queue, hybrid decision, simulated paper entry, and dashboard heartbeat.
 - `python -m compileall -q .`: passed.
 - Both `.github/workflows/python-app.yml` and root `python-app.yml` parse as YAML, are byte-identical, and define the same 32-step workflow.
 - Dashboard inline JavaScript passed `node --check` after extracting the latest script from `dashboard.html`.
-- HTML structural validation found **197 element IDs with zero duplicate IDs**.
+- HTML structural validation found **203 element IDs with zero duplicate IDs**.
 - Dashboard regression checks passed for the top-priority active-position panel, separated current-window WAIT state, preserved historical directional context, countdown/reasoning content, and the learning panel.
 - A local headless Chromium render using mocked API responses exercised both the no-position “Waiting For Next Available Signal” state and an open DOWN position while the current-window state remained WAIT; both rendered with “Dashboard connected” and no browser/console exceptions.
 - Static safety scan found no assignment to dynamic `.innerHTML`; dashboard values are inserted through text-safe DOM APIs.
-- Per-trade learning tests verify idempotency, unsettled-trade exclusion, old-trade linkage through external alert ID when the direct signal-log ID is missing, realized P&L classification, and no automatic strategy tuning.
+- Per-trade learning tests verify idempotency, unsettled-trade exclusion, legacy linkage through external alert ID, realized P&L classification, bounded adaptive-entry policy thresholds, one-way tightening, the 5¢ cap, 10-new-trade review watermark, and protection against historical backfill causing repeat adjustments.
 
 ## Test modules and case counts
 
@@ -35,7 +35,7 @@
 | `test_performance_audit.py` | 4 | PASS |
 | `test_decision_audit.py` | 2 | PASS |
 | `test_performance_analytics.py` | 2 | PASS |
-| `test_trade_learning.py` | 5 | PASS |
+| `test_trade_learning.py` | 8 | PASS |
 | `test_analytics_api.py` | 1 | PASS |
 | `test_counterfactual_audit.py` | 1 | PASS |
 | `test_payload_safety.py` | 5 | PASS |
@@ -44,7 +44,7 @@
 | `test_manual_api_security.py` | 4 | PASS |
 | `test_app_http_surface.py` | 2 | PASS |
 | `test_dashboard_context.py` | 3 | PASS |
-| **Total** | **108** | **ALL PASS** |
+| **Total** | **111** | **ALL PASS** |
 
 The separate offline integration smoke test also passed:
 
@@ -59,10 +59,11 @@ This uses deterministic local stubs and a temporary database. It does not submit
 
 Each newly settled paper trade receives an idempotent entry-feature snapshot plus realized net-P&L classification. It stores observable context such as direction, chart bias, trend-score bucket, timeframe readings, entry price, momentum/volume alignment, chase warning, spread and linked entry rationale when available. The report compares cohorts and creates per-trade observational notes. Legacy trade rows without `entry_signal_log_id` can still recover their entry context from the associated external alert ID when that link exists.
 
-**The learning loop intentionally does not alter the trade rules automatically.** A single win/loss is too noisy to justify automatic strategy changes. Aggregate differences are labeled as research leads and need a larger sample, regression tests and out-of-sample paper validation before a human-approved rule change.
+**The learning loop now makes one bounded automatic adjustment in paper mode: it can tighten the preferred entry target by 1¢ after at least 20 settled hybrid outcomes, when at least 8 trades in the recent high-price target zone have net P&L at or below −8¢ and losses are at least as numerous as wins. It re-evaluates only after 10 additional newer hybrid trade IDs, never loosens, and stops at 5¢ below the initial target. It cannot change the 92¢ hard cap, trade budget, daily loss limit, or live-trading permission. All other strategy changes remain manual; one trade is never treated as causal proof.
 
 ## Limitations and deployment boundary
 
+- Final dashboard layout puts Realized P&L, Engine connection, and Risk limits in the first overview row, followed by Active paper position. The current-window WAIT state, latest directional evaluation, active-position entry rationale, and historical context remain independent. The learning panel reports the effective target and adjustment reason. The last dashboard regression run also asserts 203 element IDs with no duplicates and JavaScript syntax validity.
 - These tests are local and do not connect to production PostgreSQL or deploy to Render. PostgreSQL-specific migrations are covered by SQL-compatible design and adapter tests, but no live production database migration was exercised here.
 - Direct headless Chromium navigation to the local server was blocked by the execution environment (`ERR_BLOCKED_BY_ADMINISTRATOR`), so browser UI checks used `page.set_content()` with mocked API responses instead. The mocked waiting and active-position states rendered without browser exceptions; this still does not validate the live Render service or its current production payloads.
 - A passing test suite is not evidence that the strategy has positive expected value. The sample remains small and simulated.
