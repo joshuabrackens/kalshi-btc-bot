@@ -12,18 +12,41 @@ import paper_worker as w
 class WorkerSafetyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        w.DB_PATH = Path(self.tmp.name) / "test.sqlite3"
+        self._env_backup = {
+            key: os.environ.get(key)
+            for key in ("BOT_DB_PATH", "DATABASE_URL", "TRADING_MODE", "LIVE_TRADING_ENABLED",
+                        "MAX_TRADE_DOLLARS", "MAX_DAILY_LOSS_DOLLARS", "PAPER_STOP_LOSS_ENABLED",
+                        "PAPER_TREND_STOP_LOSS_ENABLED", "PAPER_TREND_STOP_SHADOW_MODE", "PAPER_SIGNAL_SOURCE",
+                        "PAPER_SHARED_SQLITE_OK")
+        }
+        # Use a test-owned SQLite journal. A leftover default journal must never
+        # influence risk limits, trigger provider calls, or leak positions across tests.
         os.environ.update({
+            "BOT_DB_PATH": str(Path(self.tmp.name) / "test.sqlite3"),
+            "DATABASE_URL": "",
             "TRADING_MODE": "paper",
             "LIVE_TRADING_ENABLED": "false",
+            "PAPER_SIGNAL_SOURCE": "internal",
+            "PAPER_SHARED_SQLITE_OK": "true",
             "MAX_TRADE_DOLLARS": "1.00",
             "MAX_DAILY_LOSS_DOLLARS": "10.00",
             "PAPER_STOP_LOSS_ENABLED": "false",
             "PAPER_TREND_STOP_LOSS_ENABLED": "false",
             "PAPER_TREND_STOP_SHADOW_MODE": "false",
         })
+        self._old_bundle = w._LATEST_SIGNAL_BUNDLE
+        self._old_bundle_at = w._LATEST_SIGNAL_BUNDLE_AT
+        w._LATEST_SIGNAL_BUNDLE = None
+        w._LATEST_SIGNAL_BUNDLE_AT = None
 
     def tearDown(self):
+        w._LATEST_SIGNAL_BUNDLE = self._old_bundle
+        w._LATEST_SIGNAL_BUNDLE_AT = self._old_bundle_at
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmp.cleanup()
 
     def test_live_mode_fails_closed(self):
@@ -76,7 +99,11 @@ class WorkerSafetyTests(unittest.TestCase):
             "yes_ask": 50, "no_ask": 50,
         }}
         try:
-            result = w.run_once()
+            with patch.object(w, "_refresh_btc_trend_monitor", return_value={
+                "status": "ok", "monitor_only": True, "updated_at": w._utcnow().isoformat(),
+                "candidate_bias": "MIXED", "evidence_score": 0, "timeframes": {},
+            }):
+                result = w.run_once()
             self.assertEqual(result["action"], "wait")
             c = w._connect()
             try:

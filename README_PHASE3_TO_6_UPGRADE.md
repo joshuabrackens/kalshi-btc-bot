@@ -1,85 +1,71 @@
-# BTC Bot Phase 3–6 Improvement Package (paper-only)
+# Phase 3–7 BTC bot master upgrade (paper-only)
 
-This package extends the existing BTC-only paper bot. It does not enable real orders and does not relax entry, spread, freshness, exposure, or daily-loss controls.
+This repository includes the existing BTC-only hybrid paper-trading flow plus retrospective strategy analytics, safer webhook payload handling, protected manual write APIs, a category-readiness registry, and a full GitHub Actions test matrix. This upgrade does not add real order placement or relax risk controls.
 
-## What this upgrade adds
+## Improvements
 
-### Phase 3 — Complete the decision journal
-- Adds a `decision_audit` table for webhook outcomes, alert status changes, signal evaluations, simulated entries/exits, settlements, and completed counterfactual reviews.
-- Adds normalized decision metadata to `signal_log`: proposed direction, decision status, observed entry ask/spread, trend bias/evidence, trend snapshot age, and counterfactual review fields.
-- Links audit events to alert IDs, signal-log IDs, and trade IDs wherever those IDs exist.
-- Records later risk-gate changes (for example, a candidate becoming `blocked`) rather than leaving its earlier status as if it had traded.
+### Phase 3 — Decision audit
+- Appends `decision_audit` events for webhooks, alert status transitions, evaluations, paper openings/exits/settlements, and completed counterfactual reviews.
+- Stores normalized proposed direction, decision status/reason, entry ask/spread, trend bias/evidence and freshness, with alert/signal/trade references where available.
+- Records pending market/order-book states without falsely consuming a fresh alert, and preserves alert freshness/window safeguards.
 
-### Phase 4 — Performance and entry-quality measurement
-- Adds read-only `/api/analytics` endpoint.
-- Reports settled journal results: net P&L, win rate, average net P&L per settled trade, profit factor, peak-to-trough drawdown, and rolling last-20/last-50 summaries.
-- Segments actual trade results by entry-price bucket, recorded chart-trend alignment, and chart evidence-score range.
-- Makes clear that evidence scores and ask-price percentages are not calibrated win probabilities.
+### Phase 4 — Historical performance analytics
+- Adds read-only `/api/analytics`: actual net P&L, win rate, average net per settled trade, profit factor, drawdown, rolling last-20/last-50, entry-price cohorts, trend-alignment cohorts, evidence-score cohorts, and decision-status totals.
+- Pulls the most recent journal rows when applying the 10,000-row analysis limit.
+- The analytics are descriptive. Scores/asks are not calibrated probabilities; small samples are not evidence of edge.
 
-### Phase 5 — Exit review
-- Compares stored trend-stop shadow observations with the actual journal P&L for the same settled trades.
-- Shows counts, hypothetical shadow-exit P&L, actual P&L, and the difference, with a warning that an observed bid is not a guaranteed fill.
+### Phase 5 — Exit and rejected-signal retrospective review
+- Compares actual settled P&L with recorded trend-stop shadow observations for the same trades.
+- Checks eligible rejected/no-entry signals against official Kalshi settlement as one hypothetical contract held to settlement, including the recorded entry fee. These results are separate from real paper-trade counts/P&L and exclude exit mechanics, slippage and impact.
+- Counterfactual review executes after the worker's trade-decision cycle and is bounded to one public result lookup per idle/monitoring cycle.
 
-### Phase 6 — Dashboard and operational auditability
-- Adds the Performance / Decision Quality section to the dashboard.
-- Shows recent decision events, alert status transitions, counterfactual results, and operational note counts.
-- Adds read-only `/api/decision-audit` endpoint for troubleshooting and record review.
-- Tracks official settlement and manually recorded paper entry/settlement events.
+### Phase 6 — Observability, security and operations
+- Adds read-only `/api/decision-audit`, `/api/analytics`, `/api/category-readiness`, market-data diagnostics, and worker-heartbeat status.
+- Keeps market summary asks out of executable pricing; asks are derived from the corresponding current opposite-side order-book bid.
+- Fixes WAIT signal score journaling so the actual evidence score is preserved even though the decision remains WAIT.
+- Prevents webhook body-size abuse (16 KiB default, configurable up to 64 KiB) and removes sensitive key/value fields recursively before saving untrusted webhook payloads.
+- Disables manual journal/evaluation write APIs unless `PAPER_ADMIN_API_SECRET` is explicitly configured, and requires `X-Paper-Admin-Secret` on those routes. The automatic worker and signed webhook don't need that admin secret.
+- Migrates app startup to FastAPI's lifespan mechanism.
 
-### Rejected-signal counterfactual review
-For no-entry decisions that have a valid recorded side ask and validated market ticker, the worker periodically checks the official market result after the expected close. Each is evaluated as **one hypothetical contract held to settlement**, subtracting the recorded entry fee. This is shown separately from actual P&L. It deliberately excludes stops/exits, exit fees, slippage, and market impact; it must not be treated as a trade or a guaranteed executable return.
+### Phase 7 — Multi-market readiness foundation (not active trading)
+- Adds `market_category_registry.py` and `/api/category-readiness` to document category-specific prerequisites.
+- BTC 15-minute is the only paper-enabled profile. Sports, politics/elections, economics, weather, crypto-event, other financial-market and entertainment profiles remain research-only. They require independent data sources, resolution/settlement rules, probability calibration and tests; none is routed through the BTC strategy.
 
-The lookup happens only **after** the current worker decision cycle and at most one public result lookup per idle/monitoring cycle so counterfactual review does not precede a fresh signal decision.
+## Environment settings
 
-## Files to replace
-At the repository root, replace:
-- `db_store.py`
-- `main.py`
-- `paper_worker.py`
-- `dashboard.html`
-- `signal_fusion.py`
-- `.github/workflows/python-app.yml`
-
-## Files to add
-At the repository root, add:
-- `performance_analytics.py`
-- `test_decision_audit.py`
-- `test_performance_analytics.py`
-- `test_analytics_api.py`
-- `test_counterfactual_audit.py`
-- `README_PHASE3_TO_6_UPGRADE.md`
-
-Keep your existing `test_paper_worker.py`, `test_trend_stop.py`, `test_signal_fusion_trend_gate.py`, `btc_trend_monitor.py`, `signal_engine.py`, `kalshi_api.py`, `candle_feed.py`, `trend_stop.py`, `market_discovery.py`, dependency files, and Dockerfile. The updated workflow runs the existing worker tests, the seven trend-fusion tests, the existing signal/market tests, and the new analytics tests in separate steps to avoid test stubs leaking between test modules.
-
-## Deploy steps
-1. Create a GitHub branch or backup before replacing files.
-2. Apply the six replacements and six additions listed above (the new tests are necessary for the updated workflow).
-3. Commit with message `Add decision audit and retrospective strategy analytics`.
-4. Wait for GitHub Actions to finish. **Do not proceed if a test step is red.**
-5. Let both Render Web Service and Background Worker deploy the same commit.
-6. Verify `/api/analytics`, `/api/decision-audit`, and the dashboard after deployment. Database migrations run automatically from `ensure_schema`; no manual SQL migration is required.
-
-## Render settings
-No new environment variables are required. Preserve:
+Keep the existing settings on Render:
 - `TRADING_MODE=paper`
 - `LIVE_TRADING_ENABLED=false`
-- `PAPER_MAX_ENTRY_CENTS=92` (existing hard cap)
-- `PAPER_ENTRY_TARGET_MAX_CENTS=80` (preferred entry target)
+- `PAPER_MAX_ENTRY_CENTS=92`
+- `PAPER_ENTRY_TARGET_MAX_CENTS=80`
 - `MAX_TRADE_DOLLARS=1.00`
 - `MAX_DAILY_LOSS_DOLLARS=10.00`
-- `PAPER_WORKER_INTERVAL_SECONDS=15` (keep your current setting)
+- `PAPER_WORKER_INTERVAL_SECONDS=15`
+- `BTC_TREND_MONITOR_INTERVAL_SECONDS=30`
+- `BTC_TREND_MONITOR_MAX_CACHE_AGE_SECONDS=45`
 
-Keep the same `DATABASE_URL` on the Web Service and Background Worker so the dashboard, worker journal, and audit log share a database.
+Keep the same `DATABASE_URL` on the Render Web Service and Background Worker. Keep `PAPER_WORKER_ENABLED=false` on the Web Service if using a separate Background Worker. Keep `GAINZALGO_WEBHOOK_SECRET` secret on the Web Service. Only set `PAPER_ADMIN_API_SECRET` if manual `/evaluate` or `/paper/*` writes are deliberately needed; otherwise they remain disabled.
 
-## Validation performed in the local working copy
-- All five modified/new runtime Python modules compile.
-- Seven trend-fusion unit tests pass.
-- Existing available tests passed for the trend monitor, signal engine, entry-quality gate, order-book pricing, current signal/window behavior, wait alerts, market-data diagnostics, trend-monitor persistence, Kalshi API retry behavior, and the pre-existing strategy performance audit.
-- New audit schema/persistence, analytics aggregation/API, and counterfactual-settlement tests pass.
-- The locally mounted file bundle did not include `test_paper_worker.py`, `test_trend_stop.py`, `candle_feed.py`, `trend_stop.py`, or `market_discovery.py`; therefore those project-specific worker tests cannot be re-run in this container snapshot. The included GitHub Actions workflow runs the worker and trend-stop tests in separate processes, and also runs the local Kalshi API tests. All GitHub Actions steps must pass after your commit.
+## Validation
 
-## Safety / interpretation
-- This remains a paper-only system; no real-order placement path was added.
-- Counterfactual results are not actual trades and are not combined with actual paper P&L.
-- Historical results and small samples do not establish a profitable edge.
-- The bot's evidence score is not a win probability. Do not enable live trading as part of this upgrade.
+Run `python -m compileall -q .`, then the tests listed in `.github/workflows/python-app.yml`. The workflow runs each test module in an isolated process to avoid import stubs leaking between test modules. It also runs `smoke_shared_alert_flow.py`, which uses temporary local storage and deterministic provider stubs rather than network calls.
+
+The current local validation includes paper worker/risk, trend stops, trend fusion, trend monitoring/persistence, signal engine, Kalshi retries, order-book quote pricing, entry guard, signal/window freshness, webhook WAIT handling, diagnostics, strategy audit, decision audit, analytics, counterfactual review, payload redaction/body limits, manual API auth and category readiness. All available isolated modules and the offline end-to-end smoke test should pass before deployment.
+
+## Deploy
+
+1. Create a branch or backup.
+2. Apply the modified/added files from the master ZIP; never commit `.env` or a local database. `.gitignore` excludes local SQLite journals and Python caches.
+3. Commit to a branch or `main`, then wait for every GitHub Actions step to pass.
+4. Let both Render services deploy the same commit.
+5. Verify `/health`, `/api/dashboard`, `/api/analytics`, `/api/decision-audit`, `/api/category-readiness`, and `/diagnostics/market-data`.
+
+No manual SQL migration is required; `ensure_schema()` applies the schema changes. No new database or API credentials are included.
+
+## Interpretation and safety
+
+- Still paper only; no real-order placement path was added.
+- Counterfactuals and shadow exits are hypothetical, not actual trade returns or guaranteed fills.
+- Manual write APIs are disabled by default and should not be opened without a strong secret.
+- Market category readiness is descriptive scaffolding, not a claim that the bot can trade those categories.
+- Do not enable live trading as part of this upgrade.

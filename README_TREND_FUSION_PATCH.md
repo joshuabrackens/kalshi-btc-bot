@@ -1,3 +1,5 @@
+> **Historical note:** This file describes an earlier, individual patch and is retained for context. For the current reconciled repository, environment settings, test results, and deployment checklist, use `README.md`, `BTC_BOT_MASTER_CHANGELOG.md`, and `PACKAGE_MANIFEST.md`. Do not apply an old file list in isolation.
+
 # BTC trend-to-signal integration patch (paper mode only)
 
 This follow-up binds the existing, continuously refreshed `btc_trend_monitor` snapshot into the TradingView-primary **hybrid paper-entry** decision. The worker passes the snapshot from the same cycle to `evaluate_fusion`; it is no longer dashboard-only.

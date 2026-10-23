@@ -1,3 +1,5 @@
+> **Historical note:** This file describes an earlier, individual patch and is retained for context. For the current reconciled repository, environment settings, test results, and deployment checklist, use `README.md`, `BTC_BOT_MASTER_CHANGELOG.md`, and `PACKAGE_MANIFEST.md`. Do not apply an old file list in isolation.
+
 # Single current-signal dashboard + 3-minute indicator response allowance
 
 This update removes the dashboard's prominent "Latest TradingView alert" and "Last bot check" cards. The main view is now a single **Current signal** card backed only by the current UTC-aligned 15-minute window. Older UP/DOWN signals are not shown as current. A separate Alert history table is clearly labeled as history only.

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -61,7 +62,9 @@ class TrendMonitorWorkerTests(unittest.TestCase):
     def test_monitor_persists_shared_snapshot_and_reuses_fresh_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_db = os.environ.get("BOT_DB_PATH")
+            old_url = os.environ.get("DATABASE_URL")
             old_interval = os.environ.get("BTC_TREND_MONITOR_INTERVAL_SECONDS")
+            os.environ["DATABASE_URL"] = ""
             os.environ["BOT_DB_PATH"] = os.path.join(tmp, "journal.sqlite3")
             os.environ["BTC_TREND_MONITOR_INTERVAL_SECONDS"] = "30"
             try:
@@ -70,16 +73,20 @@ class TrendMonitorWorkerTests(unittest.TestCase):
                 conn = connect_database()
                 ensure_schema(conn)
                 start_calls = _provider_calls["count"]
-                snapshot = paper_worker._refresh_btc_trend_monitor(conn)
-                self.assertEqual(snapshot["status"], "ok")
+                # Always patch the real imported provider, even when candle_feed
+                # is installed. Unit tests must never make public network calls.
+                with patch.object(paper_worker, "fetch_signal_candles", side_effect=_fetch_signal_candles):
+                    snapshot = paper_worker._refresh_btc_trend_monitor(conn)
+                    self.assertEqual(snapshot["status"], "ok")
                 self.assertTrue(snapshot["monitor_only"])
                 self.assertEqual(_provider_calls["count"], start_calls + 1)
                 stored = conn.execute("SELECT status, snapshot_json FROM btc_trend_monitor WHERE monitor_key=?", ("btc_15m",)).fetchone()
                 self.assertEqual(stored[0], "ok")
                 self.assertIn('"timeframes"', stored[1])
                 # A fresh cached snapshot should not force a second provider request.
-                second = paper_worker._refresh_btc_trend_monitor(conn)
-                self.assertEqual(second["status"], "ok")
+                with patch.object(paper_worker, "fetch_signal_candles", side_effect=_fetch_signal_candles):
+                    second = paper_worker._refresh_btc_trend_monitor(conn)
+                    self.assertEqual(second["status"], "ok")
                 self.assertEqual(_provider_calls["count"], start_calls + 1)
                 conn.close()
             finally:
@@ -87,6 +94,10 @@ class TrendMonitorWorkerTests(unittest.TestCase):
                     os.environ.pop("BOT_DB_PATH", None)
                 else:
                     os.environ["BOT_DB_PATH"] = old_db
+                if old_url is None:
+                    os.environ.pop("DATABASE_URL", None)
+                else:
+                    os.environ["DATABASE_URL"] = old_url
                 if old_interval is None:
                     os.environ.pop("BTC_TREND_MONITOR_INTERVAL_SECONDS", None)
                 else:

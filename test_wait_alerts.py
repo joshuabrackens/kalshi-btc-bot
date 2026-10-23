@@ -10,6 +10,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 # This coordinated package intentionally does not ship every project-specific
 # connector module. Stub missing market/feed connectors only; these tests never
@@ -70,12 +71,14 @@ class WaitAlertTests(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                previous_manage = paper_worker._manage_open
-                paper_worker._manage_open = lambda _conn: None
-                try:
+                # WAIT processing should not depend on live providers. Always patch
+                # the already-imported function, even when candle_feed is installed.
+                with patch.object(paper_worker, "_manage_open", return_value=None), \
+                     patch.object(paper_worker, "_refresh_btc_trend_monitor", return_value={
+                         "status": "ok", "monitor_only": True, "updated_at": datetime.now(timezone.utc).isoformat(),
+                         "candidate_bias": "MIXED", "evidence_score": 0, "timeframes": {},
+                     }):
                     result = paper_worker.run_once()
-                finally:
-                    paper_worker._manage_open = previous_manage
 
                 self.assertEqual(result.get("action"), "wait")
                 self.assertFalse(result.get("trade_placed", True))

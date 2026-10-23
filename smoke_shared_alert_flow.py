@@ -28,7 +28,8 @@ def main() -> None:
     os.environ["MAX_TRADE_DOLLARS"] = "1.00"
     os.environ["MAX_DAILY_LOSS_DOLLARS"] = "10.00"
     os.environ["PAPER_FEE_CENTS_PER_CONTRACT"] = "2"
-    os.environ["PAPER_MAX_ENTRY_CENTS"] = "78"
+    os.environ["PAPER_MAX_ENTRY_CENTS"] = "92"
+    os.environ["PAPER_ENTRY_TARGET_MAX_CENTS"] = "80"
     os.environ["PAPER_MAX_SPREAD_CENTS"] = "5"
     os.environ["PAPER_MINIMUM_SCORE"] = "65"
 

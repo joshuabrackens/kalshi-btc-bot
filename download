@@ -1,0 +1,17 @@
+# Local databases contain user-specific paper journal records and must not be committed.
+bot_journal.sqlite3
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Python cache and local test artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Environment/secrets files.
+.env
+.env.*
+!.env.example

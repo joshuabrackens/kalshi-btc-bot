@@ -398,7 +398,10 @@ def evaluate_signal(
         return result(observed_ask=candidate_ask)
     if score < minimum_score:
         reasons.append(f"Evidence score {score}/100 is below the configured {minimum_score}/100 threshold.")
-        return result(observed_ask=candidate_ask)
+        # Preserve the calculated evidence score on WAIT decisions so analytics
+        # can distinguish weak evidence from a data/market-window veto. This is
+        # a heuristic score, not a settlement probability.
+        return result(score=score, observed_ask=candidate_ask)
     if candidate_ask is None:
         warnings.append("No ask price was supplied for the candidate side; cannot validate an entry.")
         return result(observed_ask=None)

@@ -12,7 +12,7 @@ import os
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -26,6 +26,8 @@ from signal_engine import MarketContext, evaluate_signal
 from candle_feed import fetch_signal_candles, CandleFeedError
 from db_store import connect_database, ensure_schema, backend_name, database_location, record_decision_audit
 from performance_analytics import build_performance_analytics
+from payload_safety import sanitize_sensitive_payload
+from market_category_registry import category_profiles, classify_market
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 
@@ -73,14 +75,22 @@ def db_connect() -> Iterator[Any]:
         conn.close()
 
 
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    """Initialize storage/optional local worker using FastAPI's lifespan API."""
+    startup()
+    yield
+
+
 app = FastAPI(
     title="Kalshi BTC 15-Minute Bot",
     description=(
-        "Paper-trading runtime and journal. Signal evaluation and simulated trade "
-        "recording are supported. Public market lookup routes may read market data; "
-        "real order placement is not implemented."
+        "Paper-trading runtime, decision audit, and research analytics. Public "
+        "read-only routes expose diagnostics; manual journal/evaluation write routes "
+        "require an explicitly configured admin secret. Real order placement is not implemented."
     ),
-    version="0.2.0",
+    version="0.3.0",
+    lifespan=app_lifespan,
 )
 
 
@@ -104,9 +114,11 @@ class MarketInput(BaseModel):
 
 
 class EvaluateRequest(BaseModel):
-    candles_1m: list[Candle] = Field(min_length=20)
-    candles_5m: list[Candle] = Field(min_length=20)
-    candles_15m: list[Candle] = Field(min_length=20)
+    # Cap request work/memory for the public HTTP surface. This route is also
+    # admin-gated because it appends diagnostic evaluations to the shared journal.
+    candles_1m: list[Candle] = Field(min_length=20, max_length=500)
+    candles_5m: list[Candle] = Field(min_length=20, max_length=500)
+    candles_15m: list[Candle] = Field(min_length=20, max_length=500)
     market: MarketInput
     minimum_score: int = Field(default=65, ge=0, le=100)
     max_entry_cents: float = Field(default=92, gt=0, lt=100)
@@ -128,7 +140,6 @@ class PaperSettleRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
 
 
-@app.on_event("startup")
 def startup() -> None:
     with db_connect():
         pass
@@ -137,6 +148,21 @@ def startup() -> None:
         from paper_worker import run_forever
         thread = threading.Thread(target=run_forever, name="paper-trading-worker", daemon=True)
         thread.start()
+
+
+def _require_manual_api_auth(request: Request) -> None:
+    """Fail closed on manual endpoints that can write journal/decision data.
+
+    The automatic worker and signed TradingView webhook do not use these routes.
+    A secret must be explicitly configured, and each manual HTTP caller must send
+    it in X-Paper-Admin-Secret; otherwise a public deployment could be journal-spammed.
+    """
+    expected = os.getenv("PAPER_ADMIN_API_SECRET", "")
+    if not expected:
+        raise HTTPException(403, detail="Manual write API is disabled; configure PAPER_ADMIN_API_SECRET to enable it.")
+    supplied = request.headers.get("x-paper-admin-secret", "")
+    if not hmac.compare_digest(supplied.encode("utf-8", errors="replace"), expected.encode("utf-8", errors="replace")):
+        raise HTTPException(401, detail="Invalid manual API credential.")
 
 
 @app.get("/")
@@ -312,6 +338,73 @@ def _aggregate_strategy_performance(rows: list[tuple[Any, ...]]) -> list[dict[st
 
 
 @app.get("/api/dashboard")
+def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | None:
+    """Normalize a persisted signal row for history/position-context display."""
+    if not row:
+        return None
+    (signal_id, created_at, ticker, raw_direction, score, btc_price, strike, seconds_remaining,
+     max_entry, decision_status, proposed_direction, entry_ask, spread, trend_bias,
+     trend_score, trend_age, payload_json) = row
+    try:
+        payload = json.loads(payload_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    reasons = payload.get("reasons", [])
+    warnings = payload.get("warnings", [])
+    chart_trend = payload.get("chart_trend_at_decision")
+    if not isinstance(chart_trend, dict):
+        chart_trend = {}
+    fusion = payload.get("fusion")
+    if not isinstance(fusion, dict):
+        fusion = {}
+    chosen_direction = str(raw_direction or "").upper()
+    proposed_text = str(proposed_direction or "").upper()
+    if chosen_direction not in {"BUY_UP", "BUY_DOWN", "UP", "DOWN"} and proposed_text in {"UP", "DOWN", "BUY_UP", "BUY_DOWN"}:
+        chosen_direction = proposed_text
+    try:
+        created_dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        age_seconds = max(0, int((datetime.now(timezone.utc) - created_dt.astimezone(timezone.utc)).total_seconds()))
+        stale_after = max(180, 3 * _env_int("PAPER_WORKER_INTERVAL_SECONDS", 15, 1, 300))
+        is_stale = age_seconds > stale_after
+    except (TypeError, ValueError, OverflowError):
+        age_seconds, is_stale = None, True
+    try:
+        score_value = int(score) if score is not None else None
+    except (TypeError, ValueError, OverflowError):
+        score_value = None
+    try:
+        trend_score_value = int(trend_score) if trend_score is not None else None
+    except (TypeError, ValueError, OverflowError):
+        trend_score_value = None
+    return {
+        "id": signal_id, "created_at": created_at, "market_ticker": ticker,
+        "direction": chosen_direction or "WAIT", "logged_direction": raw_direction,
+        "proposed_direction": proposed_text or None, "decision_status": decision_status or payload.get("decision_status"),
+        "score": score_value, "btc_price": btc_price, "strike_price": strike,
+        "seconds_remaining": seconds_remaining, "max_entry_cents": max_entry,
+        "distance_from_strike": payload.get("distance_from_strike"),
+        "source": payload.get("source"),
+        "win_probability_percent": payload.get("win_probability_percent"),
+        "estimated_probability_percent": payload.get("estimated_probability_percent"),
+        "entry_ask_cents": entry_ask if entry_ask is not None else payload.get("entry_ask_cents", fusion.get("entry_ask_cents")),
+        "spread_cents": spread if spread is not None else payload.get("spread_cents", fusion.get("spread_cents")),
+        "trend_bias": trend_bias or chart_trend.get("candidate_bias") or chart_trend.get("trend_bias"),
+        "trend_evidence_score": trend_score_value if trend_score_value is not None else chart_trend.get("evidence_score"),
+        "trend_snapshot_age_seconds": trend_age if trend_age is not None else chart_trend.get("age_seconds"),
+        "chart_trend_at_decision": chart_trend,
+        "fusion": fusion,
+        "reasons": reasons if isinstance(reasons, list) else [],
+        "warnings": warnings if isinstance(warnings, list) else [],
+        "strategies": payload.get("strategies", payload.get("strategy_diagnostics", {})) if isinstance(payload.get("strategies", payload.get("strategy_diagnostics", {})), dict) else {},
+        "disclaimer": payload.get("disclaimer", "Historical evaluation details; not a current-window signal or calibrated win probability."),
+        "age_seconds": age_seconds, "is_stale": is_stale,
+    }
+
+
 def dashboard_data() -> dict[str, Any]:
     with db_connect() as conn:
         totals = conn.execute(
@@ -340,6 +433,38 @@ def dashboard_data() -> dict[str, Any]:
                       strike_price, seconds_remaining, max_entry_cents, payload_json
                FROM signal_log ORDER BY id DESC LIMIT 1"""
         ).fetchone()
+        directional_signal_row = conn.execute(
+            """SELECT id,created_at,market_ticker,direction,score,btc_price,strike_price,seconds_remaining,max_entry_cents,
+                      decision_status,proposed_direction,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,
+                      trend_snapshot_age_seconds,payload_json
+               FROM signal_log
+               WHERE UPPER(COALESCE(direction,'')) IN ('BUY_UP','BUY_DOWN','UP','DOWN')
+                  OR UPPER(COALESCE(proposed_direction,'')) IN ('BUY_UP','BUY_DOWN','UP','DOWN')
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        active_position_row = conn.execute(
+            """SELECT id,created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,
+                      entry_btc_price,timeframe,entry_signal_source,external_signal_id,entry_signal_log_id,
+                      entry_signal_score,notes,stop_loss_cents,take_profit_target_cents,take_profit_activated_at,
+                      trailing_stop_btc,last_trend_check_at
+               FROM paper_trades WHERE settled_at IS NULL ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        active_entry_signal_row = None
+        if active_position_row:
+            if active_position_row[11] is not None:
+                active_entry_signal_row = conn.execute(
+                    """SELECT id,created_at,market_ticker,direction,score,btc_price,strike_price,seconds_remaining,max_entry_cents,
+                              decision_status,proposed_direction,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,
+                              trend_snapshot_age_seconds,payload_json
+                       FROM signal_log WHERE id=? LIMIT 1""", (active_position_row[11],)
+                ).fetchone()
+            if active_entry_signal_row is None and active_position_row[10] is not None:
+                active_entry_signal_row = conn.execute(
+                    """SELECT id,created_at,market_ticker,direction,score,btc_price,strike_price,seconds_remaining,max_entry_cents,
+                              decision_status,proposed_direction,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,
+                              trend_snapshot_age_seconds,payload_json
+                       FROM signal_log WHERE external_signal_id=? ORDER BY id DESC LIMIT 1""", (active_position_row[10],)
+                ).fetchone()
         external_alert_rows = conn.execute(
             """SELECT id, created_at, direction, symbol, timeframe, payload_json,
                       processed_at, processing_status, processing_note
@@ -468,6 +593,43 @@ def dashboard_data() -> dict[str, Any]:
             alert["age_seconds"] = None
         external_alerts.append(alert)
 
+    latest_directional_signal = _dashboard_signal_from_row(directional_signal_row)
+    active_position = None
+    if active_position_row:
+        (position_id, position_created_at, position_ticker, position_direction, position_contracts,
+         position_entry_cents, position_fee_cents, position_entry_btc, position_timeframe,
+         position_source, position_external_id, position_signal_log_id, position_signal_score,
+         position_notes, position_stop_cents, position_tp_target, position_tp_activated,
+         position_trailing_stop, position_last_trend_check) = active_position_row
+        try:
+            opened_dt = datetime.fromisoformat(str(position_created_at).replace("Z", "+00:00"))
+            if opened_dt.tzinfo is None:
+                opened_dt = opened_dt.replace(tzinfo=timezone.utc)
+            position_age_seconds = max(0, int((datetime.now(timezone.utc) - opened_dt.astimezone(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            position_age_seconds = None
+        contracts_n = int(position_contracts or 0)
+        entry_n = float(position_entry_cents or 0)
+        fee_n = float(position_fee_cents or 0)
+        entry_signal = _dashboard_signal_from_row(active_entry_signal_row)
+        active_position = {
+            "id": position_id, "created_at": position_created_at, "age_seconds": position_age_seconds,
+            "market_ticker": position_ticker, "direction": str(position_direction or "").upper(),
+            "contracts": contracts_n, "entry_cents": entry_n, "fee_cents_per_contract": fee_n,
+            "entry_cost_dollars": round(contracts_n * (entry_n + fee_n) / 100, 4),
+            "entry_btc_price": position_entry_btc, "timeframe": position_timeframe,
+            "entry_signal_source": _strategy_source_label(position_source, position_notes),
+            "external_signal_id": position_external_id, "entry_signal_log_id": position_signal_log_id,
+            "entry_signal_score": position_signal_score, "notes": position_notes,
+            "stop_loss_cents": position_stop_cents, "take_profit_target_cents": position_tp_target,
+            "take_profit_activated_at": position_tp_activated, "trailing_stop_btc": position_trailing_stop,
+            "last_trend_check_at": position_last_trend_check,
+            "entry_signal": entry_signal,
+            "entry_signal_context_available": entry_signal is not None,
+            "context_note": ("Entry rationale is linked to the saved signal evaluation." if entry_signal else
+                             "No linked signal-log row was available for this older position; the trade notes are shown without guessing a rationale."),
+        }
+
     return {
         "health": {
             "api_ok": True,
@@ -503,6 +665,8 @@ def dashboard_data() -> dict[str, Any]:
         "strategy_performance": strategy_performance,
         "btc_trend_monitor": trend_monitor,
         "latest_signal": signal,
+        "latest_directional_signal": latest_directional_signal,
+        "active_position": active_position,
         "latest_external_alert": external_alerts[0] if external_alerts else None,
         "external_alert_count": external_alert_count,
         "recent_external_alerts": external_alerts,
@@ -543,8 +707,9 @@ def candles_to_df(candles: list[Candle]) -> pd.DataFrame:
 
 
 @app.post("/evaluate")
-def evaluate(request: EvaluateRequest) -> dict[str, Any]:
-    """Evaluate caller-supplied candles, journal the result, and return diagnostics."""
+def evaluate(request: EvaluateRequest, http_request: Request) -> dict[str, Any]:
+    """Admin-only manual evaluation; writes diagnostics but never opens a trade."""
+    _require_manual_api_auth(http_request)
     try:
         market = MarketContext(
             strike_price=request.market.strike_price,
@@ -908,8 +1073,9 @@ def status() -> dict[str, Any]:
 
 
 @app.post("/paper/open")
-def open_paper_trade(request: PaperTradeRequest) -> dict[str, Any]:
-    """Record a simulated position. This endpoint never sends an order to Kalshi."""
+def open_paper_trade(request: PaperTradeRequest, http_request: Request) -> dict[str, Any]:
+    """Admin-only manual simulated position; never sends an order to Kalshi."""
+    _require_manual_api_auth(http_request)
     direction = request.direction.strip().upper()
     if direction not in {"UP", "DOWN"}:
         raise HTTPException(status_code=422, detail="direction must be UP or DOWN")
@@ -978,8 +1144,9 @@ def open_paper_trade(request: PaperTradeRequest) -> dict[str, Any]:
 
 
 @app.post("/paper/{trade_id}/settle")
-def settle_paper_trade(trade_id: int, request: PaperSettleRequest) -> dict[str, Any]:
-    """Manually settle a simulated position using the official final UP/DOWN result."""
+def settle_paper_trade(trade_id: int, request: PaperSettleRequest, http_request: Request) -> dict[str, Any]:
+    """Admin-only manual settlement of a simulated position; no real order is sent."""
+    _require_manual_api_auth(http_request)
     outcome = request.outcome.strip().upper()
     if outcome not in {"UP", "DOWN"}:
         raise HTTPException(status_code=422, detail="outcome must be UP or DOWN")
@@ -1101,7 +1268,7 @@ def performance_analytics() -> dict[str, Any]:
                       fee_cents_per_contract,outcome,pnl_cents,entry_signal_source,entry_signal_log_id,
                       entry_signal_score,trend_stop_shadow_triggered_at,trend_stop_shadow_pnl_cents,
                       external_signal_id,timeframe
-               FROM paper_trades ORDER BY id ASC LIMIT 10000"""
+               FROM paper_trades ORDER BY id DESC LIMIT 10000"""
         ).fetchall()
         linked_rows = conn.execute("SELECT id,payload_json FROM signal_log ORDER BY id DESC LIMIT 10000").fetchall()
         audit_rows = conn.execute(
@@ -1157,6 +1324,22 @@ def performance_analytics() -> dict[str, Any]:
     )
     result["mode"] = "SIMULATION_ONLY"
     return result
+
+
+@app.get("/api/category-readiness")
+def category_readiness() -> dict[str, Any]:
+    """Read-only roadmap for safe market-category expansion; never enables non-BTC trading."""
+    return {
+        "mode": "SIMULATION_ONLY",
+        "current_active_strategy": "btc_15m",
+        "profiles": category_profiles(),
+        "classification_examples": [
+            classify_market("KXBTC15M-EXAMPLE", "BTC price up in the next 15 minutes?"),
+            classify_market("EXAMPLE-SPORTS", "Example sports event", "sports"),
+            classify_market("UNKNOWN-EXAMPLE", "Unclassified event"),
+        ],
+        "safety_note": "This endpoint is informational only. Non-BTC categories are research-only and cannot be routed through the BTC paper strategy.",
+    }
 
 
 @app.get("/markets/btc-candidates")
@@ -1266,8 +1449,29 @@ def _webhook_fingerprint(payload: dict[str, Any], direction: str, symbol: str, t
 @app.post("/webhooks/gainzalgo")
 async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     """Record incoming TradingView/GainzAlgo alerts for display and analysis; no trades."""
+    max_body_bytes = _env_int("GAINZALGO_WEBHOOK_MAX_BODY_BYTES", 16384, 1024, 65536)
+    content_length = request.headers.get("content-length") if getattr(request, "headers", None) is not None else None
     try:
-        payload = await request.json()
+        if content_length is not None and int(content_length) > max_body_bytes:
+            _record_webhook_event(413, "rejected", "Webhook body exceeds the configured size limit.")
+            raise HTTPException(status_code=413, detail="Webhook body exceeds the configured size limit.")
+        # Real Starlette requests are read with a hard streaming limit. The .json()
+        # fallback keeps simple deterministic request stubs usable in offline tests.
+        if callable(getattr(request, "stream", None)):
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > max_body_bytes:
+                    _record_webhook_event(413, "rejected", "Webhook body exceeds the configured size limit.")
+                    raise HTTPException(status_code=413, detail="Webhook body exceeds the configured size limit.")
+            payload = json.loads(bytes(body))
+        else:
+            payload = await request.json()
+            if len(json.dumps(payload, default=str).encode("utf-8")) > max_body_bytes:
+                _record_webhook_event(413, "rejected", "Webhook body exceeds the configured size limit.")
+                raise HTTPException(status_code=413, detail="Webhook body exceeds the configured size limit.")
+    except HTTPException:
+        raise
     except Exception as exc:
         _record_webhook_event(400, "rejected", "Expected a JSON alert body.")
         raise HTTPException(status_code=400, detail="Expected a JSON alert body.") from exc
@@ -1280,7 +1484,7 @@ async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     if not expected_secret:
         _record_webhook_event(503, "rejected", "GAINZALGO_WEBHOOK_SECRET is not configured.", payload)
         raise HTTPException(status_code=503, detail="Webhook secret is not configured on the server.")
-    if not hmac.compare_digest(supplied_secret, expected_secret):
+    if not hmac.compare_digest(supplied_secret.encode("utf-8", errors="replace"), expected_secret.encode("utf-8", errors="replace")):
         _record_webhook_event(401, "rejected", "Webhook secret did not match.", payload)
         raise HTTPException(status_code=401, detail="Invalid webhook secret.")
 
@@ -1293,10 +1497,9 @@ async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("market_ticker") or "")[:100]
     timeframe = str(payload.get("timeframe") or payload.get("interval") or payload.get("resolution") or "")[:40]
     # Strip sensitive fields before storing or exposing any alert detail.
-    safe_payload = {key: value for key, value in payload.items()
-                    if key.lower() not in {"secret", "token", "api_key", "authorization", "password"}}
+    safe_payload = sanitize_sensitive_payload(payload)
     try:
-        serialized = json.dumps(safe_payload, ensure_ascii=False, default=str)
+        serialized = json.dumps(safe_payload, ensure_ascii=False, default=str, allow_nan=False)
     except (TypeError, ValueError):
         serialized = "{}"
     if len(serialized) > 10000:
@@ -1305,18 +1508,23 @@ async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     fingerprint = _webhook_fingerprint(payload, direction_text, symbol, timeframe)
     duplicate_id = None
     with db_connect() as conn:
+        insert_sql = """INSERT INTO gainzalgo_signals
+            (created_at, direction, symbol, timeframe, payload_json, fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?)"""
+        params = (created_at, direction_text, symbol, timeframe, serialized, fingerprint)
         if fingerprint:
-            existing = conn.execute(
-                "SELECT id FROM gainzalgo_signals WHERE fingerprint = ? LIMIT 1", (fingerprint,)
-            ).fetchone()
-            if existing:
-                duplicate_id = int(existing[0])
-        if duplicate_id is None:
-            conn.execute(
-                """INSERT INTO gainzalgo_signals (created_at, direction, symbol, timeframe, payload_json, fingerprint)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (created_at, direction_text, symbol, timeframe, serialized, fingerprint),
+            # Atomic conflict handling + a partial unique index prevent concurrent
+            # duplicate deliveries from entering the worker queue twice.
+            inserted = conn.execute(
+                insert_sql + " ON CONFLICT(fingerprint) WHERE fingerprint IS NOT NULL DO NOTHING", params
             )
+            if getattr(inserted, "rowcount", 0) == 0:
+                existing = conn.execute(
+                    "SELECT id FROM gainzalgo_signals WHERE fingerprint = ? LIMIT 1", (fingerprint,)
+                ).fetchone()
+                duplicate_id = int(existing[0]) if existing else None
+        else:
+            conn.execute(insert_sql, params)
     if duplicate_id is not None:
         _record_webhook_event(200, "duplicate", f"Duplicate delivery ignored; original alert id {duplicate_id}.", {
             "symbol": symbol, "timeframe": timeframe, "direction": direction_text,

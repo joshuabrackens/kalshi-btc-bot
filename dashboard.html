@@ -155,14 +155,14 @@
     </article>
   </section>
 
-  <section class="section card hero" aria-label="Latest evaluated signal">
+  <section class="section card hero" aria-label="Latest directional signal context">
     <div class="hero-top">
-      <div><div class="eyebrow">Latest evaluated signal</div><h2 id="signal-market" style="margin-top:7px">Waiting for signal data</h2><p class="small" id="signal-meta">The latest saved signal will appear here.</p></div>
+      <div><div class="eyebrow" id="signal-eyebrow">Latest directional evaluation</div><h2 id="signal-market" style="margin-top:7px">Waiting for signal data</h2><p class="small" id="signal-meta">The latest saved signal will appear here.</p></div>
       <div class="statusline"><span class="badge wait" id="signal-age-badge">Checking freshness</span><span class="badge blue" id="signal-direction-badge">No direction yet</span></div>
     </div>
     <div class="grid-2" style="margin-top:15px">
       <div>
-        <div class="card-kicker">Current decision</div>
+        <div class="card-kicker" id="signal-decision-label">Current decision</div>
         <div class="hero-title" id="signal-direction">WAITING FOR SIGNAL</div>
         <p class="hero-copy" id="signal-summary">The dashboard is checking the saved signal and current window.</p>
         <div class="mini-grid">
@@ -170,7 +170,7 @@
           <div class="mini"><div class="label">Strike price</div><div class="value" id="strike-price">—</div></div>
           <div class="mini"><div class="label">Distance from strike</div><div class="value" id="distance-strike">—</div></div>
           <div class="mini"><div class="label">Time remaining at signal</div><div class="value" id="seconds-remaining">—</div></div>
-          <div class="mini"><div class="label">Countdown until indicator</div><div class="value" id="indicator-countdown">—</div><div class="help" id="indicator-countdown-help">Waiting for current-window timing.</div></div>
+          <div class="mini"><div class="label" id="indicator-countdown-label">Current-window indicator timer</div><div class="value" id="indicator-countdown">—</div><div class="help" id="indicator-countdown-help">Waiting for current-window timing.</div></div>
           <div class="mini"><div class="label">Entry ask</div><div class="value" id="entry-ask">—</div></div>
           <div class="mini"><div class="label">Max entry limit</div><div class="value" id="max-entry-cents">—</div></div>
         </div>
@@ -183,6 +183,32 @@
           <div class="mini"><div class="label">Historical win rate</div><div class="value" id="historical-probability">—</div><div class="help" id="historical-probability-help">Based on all settled trades, not this signal.</div></div>
         </div>
         <div class="notice" id="score-probability-note">Score and probability are different measures. A 60/100 evidence score does not mean a 60% chance of winning.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card section" id="active-position-section" aria-label="Active paper position context">
+    <div class="section-head">
+      <div><h2>Active paper position</h2><p class="section-desc">This position card is independent from the new 15-minute window status. It keeps the original entry direction, entry-linked reasoning, and warnings visible until the position settles.</p></div>
+      <span class="badge wait" id="active-position-badge">Checking position</span>
+    </div>
+    <div class="notice" id="active-position-empty">No open paper position. When a position opens, its entry rationale will remain here even if the current window changes to WAIT THIS WINDOW.</div>
+    <div id="active-position-details" style="display:none">
+      <div class="grid-3">
+        <div class="mini"><div class="label">Open position</div><div class="value" id="active-position-direction">—</div><div class="help" id="active-position-market">—</div></div>
+        <div class="mini"><div class="label">Entry price / total cost</div><div class="value" id="active-position-entry">—</div><div class="help" id="active-position-cost">—</div></div>
+        <div class="mini"><div class="label">Opened / age</div><div class="value" id="active-position-opened">—</div><div class="help" id="active-position-age">—</div></div>
+      </div>
+      <div class="grid-3" style="margin-top:10px">
+        <div class="mini"><div class="label">Contracts / signal source</div><div class="value" id="active-position-contracts">—</div><div class="help" id="active-position-source">—</div></div>
+        <div class="mini"><div class="label">BTC at entry</div><div class="value" id="active-position-btc">—</div><div class="help" id="active-position-timeframe">—</div></div>
+        <div class="mini"><div class="label">Entry-time chart evidence</div><div class="value" id="active-position-trend">—</div><div class="help" id="active-position-score">—</div></div>
+      </div>
+      <div class="rowline"><span class="label">Position stop / take-profit context</span><span class="value" id="active-position-exits">—</span></div>
+      <div class="notice" id="active-position-summary">Entry-specific context will appear when available.</div>
+      <div class="grid-2" style="margin-top:13px">
+        <div><h3>Why this position was entered</h3><ul class="reason-list" id="active-position-reasons"><li>Entry rationale not linked yet.</li></ul></div>
+        <div><h3>Entry-time warnings</h3><ul class="reason-list" id="active-position-warnings"><li>No entry-time warnings recorded.</li></ul></div>
       </div>
     </div>
   </section>
@@ -211,18 +237,19 @@
 
   <section class="grid-2 section" aria-label="Decision and worker status">
     <article class="card">
-      <div class="card-titleline"><h2>Why the engine chose this</h2><span class="badge wait" id="decision-badge">Loading</span></div>
+      <div class="card-titleline"><h2 id="decision-section-title">Why the engine chose this</h2><span class="badge wait" id="decision-badge">Loading</span></div>
       <div class="rowline"><span class="label">Current decision</span><span class="value" id="decision-current">—</span></div>
       <div class="rowline"><span class="label">Signal age</span><span class="value" id="decision-age">—</span></div>
       <div class="rowline"><span class="label">Evidence score</span><span class="value" id="decision-score">—</span></div>
       <div class="notice" id="decision-summary">Decision summary will appear once the latest signal is loaded.</div>
-      <h3 style="margin-top:13px">Signal reasons</h3><ul class="reason-list" id="signal-reasons"><li>Waiting for the latest signal details.</li></ul>
-      <h3 style="margin-top:13px">Warnings to note</h3><ul class="reason-list" id="signal-warnings"><li>No warnings are available yet.</li></ul>
+      <h3 id="signal-reasons-heading" style="margin-top:13px">Signal reasons</h3><ul class="reason-list" id="signal-reasons"><li>Waiting for the latest signal details.</li></ul>
+      <h3 id="signal-warnings-heading" style="margin-top:13px">Warnings to note</h3><ul class="reason-list" id="signal-warnings"><li>No warnings are available yet.</li></ul>
     </article>
     <article class="card">
       <div class="card-titleline"><h2>What happens next</h2><span class="badge green" id="worker-state-badge">Monitoring</span></div>
       <div class="rowline"><span class="label">Worker status</span><span class="value" id="next-worker-status">—</span></div>
       <div class="rowline"><span class="label">Current 15-minute window</span><span class="value" id="current-window-status">—</span></div>
+      <div class="rowline"><span class="label">Current-window reason</span><span class="value" id="current-window-reason">—</span></div>
       <div class="rowline"><span class="label">Last signal</span><span class="value" id="next-last-signal">—</span></div>
       <div class="rowline"><span class="label">Dashboard API</span><span class="value positive" id="api-status">Healthy</span></div>
       <div class="rowline"><span class="label">Signal source</span><span class="value" id="signal-source">—</span></div>
@@ -249,7 +276,7 @@
   </section>
 
   <section class="card section" aria-label="Strategy checks">
-    <div class="section-head"><div><h2>Strategy checks</h2><p class="section-desc">These describe what the internal rule set detected, not a guaranteed future direction.</p></div><span class="badge blue" id="strategy-score-badge">Evidence details</span></div>
+    <div class="section-head"><div><h2 id="strategy-checks-title">Strategy checks</h2><p class="section-desc">These describe what the internal rule set detected, not a guaranteed future direction. When the signal panel is marked historical, these details belong to that earlier evaluation.</p></div><span class="badge blue" id="strategy-score-badge">Evidence details</span></div>
     <div class="strategy-grid">
       <div class="strategy"><div class="strategy-head"><strong>Trend across timeframes</strong><span class="tag" id="trend-tag">—</span></div><p id="trend-detail">Waiting for strategy details.</p></div>
       <div class="strategy"><div class="strategy-head"><strong>Momentum</strong><span class="tag" id="momentum-tag">—</span></div><p id="momentum-detail">Waiting for strategy details.</p></div>
@@ -360,6 +387,7 @@
   }
   function renderSignal(data, stats){
     const saved=data.latest_signal||{};
+    const historical=data.latest_directional_signal||{};
     const cw=data.current_window_decision||{};
     const cwSide=direction(cw.direction);
     const maxAlertAge=hasNum(cw.max_age_seconds)?Number(cw.max_age_seconds):300;
@@ -375,38 +403,58 @@
         (Number.isFinite(alertTime)&&alertTime>=windowStart&&alertTime<windowEnd));
     const currentAlert=String(cw.phase||'')==='signal_received' && directionalAlert &&
       alertAge!==null && alertAge<=maxAlertAge && inActiveWindow;
-    const created= saved.created_at?Date.parse(saved.created_at):NaN;
+    const created=saved.created_at?Date.parse(saved.created_at):NaN;
     const createdInWindow=Number.isFinite(created)&&Number.isFinite(windowStart)&&Number.isFinite(windowEnd)&&created>=windowStart&&created<windowEnd;
     const savedAge=hasNum(saved.age_seconds)?Number(saved.age_seconds):null;
     const savedFresh=!saved.is_stale&&(savedAge===null||savedAge<=maxAlertAge);
     const sameDirection=direction(saved.direction)===cwSide;
     const evaluatedCurrentSignal=currentAlert&&createdInWindow&&savedFresh&&sameDirection;
-    // Never display an old saved evaluation in the current-signal panel. It must belong
-    // to the active 15-minute window and match the currently fresh directional alert.
-    const s=evaluatedCurrentSignal?saved:{};
+    const historicalDirection=direction(historical.direction||historical.proposed_direction);
+    const hasHistoricalDirection=Boolean(historical.created_at)&&['BUY UP','BUY DOWN'].includes(historicalDirection);
+    // A stale directional call remains visible as historical context. It is never
+    // relabeled current, and the separate current-window status continues to say WAIT.
+    const showHistorical=!evaluatedCurrentSignal&&!currentAlert&&hasHistoricalDirection;
+    const s=evaluatedCurrentSignal?saved:(showHistorical?historical:{});
+    const hasDisplayedEvaluation=evaluatedCurrentSignal||showHistorical;
     const hasCurrentEvaluation=evaluatedCurrentSignal;
-    const side=hasCurrentEvaluation?direction(s.direction):(currentAlert?cwSide:'');
+    const isHistorical=showHistorical;
+    const side=hasDisplayedEvaluation?direction(s.direction||s.proposed_direction):(currentAlert?cwSide:'');
     const waitingLabel=String(cw.phase||'')==='indicator_wait'?'INDICATOR SAYS WAIT':'WAIT THIS WINDOW';
-    const score=hasCurrentEvaluation&&hasNum(s.score)?Math.max(0,Math.min(100,Number(s.score))):null;
-    const ageSeconds=hasCurrentEvaluation?s.age_seconds:null;
-    const thresholdMatch=(hasCurrentEvaluation&&Array.isArray(s.reasons)?s.reasons.join(' '):'').match(/configured\s+(\d+(?:\.\d+)?)\/100\s+threshold/i);
+    const score=hasDisplayedEvaluation&&hasNum(s.score)?Math.max(0,Math.min(100,Number(s.score))):null;
+    const ageSeconds=hasDisplayedEvaluation?s.age_seconds:null;
+    const thresholdMatch=(hasDisplayedEvaluation&&Array.isArray(s.reasons)?s.reasons.join(' '):'').match(/configured\s+(\d+(?:\.\d+)?)\/100\s+threshold/i);
     const threshold=thresholdMatch?Number(thresholdMatch[1]):65;
-
-    write('signal-market',hasCurrentEvaluation?(s.market_ticker||'Current signal'):'Current 15-minute window');
     const windowText=currentWindowLabel(cw);
+    const decisionStatus=String(s.decision_status||'').replaceAll('_',' ');
+
+    write('signal-market',hasDisplayedEvaluation?(s.market_ticker||'Last directional evaluation'):'Current 15-minute window');
     if(hasCurrentEvaluation){
       write('signal-meta',`Current-window evaluation · ${time(s.created_at)} · signal age ${age(ageSeconds)}`);
-      setBadge('signal-age-badge',`Current signal · ${age(ageSeconds)}`,'green');
+      setBadge('signal-age-badge',`Current · ${age(ageSeconds)}`,'green');
+      write('signal-eyebrow','Latest evaluated signal · current window');
     }else if(currentAlert){
-      write('signal-meta',`Fresh ${cwSide} alert received ${alertAge===null?'recently':age(alertAge)} · ${windowText} · waiting for its current-window evaluation`);
+      write('signal-meta',`Fresh ${cwSide} alert received ${alertAge===null?'recently':age(alertAge)} · ${windowText} · waiting for its evaluation`);
       setBadge('signal-age-badge','Current alert received','green');
+      write('signal-eyebrow','Latest alert · evaluation pending');
+    }else if(isHistorical){
+      write('signal-meta',`Recorded ${time(s.created_at)} · ${age(ageSeconds)} · HISTORICAL CONTEXT${decisionStatus?` · last decision: ${decisionStatus}`:''}`);
+      setBadge('signal-age-badge',`Historical · ${age(ageSeconds)}`,'amber');
+      write('signal-eyebrow','Last directional evaluation · not current-window guidance');
     }else{
-      write('signal-meta',`${windowText} · no fresh current-window signal; prior signal details are hidden here`);
+      write('signal-meta',`${windowText} · no saved directional evaluation is available`);
       setBadge('signal-age-badge',String(cw.phase||'')==='no_fresh_signal'?'Indicator response passed':'Waiting for current signal','amber');
+      write('signal-eyebrow','Latest directional evaluation');
     }
-    setBadge('signal-direction-badge',hasCurrentEvaluation?side:(currentAlert?side:'No current alert'),hasCurrentEvaluation?(side.includes('DOWN')?'red':'green'):(currentAlert?(side.includes('DOWN')?'red':'green'):'amber'));
-    write('signal-direction',hasCurrentEvaluation?side:(currentAlert?`${side} · AWAITING EVALUATION`:waitingLabel));
-    if($('signal-direction')) $('signal-direction').style.color=hasCurrentEvaluation||currentAlert?(side.includes('DOWN')?'var(--red)':'var(--green)'):'var(--amber)';
+    setBadge('signal-direction-badge',hasDisplayedEvaluation?side:(currentAlert?side:'No current alert'),
+      hasCurrentEvaluation?(side.includes('DOWN')?'red':'green'):(currentAlert?(side.includes('DOWN')?'red':'green'):(isHistorical?'blue':'amber')));
+    write('signal-direction',hasCurrentEvaluation?side:(currentAlert?`${side} · AWAITING EVALUATION`:isHistorical?`${side} · HISTORICAL CONTEXT`:waitingLabel));
+    if($('signal-direction')) $('signal-direction').style.color=hasCurrentEvaluation||currentAlert?(side.includes('DOWN')?'var(--red)':'var(--green)'):(isHistorical?'var(--blue)':'var(--amber)');
+    write('signal-decision-label',isHistorical?'Last directional call':currentAlert?'Current alert':'Current decision');
+    write('decision-section-title',isHistorical?'Why the last directional call was evaluated this way':'Why the engine chose this');
+    write('signal-reasons-heading',isHistorical?'Recorded reasons for that evaluation':'Signal reasons');
+    write('signal-warnings-heading',isHistorical?'Warnings recorded at that evaluation':'Warnings to note');
+    write('strategy-checks-title',isHistorical?'Strategy checks from the last directional evaluation':'Strategy checks');
+    write('indicator-countdown-label','Current-window indicator timer');
 
     let summary;
     if(hasCurrentEvaluation){
@@ -418,40 +466,97 @@
         :'Review market-data and risk checks before interpreting this as actionable.';
       summary=`${side} is the current-window evaluation from the configured ${source.toUpperCase()} signal path. ${lowScoreNote} This is paper-only and is not a measured probability of winning.`;
     }else if(currentAlert){
-      summary=`A fresh ${side} alert has arrived for the current 15-minute window. Its evaluation details are not available yet, so the dashboard is not reusing the previous signal's score, prices, or probability.`;
+      summary=`A fresh ${side} alert has arrived for the current 15-minute window. Its evaluation details are not available yet. The last evaluated call is kept separately as historical context and is not substituted into this current alert.`;
+    }else if(isHistorical){
+      const finalDecision=decisionStatus?` The recorded outcome was “${decisionStatus}”.`:'';
+      summary=`The most recent directional proposal was ${side}, recorded ${age(ageSeconds)} ago.${finalDecision} This is retained so you can inspect its original analysis, but it is NOT a new/current-window entry instruction. Current window status: ${String(cw.status||waitingLabel).replaceAll('_',' ')}.`;
     }else{
       summary=String(cw.reason||'No fresh UP or DOWN alert has arrived for the current 15-minute window. The bot is waiting for the current indicator and will not reuse a previous signal.');
     }
     write('signal-summary',summary);
-    write('btc-price',hasCurrentEvaluation&&hasNum(s.btc_price)?usd(s.btc_price):'—');
-    write('strike-price',hasCurrentEvaluation&&hasNum(s.strike_price)?usd(s.strike_price):'—');
-    write('distance-strike',hasCurrentEvaluation&&hasNum(s.distance_from_strike)?`${Number(s.distance_from_strike)>0?'+':Number(s.distance_from_strike)<0?'−':''}$${Math.abs(Number(s.distance_from_strike)).toFixed(2)}`:'—');
-    write('seconds-remaining',hasCurrentEvaluation&&hasNum(s.seconds_remaining)?`${Math.round(Number(s.seconds_remaining))} sec`:'—');
-    write('entry-ask',hasCurrentEvaluation?cents(s.entry_ask_cents):'—');
-    write('max-entry-cents',hasCurrentEvaluation?cents(d.risk?.entry_target_max_cents??s.max_entry_cents):'—');
+    write('btc-price',hasDisplayedEvaluation&&hasNum(s.btc_price)?usd(s.btc_price):'—');
+    write('strike-price',hasDisplayedEvaluation&&hasNum(s.strike_price)?usd(s.strike_price):'—');
+    write('distance-strike',hasDisplayedEvaluation&&hasNum(s.distance_from_strike)?`${Number(s.distance_from_strike)>0?'+':Number(s.distance_from_strike)<0?'−':''}$${Math.abs(Number(s.distance_from_strike)).toFixed(2)}`:'—');
+    write('seconds-remaining',hasDisplayedEvaluation&&hasNum(s.seconds_remaining)?`${Math.round(Number(s.seconds_remaining))} sec at evaluation`:'—');
+    write('entry-ask',hasDisplayedEvaluation?cents(s.entry_ask_cents):'—');
+    write('max-entry-cents',hasDisplayedEvaluation?cents(d.risk?.entry_target_max_cents??s.max_entry_cents):'—');
     write('evidence-score',score===null?'Not available':`${nfmt(score,0)} / 100`);
     if($('score-bar')) $('score-bar').style.width=`${score===null?0:score}%`;
-    write('score-note',score===null?'No current-window score; previous scores are hidden':`Rule score; configured internal threshold ${threshold}/100`);
-    // A per-signal probability is only shown when a current-window evaluation supplies one.
-    const modelProbability=hasCurrentEvaluation?(s.win_probability_percent??s.win_probability??s.estimated_probability_percent??null):null;
+    write('score-note',score===null?'No directional score recorded':`Rule score captured at evaluation; ${isHistorical?'historical only · ':''}configured internal threshold ${threshold}/100`);
+    const modelProbability=hasDisplayedEvaluation?(s.win_probability_percent??s.win_probability??s.estimated_probability_percent??null):null;
     write('model-probability',hasNum(modelProbability)?`${nfmt(modelProbability,1)}%`:'Not calibrated');
-    const marketP=hasCurrentEvaluation&&hasNum(s.entry_ask_cents)?Math.max(0,Math.min(100,Number(s.entry_ask_cents))):null;
+    const marketP=hasDisplayedEvaluation&&hasNum(s.entry_ask_cents)?Math.max(0,Math.min(100,Number(s.entry_ask_cents))):null;
     write('market-probability',marketP===null?'—':`~${nfmt(marketP,0)}%`);
-    write('market-probability-help',marketP===null?'Only a current signal’s entry ask is used here.':'Price approximation from the current signal entry ask ('+cents(s.entry_ask_cents)+'); not the bot’s forecast and before fee effects.');
+    write('market-probability-help',marketP===null?'No valid directional entry ask is recorded for this display.':`Price approximation from the ${isHistorical?'historical ':'signal-time '}entry ask (${cents(s.entry_ask_cents)}); not the bot’s forecast and before fee effects.`);
     write('historical-probability',hasNum(stats.win_rate_percent)?`${nfmt(stats.win_rate_percent,1)}%`:'Not enough data');
     write('historical-probability-help',`${stats.wins||0} wins from ${stats.settled_trades||0} settled trades; all settled trades mixed together.`);
-    write('score-probability-note',hasNum(modelProbability)?'Model probability is displayed as provided by this current-window signal record; it is not a guarantee.':'The bot does not currently provide a calibrated per-signal win probability. The score is not probability; the historical win rate summarizes all settled trades.');
+    write('score-probability-note',hasNum(modelProbability)?'Model probability is displayed as supplied with the saved record; it is not a guarantee.':'The bot does not currently provide a calibrated per-signal win probability. The score is not probability; historical win rate summarizes previous settled trades.');
 
-    const decisionText=hasCurrentEvaluation?side:(currentAlert?`${side} alert received — evaluation pending`:waitingLabel);
+    const decisionText=hasCurrentEvaluation?side:(currentAlert?`${side} alert received — evaluation pending`:isHistorical?`${side} · historical proposal${decisionStatus?` (${decisionStatus})`:''}`:waitingLabel);
     write('decision-current',decisionText);
-    write('decision-age',hasCurrentEvaluation?age(ageSeconds):(currentAlert&&alertAge!==null?age(alertAge):'No fresh current alert'));
+    write('decision-age',hasDisplayedEvaluation?age(ageSeconds):(currentAlert&&alertAge!==null?age(alertAge):'No fresh current alert'));
     write('decision-score',score===null?'Not available':`${nfmt(score,0)}/100`);
-    setBadge('decision-badge',hasCurrentEvaluation?'Current signal analyzed':currentAlert?'Evaluation pending':waitingLabel,hasCurrentEvaluation?'blue':currentAlert?'green':'amber');
-    setList('signal-reasons',hasCurrentEvaluation?(s.reasons||[]).map(formatReason):[],hasCurrentEvaluation?'No current signal reasons recorded.':currentAlert?'Current alert received; waiting for evaluation details.':'No current signal. Previous signal reasons are hidden.');
-    setList('signal-warnings',hasCurrentEvaluation?(s.warnings||[]):[],hasCurrentEvaluation?'No warnings recorded with the current signal.':currentAlert?'Current evaluation warnings will appear when available.':'No current-signal warnings; previous signal warnings are hidden.');
-    write('decision-summary',hasCurrentEvaluation?(s.disclaimer||'This is a rule-based current-signal assessment, not a measured probability of winning.'):(currentAlert?'Fresh alert received for this window; no prior evaluation details are reused.':'Waiting for a fresh signal in the active 15-minute window. Old signal details are not shown as current.'));
-    renderStrategies(hasCurrentEvaluation?(s.strategies||{}):{});
-    write('advanced-json',JSON.stringify({current_window:{phase:cw.phase,status:cw.status,direction:currentAlert?cw.direction:null,window_start:cw.window_start,window_end:cw.window_end,alert_age_seconds:currentAlert?cw.alert_age_seconds:null},signal:hasCurrentEvaluation?{direction:s.direction,score:s.score,age_seconds:s.age_seconds,is_stale:s.is_stale,entry_ask_cents:s.entry_ask_cents,max_entry_cents:s.max_entry_cents,btc_price:s.btc_price,strike_price:s.strike_price,distance_from_strike:s.distance_from_strike}:null,strategies:hasCurrentEvaluation?(s.strategies||{}):{},warnings:hasCurrentEvaluation?(s.warnings||[]):[]},null,2));
+    setBadge('decision-badge',hasCurrentEvaluation?'Current signal analyzed':currentAlert?'Evaluation pending':isHistorical?'Historical details retained':waitingLabel,hasCurrentEvaluation?'blue':currentAlert?'green':isHistorical?'amber':'amber');
+    setList('signal-reasons',hasDisplayedEvaluation?(s.reasons||[]).map(formatReason):[],hasDisplayedEvaluation?'No reasons were recorded.':currentAlert?'Current alert received; waiting for evaluation details.':'No directional evaluation has been recorded yet.');
+    setList('signal-warnings',hasDisplayedEvaluation?(s.warnings||[]):[],hasDisplayedEvaluation?'No warnings were recorded.':currentAlert?'Current evaluation warnings will appear when available.':'No directional-evaluation warnings are available yet.');
+    if(hasCurrentEvaluation) write('decision-summary',s.disclaimer||'Current-window evaluation; not a measured probability of winning.');
+    else if(currentAlert) write('decision-summary','Fresh alert received for this window; its evaluation is pending. Historical details remain separate.');
+    else if(isHistorical) write('decision-summary',`${s.disclaimer||'Stored decision context.'} This signal is historical and is not being reused as a new entry.`);
+    else write('decision-summary','No current or historical directional details are available yet.');
+    renderStrategies(hasDisplayedEvaluation?(s.strategies||{}):{});
+    write('advanced-json',JSON.stringify({
+      current_window:{phase:cw.phase,status:cw.status,direction:currentAlert?cw.direction:null,window_start:cw.window_start,window_end:cw.window_end,alert_age_seconds:currentAlert?cw.alert_age_seconds:null},
+      current_evaluation:hasCurrentEvaluation?{direction:s.direction,score:s.score,age_seconds:s.age_seconds,is_stale:s.is_stale}:null,
+      latest_directional_signal:hasDisplayedEvaluation?{direction:s.direction,score:s.score,age_seconds:s.age_seconds,is_stale:s.is_stale,decision_status:s.decision_status,entry_ask_cents:s.entry_ask_cents,market_ticker:s.market_ticker}:null,
+      strategies:hasDisplayedEvaluation?(s.strategies||{}):{},warnings:hasDisplayedEvaluation?(s.warnings||[]):[]
+    },null,2));
+  }
+
+  function renderActivePosition(data){
+    const p=data.active_position||null;
+    const details=$('active-position-details');
+    const empty=$('active-position-empty');
+    if(!p){
+      if(details) details.style.display='none';
+      if(empty){empty.style.display='block';empty.textContent='No open paper position right now. The last directional signal and current-window waiting status are shown separately above and to the right.';}
+      setBadge('active-position-badge','No open position','amber');
+      setList('active-position-reasons',[],'No open position.');
+      setList('active-position-warnings',[],'No open position.');
+      return;
+    }
+    if(details) details.style.display='block';
+    if(empty) empty.style.display='none';
+    setBadge('active-position-badge',`OPEN · Paper trade #${p.id}`,'green');
+    write('active-position-direction',`${direction(p.direction)} · OPEN`);
+    if($('active-position-direction')) $('active-position-direction').className='value '+dirTone(p.direction);
+    write('active-position-market',p.market_ticker||'Market not reported');
+    write('active-position-entry',cents(p.entry_cents));
+    write('active-position-cost',`${money(p.entry_cost_dollars)} total simulated entry cost incl. fees`);
+    write('active-position-opened',time(p.created_at));
+    write('active-position-age',hasNum(p.age_seconds)?`Open for ${age(p.age_seconds).replace(' ago','')}`:'Position age unavailable');
+    write('active-position-contracts',p.contracts??'—');
+    write('active-position-source',String(p.entry_signal_source||'unknown').replaceAll('_',' '));
+    write('active-position-btc',hasNum(p.entry_btc_price)?usd(p.entry_btc_price):'Not recorded');
+    write('active-position-timeframe',p.timeframe||'Timeframe not recorded');
+    const sig=p.entry_signal||{};
+    const chart=sig.chart_trend_at_decision||{};
+    const bias=chart.candidate_bias||chart.trend_bias||sig.trend_bias||null;
+    const evidence=hasNum(chart.evidence_score)?chart.evidence_score:sig.trend_evidence_score;
+    write('active-position-trend',bias?String(bias).toUpperCase():'Not recorded');
+    write('active-position-score',hasNum(evidence)?`Chart evidence ${nfmt(evidence,0)}/100${hasNum(sig.trend_snapshot_age_seconds)?` · snapshot age ${nfmt(sig.trend_snapshot_age_seconds,1)}s`:''}`:'Chart evidence not stored');
+    const exitParts=[];
+    if(hasNum(p.stop_loss_cents)) exitParts.push(`fixed stop ${cents(p.stop_loss_cents)}`);
+    if(hasNum(p.take_profit_target_cents)) exitParts.push(`take-profit target ${cents(p.take_profit_target_cents)}`);
+    if(hasNum(p.trailing_stop_btc)) exitParts.push(`chart stop ${usd(p.trailing_stop_btc)} BTC`);
+    write('active-position-exits',exitParts.join(' · ')||'No fixed stop/target recorded');
+    const cw=data.current_window_decision||{};
+    const linkText=hasNum(p.entry_signal_log_id)?`linked signal #${p.entry_signal_log_id}`:'no linked signal-log id';
+    const context= p.entry_signal_context_available
+      ?`Original entry context from ${linkText}, recorded ${time(sig.created_at)}. Current window state is ${String(cw.status||'not reported').replaceAll('_',' ')}; this open position card is separate and does not treat the old entry signal as a new recommendation.`
+      :`${p.context_note||'Entry-linked reasoning was not saved for this older position.'} Current window state is ${String(cw.status||'not reported').replaceAll('_',' ')}.`;
+    write('active-position-summary',context);
+    setList('active-position-reasons',Array.isArray(sig.reasons)?sig.reasons.map(formatReason):[],p.context_note||'No entry-linked reasons were recorded.');
+    setList('active-position-warnings',Array.isArray(sig.warnings)?sig.warnings:[],'No warnings were saved with this entry evaluation.');
   }
   function renderStrategies(st){
     const tf=st.multi_timeframe_trend||{},tfs=tf.timeframes||{};
@@ -652,6 +757,7 @@
     const cw=d.current_window_decision||{};
     const label=String(cw.status||'NO CURRENT WINDOW STATUS').replaceAll('_',' ');
     write('current-window-status',`${label}${cw.window_start&&cw.window_end?` · ${clock(cw.window_start)}–${clock(cw.window_end)}`:''}`);
+    write('current-window-reason',cw.reason||'No current-window reason was reported.');
     const badge=cw.phase==='signal_received'?'Fresh directional alert':cw.phase==='no_fresh_signal'?'Waiting for current alert':cw.phase==='indicator_wait'?'Indicator WAIT':cw.phase==='awaiting_indicator'?'Awaiting indicator':'Monitoring';
     setBadge('worker-state-badge',badge,cw.phase==='signal_received'?'green':cw.phase==='internal_mode'?'blue':'amber');
     configureIndicatorCountdown(cw);
@@ -661,7 +767,7 @@
     try{
       const [dashboardResult,diagResult,analyticsResult]=await Promise.allSettled([getJSON('/api/dashboard'),getJSON('/diagnostics/market-data'),getJSON('/api/analytics')]);
       if(dashboardResult.status!=='fulfilled')throw dashboardResult.reason;
-      const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderTrendMonitor(data);renderStrategyPerformance(data);renderTrades(data);renderAlerts(data);
+      const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderActivePosition(data);renderTrendMonitor(data);renderStrategyPerformance(data);renderTrades(data);renderAlerts(data);
       if(diagResult.status==='fulfilled')renderMarketDiagnostics(diagResult.value);else{setBadge('market-ready-badge','Diagnostics unavailable','amber');write('market-diagnostic-cache',diagResult.reason?.message||'Could not load diagnostic endpoint.');}
       if(analyticsResult.status==='fulfilled')renderAnalytics(analyticsResult.value);else{setBadge('analytics-badge','Analytics unavailable','amber');write('analytics-caution',analyticsResult.reason?.message||'Could not load analytics.');}
       setBadge('connection-badge','Dashboard connected','green');write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);

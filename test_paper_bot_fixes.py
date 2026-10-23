@@ -60,7 +60,9 @@ class SignalScoreTests(unittest.TestCase):
             minimum_score=99,
         )
         self.assertEqual(result.direction, "WAIT")
-        self.assertGreater(result.score, 0)
+        evidence = result.strategies["evidence_totals"]
+        expected_evidence_score = round(max(evidence["up_points"], evidence["down_points"]) / 11 * 100)
+        self.assertEqual(result.score, expected_evidence_score)
         self.assertTrue(any("below the configured 99/100 threshold" in reason for reason in result.reasons))
         self.assertEqual(result.entry_ask_cents, 50)
 

@@ -1,96 +1,93 @@
-# Kalshi BTC 15-Minute Bot — Downloadable Starter
+# Kalshi BTC 15-Minute Paper Bot
 
-## Current capabilities
-- FastAPI service, health/status endpoints
-- Rule-based multi-timeframe signal engine
-- SQLite signal journal
-- Paper-trade ledger with manual simulated entries, settlement, fees, and basic stats
-- Duplicate-open-trade guard and configurable daily paper-trade cap (maximum 96/day)
-- Public Kalshi market discovery, market detail, and order-book endpoints
-- Dockerfile for cloud deployment
-- No private API key required for public market-data endpoints
+## Purpose and safety boundary
 
-## Important limitations
-This is a deployable starter, not a finished unattended trading system. It does not yet:
-- Fetch/aggregate live BTC 1m, 5m, and 15m OHLCV candles from a selected source
-- Verify which candidate is the exact intended 15-minute contract and its settlement source
-- Convert Kalshi market fields into a fully verified contract context automatically
-- Send Telegram notifications
-- Automatically simulate fills from a live signal stream; paper entries are recorded manually
-- Guarantee realistic fills (paper entries can still differ from real execution)
-- Place orders (real trading is not implemented and is disabled)
+This repository implements a BTC-focused, paper-only Kalshi decision and journal system. It consumes fresh TradingView/GainzAlgo alerts, evaluates closed BTC candles across 1m/5m/15m timeframes, checks a continuously refreshed chart-trend snapshot, validates current Kalshi order-book quotes, and records simulated entries/exits and official settlement outcomes.
 
-The score is a heuristic score, not a calibrated probability of winning.
+**Real order placement is not implemented.** The worker refuses to run unless `TRADING_MODE=paper` and `LIVE_TRADING_ENABLED` is false. Evidence scores are not calibrated win probabilities, and small paper samples do not establish a tradable edge.
 
-## Run locally
-Python 3.11+ recommended.
+Recommended production settings (on both Render services where applicable):
+
+```text
+TRADING_MODE=paper
+LIVE_TRADING_ENABLED=false
+PAPER_SIGNAL_SOURCE=hybrid
+PAPER_MAX_ENTRY_CENTS=92
+PAPER_ENTRY_TARGET_MAX_CENTS=80
+MAX_TRADE_DOLLARS=1.00
+MAX_DAILY_LOSS_DOLLARS=10.00
+PAPER_WORKER_INTERVAL_SECONDS=15
+BTC_TREND_MONITOR_INTERVAL_SECONDS=30
+BTC_TREND_MONITOR_MAX_CACHE_AGE_SECONDS=45
+```
+
+The 92¢ value is the hard cap; 80¢ is the lower preferred entry target. The worker does not chase an ask above the active target.
+
+## Architecture
+
+- `main.py`: FastAPI web service, signed TradingView/GainzAlgo webhook, dashboard APIs, paper journal endpoints, diagnostics and analytics.
+- `paper_worker.py`: paper-only worker, fresh-alert validation, order-book pricing, trend fusion, entry/risk checks, exits, official settlement and retrospective rejected-signal review.
+- `candle_feed.py`: public Binance closed-candle data.
+- `btc_trend_monitor.py`: multi-timeframe chart evidence (trend/momentum/volume/structure/volatility); it is diagnostic evidence, not a probability estimate.
+- `signal_engine.py` / `signal_fusion.py`: internal strategy diagnostics and TradingView-primary hybrid gate.
+- `kalshi_api.py` / `market_discovery.py`: public Kalshi market discovery, current order-book quotes and market results.
+- `db_store.py`: shared SQLite/PostgreSQL adapter and schema migrations.
+- `performance_analytics.py`: descriptive historical P&L and decision cohort analysis.
+- `market_category_registry.py`: Phase 7 readiness scaffold. BTC 15m is the only paper-enabled profile; all non-BTC categories are research-only.
+- `payload_safety.py`: recursive sensitive-key removal for untrusted webhook payloads.
+- `dashboard.html`: current-window state, preserved latest directional evaluation, active-position entry rationale, trend and decision detail, journal, and analytics UI.
+
+## Render configuration
+
+Use the same `DATABASE_URL` on the Web Service and Background Worker so the webhook queue, worker, trade ledger and dashboard share the same PostgreSQL database. Keep `PAPER_WORKER_ENABLED=false` on the Web Service when using a separate Background Worker; the worker runs independently with the same shared DB.
+
+Required webhook variable on the Web Service:
+
+```text
+GAINZALGO_WEBHOOK_SECRET=<your existing secret; do not put it in GitHub>
+```
+
+The webhook accepts a matching top-level `secret` or `token`, strips credential-like keys recursively before storing payloads, and rejects bodies larger than `GAINZALGO_WEBHOOK_MAX_BODY_BYTES` (default 16 KiB; maximum configurable limit 64 KiB).
+
+Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `POST /paper/{trade_id}/settle`) are disabled unless `PAPER_ADMIN_API_SECRET` is explicitly configured. When enabled, pass it in the `X-Paper-Admin-Secret` request header. This secret is unrelated to `GAINZALGO_WEBHOOK_SECRET`. The automated paper worker and signed webhook do not need it. Read-only routes do not require this header; for private performance data, keep the service private or add authentication at the hosting/proxy layer.
+
+## APIs
+
+- `GET /` — dashboard UI.
+- `GET /health`, `GET /status` — health/runtime status.
+- `GET /api/dashboard` — heartbeat, separate current-window status, latest directional evaluation, linked active-position entry context, trend monitor, risk and paper-trade journal.
+- `GET /api/analytics` — actual paper performance cohorts, rolling results, exit-shadow review and separately labeled rejected-signal counterfactuals.
+- `GET /api/decision-audit` — recent audit events, read-only.
+- `GET /api/category-readiness` — research readiness profiles; this endpoint never enables or routes trades.
+- `GET /diagnostics/market-data` — cached public-market diagnostic; it never places or modifies trades.
+- `POST /webhooks/gainzalgo` — authenticated alert intake only; recording an alert does not place a trade.
+- `GET /api/alerts/recent`, `GET /journal/recent`, `GET /paper/trades`, `GET /paper/stats` — read-only signal/trade inspection.
+- `GET /markets/btc-candidates`, `GET /markets/{ticker}`, `GET /markets/{ticker}/orderbook` — public Kalshi information.
+- `POST /evaluate`, `POST /paper/open`, `POST /paper/{trade_id}/settle` — manual journal/evaluation routes; require `PAPER_ADMIN_API_SECRET` and the `X-Paper-Admin-Secret` header.
+
+`/api/category-readiness` describes a safe expansion roadmap, not an active multi-market bot. Sports, politics/elections, economics, weather, crypto-event and other financial/event categories stay disabled until separate primary data sources, settlement validators, calibrated models and tests exist. Non-BTC markets must not be passed into the BTC strategy.
+
+## Local install and test
+
+Python 3.11+ is recommended.
 
 ```bash
 python -m venv .venv
-# macOS/Linux:
-source .venv/bin/activate
-# Windows PowerShell:
-# .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cd app
+# macOS/Linux: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt pytest pyyaml
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/docs`.
+The test workflow in `.github/workflows/python-app.yml` compiles the code, runs each unit/integration module in an isolated process, exercises the shared webhook-to-worker paper flow using offline provider stubs, and tests category-readiness and API safety. Run the smoke test directly with `python smoke_shared_alert_flow.py`; it uses a temporary database and deterministic stubs only.
 
-Endpoints:
-- `GET /` — service summary
-- `GET /health` — health check
-- `GET /status` — runtime status
-- `GET /markets/btc-candidates` — candidate open BTC/Bitcoin markets
-- `GET /markets/{ticker}` — public market details
-- `GET /markets/{ticker}/orderbook` — public order book
-- `POST /evaluate` — evaluate supplied candles
-- `GET /journal/recent` — latest signal records
-- `POST /paper/open` — record a simulated UP/DOWN entry (never places a live order)
-- `POST /paper/{trade_id}/settle` — record the official final outcome and calculate net P/L
-- `GET /paper/trades` — paper-trade ledger
-- `GET /paper/stats` — settled-trade win rate and net P/L
+## Operational guidance
 
-## Paper-trading workflow
-1. Run `POST /evaluate` with verified candle and contract snapshots. A signal score is a heuristic, not a win probability.
-2. Only if the setup passes your own rules, manually record it with `POST /paper/open`, including the actual observed entry price and estimated fee per contract.
-3. After the contract resolves, call `POST /paper/{trade_id}/settle` with the official `UP` or `DOWN` outcome.
-4. Review `GET /paper/stats` and `GET /paper/trades`. Include fees and avoid assuming every signal can fill at the displayed ask.
-5. Aim for up to 30 quality trades/day only if setups exist; 96 is a hard paper-ledger cap, not a quota. Never force trades to hit a count.
+1. Commit to a branch or create a backup before replacing production files.
+2. Wait for all GitHub Actions steps to pass. Do not deploy if any test fails.
+3. Deploy the same commit to the Render Web Service and Background Worker.
+4. Verify worker heartbeat, `btc_trend_monitor.status`, separate current-window status, latest directional evaluation, active-position entry rationale, `/api/analytics`, `/api/decision-audit`, and `/api/category-readiness`.
+5. Observe a sufficiently large out-of-sample paper sample before changing strategy thresholds. Review drawdown and fee-adjusted net P&L, not only win rate.
+6. Keep manual write endpoints protected and never expose secrets in GitHub, screenshots, logs or returned payloads.
 
-Example paper entry body:
-```json
-{
-  "market_ticker": "PASTE_VERIFIED_TICKER_HERE",
-  "direction": "UP",
-  "contracts": 1,
-  "entry_cents": 48.0,
-  "fee_cents_per_contract": 1.0,
-  "notes": "Example only; replace with a verified market and actual observed price"
-}
-```
-The API rejects more than 10 contracts per paper entry and caps daily entries at 96 by default. Set `PAPER_MAX_TRADES_PER_DAY` to a lower value if desired. This is a record-keeping safeguard, not a guarantee of risk control or profitability.
-
-## Cloud deployment
-1. Create a private Git repository and upload these files.
-2. Create an always-on Docker service on a cloud host.
-3. Set the build source to this repository and use the included `Dockerfile`.
-4. Set health check to `/health`.
-5. Attach persistent storage for the journal and set `BOT_DB_PATH` to a path on it.
-6. Keep the service private or add authentication before exposing it publicly.
-7. Public market endpoints need no private API key. Do not provide credentials until an authenticated feature is implemented.
-8. No real-order code is included. The paper endpoints only write simulated records; they do not execute trades.
-9. Add authentication before exposing the API publicly. Use persistent storage for the SQLite journal.
-
-## Verify candidate markets
-After running, open `/docs` and call `GET /markets/btc-candidates`. Inspect the title, ticker, close time, expiration, strike/settlement information, and order-book fields against the current Kalshi market page. This discovery endpoint is best-effort and must not be treated as proof that a returned market is the exact target.
-
-## Next milestones
-1. Verify official API endpoints and identify the exact BTC 15-minute market series and settlement source.
-2. Implement a selected BTC candle provider and timestamp alignment.
-3. Normalize Kalshi order book and contract asks/bids correctly for the UP/DOWN market.
-4. Add Telegram notifications.
-5. Add paper-trading fills, settlement tracking, fees/slippage, and performance reports.
-6. Test on out-of-sample data and inspect drawdowns, not just win rate.
-7. Only after validation, design authenticated order placement with hard limits, duplicate protection, reconciliation, and kill switch.
+Do not enable live trading as part of this project. Historical results, simulated exits, market-implied odds, internal scores and rejected-signal counterfactuals are descriptive evidence, not guarantees of future returns or executable prices.

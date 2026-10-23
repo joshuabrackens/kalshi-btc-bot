@@ -22,6 +22,7 @@ from btc_trend_monitor import build_trend_snapshot
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 from db_store import connect_database, ensure_schema, backend_name, record_decision_audit
+from payload_safety import sanitize_sensitive_payload
 
 log = logging.getLogger("paper_worker")
 
@@ -290,10 +291,8 @@ def _safe_external_payload(raw_payload: str) -> dict[str, Any]:
         return {}
     if not isinstance(body, dict):
         return {}
-    for key in list(body):
-        if key.lower() in {"secret", "token", "api_key", "authorization", "password"}:
-            body.pop(key, None)
-    return body
+    sanitized = sanitize_sensitive_payload(body)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def _next_gainzalgo_signal(conn):
@@ -579,12 +578,12 @@ def _resolve_counterfactual_signal_outcomes(conn, *, max_checks: int = 5) -> int
     labeled counterfactual rather than actual strategy P&L.
     """
     now = _utcnow()
-    older_than = (now - timedelta(seconds=120)).isoformat()
     candidates = conn.execute(
         """SELECT id,created_at,market_ticker,proposed_direction,entry_ask_cents,seconds_remaining,
                   decision_status,counterfactual_last_checked_at,external_signal_id,trend_bias,trend_evidence_score
            FROM signal_log
            WHERE counterfactual_settled_at IS NULL
+             AND upper(market_ticker) LIKE 'KXBTC15M-%'
              AND proposed_direction IN ('UP','DOWN')
              AND entry_ask_cents > 0 AND entry_ask_cents < 100
              AND decision_status IN ('vetoed','skipped','wait_for_better_price','wait','blocked','ignored')
@@ -976,10 +975,19 @@ def run_once() -> dict[str, Any]:
             except (KalshiAPIError, ValueError, TypeError) as exc:
                 log.warning("Market lookup failed for %s: %s", ticker, exc)
         if not parsed:
+            reason = "No candidate had an explicit strike, valid 15m close time, and verified BTC-up market title."
             if queued:
-                # Keep a fresh external alert unprocessed while market discovery can retry; it is still age-limited.
-                _log_wait(conn, "No candidate had an explicit strike, valid 15m close time, and verified BTC-up title.", external=queued)
-            return {"action": "wait", "reason": "no candidate had an explicit strike, valid 15m close time, and verified BTC-up market title"}
+                # Keep a fresh external alert unprocessed while discovery can retry,
+                # and make the pending state visible in the audit trail.
+                _set_gainzalgo_pending(conn, queued["id"], "waiting_for_market", reason)
+                _log_wait(conn, reason, external=queued,
+                          internal_payload={"decision_status": "skipped", "chart_trend_at_decision": {
+                              "status": (trend_snapshot or {}).get("status"),
+                              "updated_at": (trend_snapshot or {}).get("updated_at"),
+                              "candidate_bias": (trend_snapshot or {}).get("candidate_bias"),
+                              "evidence_score": (trend_snapshot or {}).get("evidence_score"),
+                              "age_seconds": (trend_snapshot or {}).get("age_seconds")}})
+            return {"action": "wait", "reason": reason}
         if queued:
             # A price-waiting alert is only eligible in the same 15-minute window
             # in which it was received. Never carry it into the next contract.
@@ -1002,7 +1010,17 @@ def run_once() -> dict[str, Any]:
         yes_bid, no_bid = quote["yes_bid"], quote["no_bid"]
         yes_ask, no_ask = quote["yes_ask"], quote["no_ask"]
         if any(x is None for x in (yes_ask, no_ask, yes_bid, no_bid)):
-            return {"action": "wait", "reason": "current orderbook is missing a usable YES/NO best bid to derive asks", "ticker": market["ticker"]}
+            reason = "current orderbook is missing a usable YES/NO best bid to derive asks"
+            if queued:
+                _set_gainzalgo_pending(conn, queued["id"], "waiting_for_orderbook", reason)
+                _log_wait(conn, reason, ticker=market["ticker"], external=queued,
+                          internal_payload={"decision_status": "skipped", "chart_trend_at_decision": {
+                              "status": (trend_snapshot or {}).get("status"),
+                              "updated_at": (trend_snapshot or {}).get("updated_at"),
+                              "candidate_bias": (trend_snapshot or {}).get("candidate_bias"),
+                              "evidence_score": (trend_snapshot or {}).get("evidence_score"),
+                              "age_seconds": (trend_snapshot or {}).get("age_seconds")}})
+            return {"action": "wait", "reason": reason, "ticker": market["ticker"]}
         spread_values = [float(yes_ask) - float(yes_bid), float(no_ask) - float(no_bid)]
         spread = max(spread_values)
         if (not all(math.isfinite(v) for v in [float(yes_ask), float(no_ask), float(yes_bid), float(no_bid), spread])

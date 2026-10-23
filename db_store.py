@@ -212,6 +212,18 @@ def ensure_schema(conn: DatabaseConnection) -> None:
                     else:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_gainzalgo_queue ON gainzalgo_signals(processed_at, id)")
+        # Preserve the alert audit trail if old versions stored duplicate fingerprints,
+        # but clear duplicate keys before enforcing idempotency for concurrent webhooks.
+        conn.execute(
+            """UPDATE gainzalgo_signals SET fingerprint=NULL
+               WHERE fingerprint IS NOT NULL
+                 AND id NOT IN (SELECT MIN(id) FROM gainzalgo_signals
+                                WHERE fingerprint IS NOT NULL GROUP BY fingerprint)"""
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_gainzalgo_fingerprint_unique "
+            "ON gainzalgo_signals(fingerprint) WHERE fingerprint IS NOT NULL"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_open ON paper_trades(settled_at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_log_recent ON signal_log(id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_counterfactual ON signal_log(counterfactual_settled_at, id)")

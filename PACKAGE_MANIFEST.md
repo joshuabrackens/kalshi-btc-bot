@@ -1,30 +1,50 @@
-# Package manifest
+# Master bot package manifest
 
-## Replacements
-- main.py
-- paper_worker.py
-- db_store.py
-- dashboard.html
-- signal_engine.py
-- signal_fusion.py
+This is the complete repository based on the user-uploaded `main` branch ZIP, reconciled with the reliability, audit, analytics, category-readiness, test, and dashboard changes in this package.
 
-## Added files
-- btc_trend_monitor.py
-- test_btc_trend_monitor.py
-- test_entry_quality.py
-- test_performance_audit.py
-- test_orderbook_quote_pricing.py
-- test_market_data_diagnostics.py
-- test_current_signal.py
-- test_current_window_wait.py
-- test_signal_engine.py
-- test_wait_alerts.py
-- README_BTC_BOT_CONSOLIDATED_UPGRADE.md
-- README_ENTRY_QUALITY_UPGRADE.md
-- README_ORDERBOOK_QUOTE_FIX.md
+## Modified existing files
+- `.github/workflows/python-app.yml` — active GitHub Actions workflow; isolated full test matrix and offline smoke test.
+- `python-app.yml` — kept in sync with active workflow (historical duplicate at repository root).
+- `README.md` — current source-of-truth overview, configuration, operations, safety, and deployment guide.
+- `README_PHASE3_TO_6_UPGRADE.md` — current upgrade/deployment guide for analytics, audit, security, and UI changes.
+- `README_PHASE1_MARKET_DATA.md` — retained as a historical note pointing to the current master package instructions.
+- `db_store.py` — append-only decision audit schema/indexes and idempotent webhook-fingerprint migration.
+- `env.example` — safe configuration examples and current entry/risk settings.
+- `requirements_additions.txt` — clarified as a historical note; `requirements.txt` remains the sole runtime dependency source.
+- `main.py` — analytics/audit APIs, category-readiness, webhook-size limit, secret redaction, idempotent webhook insert, guarded manual write APIs, newest directional-signal and linked open-position context for the dashboard, and lifespan cleanup.
+- `paper_worker.py` — enriched WAIT reasons/audits and robust retry statuses when market/quotes are temporarily unavailable.
+- `signal_engine.py` — preserve calculated evidence score on a WAIT/below-threshold result.
+- `smoke_shared_alert_flow.py` — offline webhook → shared queue → hybrid decision → paper-trade smoke test.
+- `test_hybrid_take_profit.py` — align tests with current DB interface and order-book-derived executable quotes; keep behavior checks intact.
+- `test_paper_bot_fixes.py` — regression test for WAIT-score preservation.
+- `test_paper_worker.py` — test isolation, current worker interface, and network-free expectations.
+- `test_trend_monitor_worker.py` — deterministic feed stub to prevent accidental network access.
+- `test_wait_alerts.py` — unit-test isolation for worker monitor side effects.
 
-## Included for continuity; compare before replacing
-- kalshi_api.py
-- test_kalshi_api.py
+## Added source and test files
+- `.gitignore` — ignores local database, bytecode, caches, virtual environments, and `.env` files.
+- `payload_safety.py` — dependency-free recursive sensitive-key redaction.
+- `market_category_registry.py` — read-only category readiness scaffold; only the existing BTC 15-minute flow is paper-enabled.
+- `test_app_http_surface.py` — HTTP-level safety/auth/analytics/category API integration tests.
+- `test_dashboard_context.py` — API and HTML regression coverage for historical directional context and open-position rationale while the current window shows WAIT.
+- `test_category_registry.py` — category classification and fail-closed tests.
+- `test_manual_api_security.py` — explicit-secret/disabled-by-default write API security tests.
+- `test_payload_safety.py` — payload redaction, nesting, and request-size tests.
+- `test_webhook_idempotency.py` — duplicate fingerprint migration and unique-index tests.
+- `BTC_BOT_MASTER_CHANGELOG.md` — change summary, validation scope, and deployment checklist.
+- `BTC_BOT_VALIDATION_RESULTS.md` — local test and smoke-test results.
 
-Project-specific modules intentionally not included: candle_feed.py, trend_stop.py, market_discovery.py, and existing deployment/requirements files. Keep the versions already in the repository.
+## Final dashboard change
+`dashboard.html` is updated in the final UI pass so current-window waiting, the last directional evaluation, and active-position context are displayed separately. The active position keeps its linked entry-signal rationale even if the current-window indicator state later falls back to `WAIT THIS WINDOW`.
+
+## Existing project files retained
+The package retains the repository's existing `candle_feed.py`, `trend_stop.py`, `market_discovery.py`, `kalshi_api.py`, `signal_fusion.py`, `btc_trend_monitor.py`, performance-analysis modules, migration script, existing tests, requirements, and Dockerfile. They are not replaced merely for packaging convenience.
+
+## Safety constraints
+- `TRADING_MODE=paper`
+- `LIVE_TRADING_ENABLED=false`
+- `PAPER_MAX_ENTRY_CENTS=92`
+- `PAPER_ENTRY_TARGET_MAX_CENTS=80`
+- `MAX_TRADE_DOLLARS=1.00`
+- `MAX_DAILY_LOSS_DOLLARS=10.00`
+- No secrets, production environment files, or local database are included.

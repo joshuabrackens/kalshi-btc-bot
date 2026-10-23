@@ -1,3 +1,5 @@
+> **Historical note:** This file describes an earlier, individual patch and is retained for context. For the current reconciled repository, environment settings, test results, and deployment checklist, use `README.md`, `BTC_BOT_MASTER_CHANGELOG.md`, and `PACKAGE_MANIFEST.md`. Do not apply an old file list in isolation.
+
 # Phase 1 — Market-data observability and Kalshi request resilience
 
 This is a narrow paper-only patch. It does not alter signal scoring, entry approval rules, contract sizing, or the 92-cent maximum entry configuration.

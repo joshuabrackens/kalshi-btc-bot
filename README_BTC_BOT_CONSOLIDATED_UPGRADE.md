@@ -1,3 +1,5 @@
+> **Historical note:** This file describes an earlier, individual patch and is retained for context. For the current reconciled repository, environment settings, test results, and deployment checklist, use `README.md`, `BTC_BOT_MASTER_CHANGELOG.md`, and `PACKAGE_MANIFEST.md`. Do not apply an old file list in isolation.
+
 # BTC Bot Consolidated Paper-Only Upgrade
 
 This package combines the compatible BTC-only improvements prepared in the current conversation:
