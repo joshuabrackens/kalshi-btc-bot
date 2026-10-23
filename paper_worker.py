@@ -231,7 +231,9 @@ def _next_gainzalgo_signal(conn):
             conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note=? WHERE id=?",
                          (now.isoformat(), "unsupported timeframe; expected 1m or 15m", signal_id)); conn.commit(); continue
         d = str(raw_direction or "").strip().upper().replace("-", "_")
-        if d in {"BUY_UP", "UP", "LONG_UP", "BULLISH", "BULL", "UPWARD"}:
+        if d in {"WAIT", "WAIT_THIS_WINDOW", "WAIT_WINDOW", "NO_TRADE", "NO_ENTRY", "STAND_ASIDE"}:
+            direction = "WAIT"
+        elif d in {"BUY_UP", "UP", "LONG_UP", "BULLISH", "BULL", "UPWARD"}:
             direction = "UP"
         elif d in {"BUY_DOWN", "DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWNWARD"}:
             direction = "DOWN"
@@ -543,6 +545,22 @@ def run_once() -> dict[str, Any]:
     try:
         conn = _connect()
         _manage_open(conn)
+        use_external = source in {"gainzalgo", "hybrid"}
+        queued, queued_direction = _next_gainzalgo_signal(conn) if use_external else (None, None)
+        # WAIT is an informational state update. Record it promptly—even if daily
+        # entry limits are reached or a paper position is already open—and never
+        # send it through market entry logic.
+        if queued and queued_direction == "WAIT":
+            wait_body = _safe_external_payload(queued.get("payload_json", "{}"))
+            wait_detail = next((str(wait_body.get(k)).strip() for k in ("wait_reason", "reason", "message")
+                                if wait_body.get(k) is not None and str(wait_body.get(k)).strip()), "")
+            note = "Indicator reports WAIT THIS WINDOW; no paper trade was opened."
+            if wait_detail and wait_detail.upper() not in {"WAIT", "WAIT_THIS_WINDOW", "WAIT THIS WINDOW"}:
+                note += " Detail: " + wait_detail[:300]
+            _mark_gainzalgo(conn, queued["id"], "wait", note)
+            return {"action": "wait", "reason": note, "source": source,
+                    "signal_id": queued["id"], "trade_placed": False, "mode": "SIMULATION_ONLY"}
+
         realized, open_cost, daily_count, halted = _limits(conn, max_trade, max_loss)
         if halted:
             return {"action": "blocked", "reason": "daily loss budget reached including open-position risk",
@@ -551,8 +569,6 @@ def run_once() -> dict[str, Any]:
         if daily_count >= daily_cap:
             return {"action": "wait", "reason": "paper daily trade cap reached"}
 
-        use_external = source in {"gainzalgo", "hybrid"}
-        queued, queued_direction = _next_gainzalgo_signal(conn) if use_external else (None, None)
         if conn.execute("SELECT 1 FROM paper_trades WHERE settled_at IS NULL LIMIT 1").fetchone():
             if queued:
                 _mark_gainzalgo(conn, queued["id"], "skipped", "an open paper position already exists")

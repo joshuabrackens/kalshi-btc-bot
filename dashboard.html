@@ -248,7 +248,7 @@
   }
   function statusFriendly(status) {
     const s = String(status || 'queued').toLowerCase();
-    const labels = {queued:'Waiting to be checked', processed:'Paper trade opened', skipped:'Not used', vetoed:'Blocked by a safety check', ignored:'Ignored', accepted:'Received', rejected:'Rejected', error:'Processing error'};
+    const labels = {queued:'Waiting to be checked', processed:'Paper trade opened', wait:'WAIT recorded — no trade', skipped:'Not used', vetoed:'Blocked by a safety check', ignored:'Ignored', accepted:'Received', rejected:'Rejected', error:'Processing error'};
     return labels[s] || s.replaceAll('_',' ');
   }
   function cssToneForDirection(direction) {
@@ -285,6 +285,7 @@
       setBadge('alert-process-badge',statusFriendly(st),tone);
       const explanations = {
         queued:'The alert was saved, but it has not yet been marked as processed. Receiving an alert does not mean a trade happened.',
+        wait:'The indicator explicitly reported WAIT THIS WINDOW. The bot recorded this as a status update and did not open a paper trade.',
         processed:'The worker recorded a paper-trade entry for this alert. Check the recent practice trades below for its details.',
         skipped:`The alert was not used for a new trade. ${alert.processing_note || 'The worker recorded no additional reason.'}`,
         vetoed:`The internal safety check blocked this alert. ${alert.processing_note || 'No additional reason was recorded.'}`,
@@ -323,6 +324,11 @@
     } else if (!alert) {
       explanation='No TradingView / GainzAlgo alert is currently recorded here. If alerts were sent, confirm that they reached this deployment.';
       next='Wait for a valid alert to arrive. A blank or disconnected feed is not the same as a market-based WAIT decision.';
+    } else if (st === 'wait') {
+      status='WAIT THIS WINDOW'; title='WAIT THIS WINDOW'; tone='wait';
+      explanation=`The indicator reported that it is not suggesting an entry. ${alert.processing_note||'The bot recorded the wait state; no paper trade was opened.'}`;
+      when=`Latest WAIT alert: ${dateTime(alert.received_at)}`;
+      next='Wait for the next valid directional signal. A WAIT alert never opens or closes a paper position.';
     } else if (['skipped','vetoed','ignored','error','rejected'].includes(st)) {
       explanation=`The latest alert was ${statusFriendly(st).toLowerCase()}. ${alert.processing_note||'The worker did not record an additional reason.'}`;
       next='The bot should wait for the next eligible alert rather than forcing this one through.';

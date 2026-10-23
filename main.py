@@ -629,21 +629,29 @@ def _record_webhook_event(status_code: int, status: str, reason: str, payload: d
 
 
 def _normalize_webhook_direction(payload: dict[str, Any]) -> str:
-    """Accept common TradingView/GainzAlgo field names and directional labels."""
+    """Normalize directional alerts and informational WAIT states from TradingView/GainzAlgo."""
     candidates = []
     for key in ("direction", "action", "signal", "side", "alert", "message", "strategy_order_action"):
         value = payload.get(key)
         if value is not None:
             candidates.append(str(value).strip().upper())
+    wait_labels = {"WAIT", "WAIT_THIS_WINDOW", "WAIT_WINDOW", "NO_TRADE", "NO_ENTRY", "STAND_ASIDE"}
     for value in candidates:
         normalized = value.replace("-", "_")
-        compact = "_".join(normalized.split())
+        compact = "_".join(normalized.split()).strip(".,:;[](){}\"'")
+        # A WAIT is a first-class status event. It is never converted into a trade direction.
+        if compact in wait_labels:
+            return "WAIT"
         if compact in {"BUY_UP", "LONG_UP", "BULLISH", "BULL", "UP", "BUY", "LONG"}:
             return "UP" if compact in {"BUY_UP", "LONG_UP", "BULLISH", "BULL", "UP"} else "BUY"
         if compact in {"BUY_DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWN", "SELL", "SHORT"}:
             return "DOWN" if compact in {"BUY_DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWN"} else "SELL"
-        # TradingView messages often contain extra text, e.g. "BTCUSDT 1m BUY_UP".
-        tokens = {part.strip(".,:;[](){}\"'") for part in normalized.replace("/", " ").split()}
+        # Free-text messages may include a timeframe/symbol around the state.
+        tokens = {part.strip(".,:;[](){}\"'") for part in normalized.replace("/", " ").replace("-", "_").split()}
+        if "WAIT" in tokens and ("WINDOW" in tokens or "THIS" in tokens or len(tokens) == 1):
+            return "WAIT"
+        if "NO" in tokens and ("TRADE" in tokens or "ENTRY" in tokens):
+            return "WAIT"
         if tokens.intersection({"BUY_UP", "LONG_UP", "BULLISH", "BULL", "UP"}):
             return "UP"
         if tokens.intersection({"BUY_DOWN", "SHORT_DOWN", "BEARISH", "BEAR", "DOWN"}):
@@ -695,7 +703,7 @@ async def gainzalgo_webhook(request: Request) -> dict[str, Any]:
     direction_text = _normalize_webhook_direction(payload)
     if not direction_text:
         _record_webhook_event(422, "rejected", "Could not identify a recognized direction field.", payload)
-        raise HTTPException(status_code=422, detail="Unrecognized direction. Send direction/action/signal as BUY, SELL, LONG, SHORT, UP, DOWN, BUY_UP, BUY_DOWN, BULLISH, or BEARISH.")
+        raise HTTPException(status_code=422, detail="Unrecognized direction. Send direction/action/signal as UP, DOWN, BUY, SELL, BUY_UP, BUY_DOWN, BULLISH, BEARISH, WAIT, WAIT_THIS_WINDOW, or NO_TRADE.")
 
     created_at = datetime.now(timezone.utc).isoformat()
     symbol = str(payload.get("symbol") or payload.get("ticker") or payload.get("market_ticker") or "")[:100]
