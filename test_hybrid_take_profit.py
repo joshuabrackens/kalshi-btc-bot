@@ -11,13 +11,32 @@ import pandas as pd
 import paper_worker as w
 
 
+def _use_test_db(path: Path) -> None:
+    # Unit tests must never attach to a developer/Render PostgreSQL DATABASE_URL.
+    os.environ["DATABASE_URL"] = ""
+    os.environ["BOT_DB_PATH"] = str(path)
+
+
+def _restore_db_environment(old_path, old_url):
+    if old_path is None:
+        os.environ.pop("BOT_DB_PATH", None)
+    else:
+        os.environ["BOT_DB_PATH"] = old_path
+    if old_url is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = old_url
+
+
 class HybridVetoTests(unittest.TestCase):
     def test_accepts_one_minute_tradingview_alert(self):
         tmp = tempfile.TemporaryDirectory()
-        old_db = w.DB_PATH
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
         try:
-            w.DB_PATH = Path(tmp.name) / "signal-1m.sqlite3"
-            with w._connect() as conn:
+            _use_test_db(Path(tmp.name) / "signal-1m.sqlite3")
+            conn = w._connect()
+            try:
                 conn.execute(
                     """INSERT INTO gainzalgo_signals
                        (created_at,direction,symbol,timeframe,payload_json)
@@ -30,8 +49,10 @@ class HybridVetoTests(unittest.TestCase):
                 self.assertIsNotNone(row)
                 self.assertEqual(direction, "UP")
                 self.assertEqual(row["direction"], "UP")
+            finally:
+                conn.close()
         finally:
-            w.DB_PATH = old_db
+            _restore_db_environment(old_db, old_url)
             tmp.cleanup()
 
     def test_internal_wait_or_low_score_does_not_veto_by_itself(self):
@@ -62,7 +83,7 @@ class HybridVetoTests(unittest.TestCase):
         }
         vetoed, reasons = w._major_flaw_veto("UP", payload, 4)
         self.assertTrue(vetoed)
-        self.assertTrue(any("both the 5-minute and 15-minute" in reason for reason in reasons))
+        self.assertTrue(any("both 5m and 15m trends" in reason.lower() for reason in reasons))
 
     def test_opposite_confirmed_breakout_and_structure_vetoes(self):
         payload = {
@@ -76,7 +97,7 @@ class HybridVetoTests(unittest.TestCase):
         }
         vetoed, reasons = w._major_flaw_veto("UP", payload, 4)
         self.assertTrue(vetoed)
-        self.assertTrue(any("volume-confirmed bearish box breakout" in reason for reason in reasons))
+        self.assertTrue(any("volume-confirmed breakout" in reason for reason in reasons))
 
     def test_secret_is_removed_from_saved_external_payload(self):
         result = w._safe_external_payload('{"secret":"dont-save-me","direction":"BUY","symbol":"BTCUSDT"}')
@@ -85,11 +106,15 @@ class HybridVetoTests(unittest.TestCase):
 
     def test_hybrid_uses_tradingview_even_when_internal_signal_is_ordinary_wait(self):
         tmp = tempfile.TemporaryDirectory()
-        old_db = w.DB_PATH
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
         old_discover, old_get_market, old_get_orderbook = w.discover, w.get_market, w.get_orderbook
         old_fetch, old_evaluate = w.fetch_signal_candles, w.evaluate_signal
+        old_bundle, old_bundle_at = w._LATEST_SIGNAL_BUNDLE, w._LATEST_SIGNAL_BUNDLE_AT
         try:
-            w.DB_PATH = Path(tmp.name) / "hybrid.sqlite3"
+            w._LATEST_SIGNAL_BUNDLE = None
+            w._LATEST_SIGNAL_BUNDLE_AT = None
+            _use_test_db(Path(tmp.name) / "hybrid.sqlite3")
             conn = w._connect()
             created = w._utcnow().isoformat()
             conn.execute(
@@ -148,11 +173,12 @@ class HybridVetoTests(unittest.TestCase):
                 "PAPER_MAX_ENTRY_CENTS": "78", "PAPER_MAX_SPREAD_CENTS": "5",
                 "PAPER_TAKE_PROFIT_ENABLED": "true", "PAPER_TAKE_PROFIT_PERCENT": "20",
                 "PAPER_TREND_STOP_LOSS_ENABLED": "false", "PAPER_STOP_LOSS_ENABLED": "false",
+                "PAPER_SHARED_SQLITE_OK": "true",
             }, clear=False):
                 result = w.run_once()
             self.assertEqual(result["action"], "paper_opened")
             self.assertEqual(result["direction"], "UP")
-            self.assertAlmostEqual(result["take_profit_target_cents"], 64.4)
+            self.assertAlmostEqual(result["take_profit_target_cents"], 65.6)
             conn = w._connect()
             try:
                 trade = conn.execute("SELECT direction,take_profit_target_cents,entry_signal_source FROM paper_trades").fetchone()
@@ -160,14 +186,15 @@ class HybridVetoTests(unittest.TestCase):
                 logged = conn.execute("SELECT direction,payload_json FROM signal_log ORDER BY id DESC LIMIT 1").fetchone()
             finally:
                 conn.close()
-            self.assertEqual(trade, ("UP", 64.4, "hybrid"))
+            self.assertEqual(trade, ("UP", 65.6, "hybrid"))
             self.assertEqual(alert[0], "processed")
             self.assertNotIn("test-secret", logged[1])
             self.assertIn("TradingView primary", logged[1])
         finally:
-            w.DB_PATH = old_db
+            _restore_db_environment(old_db, old_url)
             w.discover, w.get_market, w.get_orderbook = old_discover, old_get_market, old_get_orderbook
             w.fetch_signal_candles, w.evaluate_signal = old_fetch, old_evaluate
+            w._LATEST_SIGNAL_BUNDLE, w._LATEST_SIGNAL_BUNDLE_AT = old_bundle, old_bundle_at
             tmp.cleanup()
 
 
@@ -186,10 +213,11 @@ class TakeProfitTests(unittest.TestCase):
 
     def test_first_touch_arms_take_profit_without_closing_trade(self):
         tmp = tempfile.TemporaryDirectory()
-        old_db = w.DB_PATH
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
         old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
         try:
-            w.DB_PATH = Path(tmp.name) / "tp.sqlite3"
+            _use_test_db(Path(tmp.name) / "tp.sqlite3")
             conn = w._connect()
             now = w._utcnow().isoformat()
             conn.execute(
@@ -212,7 +240,7 @@ class TakeProfitTests(unittest.TestCase):
                 "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
             }, clear=False):
                 conn = w._connect()
-                w._manage_open(conn, 10)
+                w._manage_open(conn)
                 row = conn.execute(
                     "SELECT settled_at,outcome,take_profit_activated_at,take_profit_peak_bid_cents FROM paper_trades"
                 ).fetchone()
@@ -222,16 +250,17 @@ class TakeProfitTests(unittest.TestCase):
             self.assertIsNotNone(row[2])
             self.assertAlmostEqual(row[3], 65.0)
         finally:
-            w.DB_PATH = old_db
+            _restore_db_environment(old_db, old_url)
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
             tmp.cleanup()
 
     def test_trailing_take_profit_exits_after_pullback_from_peak(self):
         tmp = tempfile.TemporaryDirectory()
-        old_db = w.DB_PATH
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
         old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
         try:
-            w.DB_PATH = Path(tmp.name) / "tp_trail.sqlite3"
+            _use_test_db(Path(tmp.name) / "tp_trail.sqlite3")
             conn = w._connect()
             now = w._utcnow().isoformat()
             conn.execute(
@@ -256,14 +285,14 @@ class TakeProfitTests(unittest.TestCase):
             }
             with patch.dict(os.environ, env, clear=False):
                 conn = w._connect()
-                w._manage_open(conn, 10)  # target first reached: arm only
+                w._manage_open(conn)  # target first reached: arm only
                 bids["value"] = 80.0
-                w._manage_open(conn, 10)  # new peak moves floor up to 76c
+                w._manage_open(conn)  # new peak moves floor up to 76c
                 not_closed = conn.execute("SELECT settled_at,take_profit_peak_bid_cents FROM paper_trades").fetchone()
                 self.assertIsNone(not_closed[0])
                 self.assertAlmostEqual(not_closed[1], 80.0)
                 bids["value"] = 75.9
-                w._manage_open(conn, 10)  # pullback through trailing floor triggers simulated exit
+                w._manage_open(conn)  # pullback through trailing floor triggers simulated exit
                 row = conn.execute("SELECT settled_at,outcome,pnl_cents,notes FROM paper_trades").fetchone()
                 conn.close()
             self.assertIsNotNone(row[0])
@@ -271,17 +300,18 @@ class TakeProfitTests(unittest.TestCase):
             self.assertAlmostEqual(row[2], 75.9 - 50 - 2 - 2)
             self.assertIn("trailing floor", row[3])
         finally:
-            w.DB_PATH = old_db
+            _restore_db_environment(old_db, old_url)
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
             tmp.cleanup()
 
     def test_major_internal_reversal_can_exit_after_target_armed(self):
         tmp = tempfile.TemporaryDirectory()
-        old_db = w.DB_PATH
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
         old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
         old_fetch, old_evaluate, old_stop = w.fetch_signal_candles, w.evaluate_signal, w.update_trend_stop
         try:
-            w.DB_PATH = Path(tmp.name) / "tp_reversal.sqlite3"
+            _use_test_db(Path(tmp.name) / "tp_reversal.sqlite3")
             conn = w._connect()
             now = w._utcnow().isoformat()
             conn.execute(
@@ -331,7 +361,7 @@ class TakeProfitTests(unittest.TestCase):
                 "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
             }, clear=False):
                 conn = w._connect()
-                w._manage_open(conn, 10)
+                w._manage_open(conn)
                 row = conn.execute("SELECT settled_at,outcome,pnl_cents,notes FROM paper_trades").fetchone()
                 conn.close()
             self.assertIsNotNone(row[0])
@@ -339,17 +369,18 @@ class TakeProfitTests(unittest.TestCase):
             self.assertAlmostEqual(row[2], 68 - 50 - 2 - 2)
             self.assertIn("major opposing setup", row[3])
         finally:
-            w.DB_PATH = old_db
+            _restore_db_environment(old_db, old_url)
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
             w.fetch_signal_candles, w.evaluate_signal, w.update_trend_stop = old_fetch, old_evaluate, old_stop
             tmp.cleanup()
 
     def test_take_profit_does_not_close_below_target(self):
         tmp = tempfile.TemporaryDirectory()
-        old_db = w.DB_PATH
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
         old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
         try:
-            w.DB_PATH = Path(tmp.name) / "tp.sqlite3"
+            _use_test_db(Path(tmp.name) / "tp.sqlite3")
             conn = w._connect()
             now = w._utcnow().isoformat()
             conn.execute(
@@ -371,13 +402,13 @@ class TakeProfitTests(unittest.TestCase):
                 "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
             }, clear=False):
                 conn = w._connect()
-                w._manage_open(conn, 10)
+                w._manage_open(conn)
                 row = conn.execute("SELECT settled_at,outcome FROM paper_trades").fetchone()
                 conn.close()
             self.assertIsNone(row[0])
             self.assertIsNone(row[1])
         finally:
-            w.DB_PATH = old_db
+            _restore_db_environment(old_db, old_url)
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
             tmp.cleanup()
 

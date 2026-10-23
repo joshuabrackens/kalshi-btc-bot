@@ -13,6 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -21,11 +22,97 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-      - name: Install dependencies
+      - name: Install runtime and test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt pytest pyyaml httpx
 
-      - name: Run paper worker, trend-stop, and hybrid/take-profit tests
-        run: python -m unittest -v test_paper_worker.py test_trend_stop.py test_hybrid_take_profit.py test_learning_system.py
+      - name: Compile Python modules
+        run: python -m compileall -q .
+
+      - name: Run paper worker safety tests
+        run: python -m unittest -v test_paper_worker.py
+
+      - name: Run trend stop tests
+        run: python -m unittest -v test_trend_stop.py
+
+      - name: Run hybrid take-profit and fusion regression tests
+        run: python -m unittest -v test_hybrid_take_profit.py
+
+      - name: Run legacy bot-fix regression tests
+        run: python -m unittest -v test_paper_bot_fixes.py
+
+      - name: Run trend fusion gate tests
+        run: python -m unittest -v test_signal_fusion_trend_gate.py
+
+      - name: Run BTC trend monitor tests
+        run: python -m unittest -v test_btc_trend_monitor.py
+
+      - name: Run trend-monitor worker persistence tests
+        run: python -m unittest -v test_trend_monitor_worker.py
+
+      - name: Run signal engine tests
+        run: python -m unittest -v test_signal_engine.py
+
+      - name: Run Kalshi API retry tests
+        run: python -m unittest -v test_kalshi_api.py
+
+      - name: Run order-book quote tests
+        run: python -m unittest -v test_orderbook_quote_pricing.py
+
+      - name: Run entry-quality tests
+        run: python -m unittest -v test_entry_quality.py
+
+      - name: Run current-signal freshness tests
+        run: python -m unittest -v test_current_signal.py
+
+      - name: Run current-window fallback tests
+        run: python -m unittest -v test_current_window_wait.py
+
+      - name: Run wait-alert tests
+        run: python -m unittest -v test_wait_alerts.py
+
+      - name: Run market-data diagnostics tests
+        run: python -m unittest -v test_market_data_diagnostics.py
+
+      - name: Run strategy performance audit tests
+        run: python -m unittest -v test_performance_audit.py
+
+      - name: Run decision audit schema tests
+        run: python -m pytest -q test_decision_audit.py
+
+      - name: Run performance analytics tests
+        run: python -m pytest -q test_performance_analytics.py
+
+      - name: Run per-trade learning feedback tests
+        run: python -m pytest -q test_trade_learning.py
+
+      - name: Run analytics API integration tests
+        run: python -m pytest -q test_analytics_api.py
+
+      - name: Run rejected-signal counterfactual tests
+        run: python -m pytest -q test_counterfactual_audit.py
+
+      - name: Run recursive webhook payload-safety tests
+        run: python -m pytest -q test_payload_safety.py
+
+      - name: Run webhook idempotency and schema migration tests
+        run: python -m pytest -q test_webhook_idempotency.py
+
+      - name: Run multi-category readiness scaffold tests
+        run: python -m pytest -q test_category_registry.py
+
+      - name: Run manual API write-security tests
+        run: python -m pytest -q test_manual_api_security.py
+
+      - name: Run HTTP surface integration tests
+        run: python -m pytest -q test_app_http_surface.py
+
+      - name: Run dashboard active-position context regression tests
+        run: python -m pytest -q test_dashboard_context.py
+
+      - name: Run shared alert-flow smoke test (offline stubs)
+        run: python smoke_shared_alert_flow.py
