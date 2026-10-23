@@ -11,18 +11,24 @@ import logging
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from candle_feed import fetch_signal_candles, fetch_closed_candles, CandleFeedError
 from trend_stop import update_trend_stop
 from signal_engine import MarketContext, evaluate_signal
 from signal_fusion import evaluate_fusion
+from btc_trend_monitor import build_trend_snapshot
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 from db_store import connect_database, ensure_schema, backend_name
 
 log = logging.getLogger("paper_worker")
+
+# In-process candle cache is warmed continuously in idle cycles, so a fresh
+# TradingView alert can reuse the latest valid chart assessment immediately.
+_LATEST_SIGNAL_BUNDLE: dict[str, Any] | None = None
+_LATEST_SIGNAL_BUNDLE_AT: datetime | None = None
 
 
 def _truthy(name: str, default: bool = False) -> bool:
@@ -165,6 +171,81 @@ def _connect():
     return conn
 
 
+def _bundle_cache_age_seconds() -> float | None:
+    if _LATEST_SIGNAL_BUNDLE is None or _LATEST_SIGNAL_BUNDLE_AT is None:
+        return None
+    return max(0.0, (_utcnow() - _LATEST_SIGNAL_BUNDLE_AT).total_seconds())
+
+
+def _get_signal_bundle_for_evaluation() -> dict[str, Any]:
+    """Return a recently pre-fetched candle bundle, otherwise refresh it now."""
+    global _LATEST_SIGNAL_BUNDLE, _LATEST_SIGNAL_BUNDLE_AT
+    max_age = max(15.0, min(180.0, _safe_float(os.getenv("BTC_TREND_MONITOR_MAX_CACHE_AGE_SECONDS", "45"), 45.0)))
+    age = _bundle_cache_age_seconds()
+    if _LATEST_SIGNAL_BUNDLE is not None and age is not None and age <= max_age:
+        return _LATEST_SIGNAL_BUNDLE
+    bundle = fetch_signal_candles()
+    _LATEST_SIGNAL_BUNDLE = bundle
+    _LATEST_SIGNAL_BUNDLE_AT = _utcnow()
+    return bundle
+
+
+def _refresh_btc_trend_monitor(conn) -> dict[str, Any] | None:
+    """Continuously refresh and persist chart-only trend context. Never trades."""
+    global _LATEST_SIGNAL_BUNDLE, _LATEST_SIGNAL_BUNDLE_AT
+    interval = max(15.0, min(300.0, _safe_float(os.getenv("BTC_TREND_MONITOR_INTERVAL_SECONDS", "30"), 30.0)))
+    row = conn.execute(
+        "SELECT updated_at, snapshot_json FROM btc_trend_monitor WHERE monitor_key=? LIMIT 1",
+        ("btc_15m",),
+    ).fetchone()
+    if row:
+        previous_at = _parse_time(row[0])
+        cache_age = _bundle_cache_age_seconds()
+        cache_is_warm = (_LATEST_SIGNAL_BUNDLE is not None and cache_age is not None and
+                         cache_age <= max(15.0, min(180.0, _safe_float(os.getenv("BTC_TREND_MONITOR_MAX_CACHE_AGE_SECONDS", "45"), 45.0))))
+        # After a worker restart, a persisted snapshot does not contain the actual
+        # candles. Fetch once to warm the in-memory cache even if the DB row is recent.
+        if previous_at is not None and (_utcnow() - previous_at).total_seconds() < interval and cache_is_warm:
+            try:
+                return json.loads(row[1]) if row[1] else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    try:
+        bundle = fetch_signal_candles()
+        _LATEST_SIGNAL_BUNDLE = bundle
+        _LATEST_SIGNAL_BUNDLE_AT = _utcnow()
+        snapshot = build_trend_snapshot(bundle, now=_LATEST_SIGNAL_BUNDLE_AT)
+        snapshot["cache_age_seconds"] = 0
+        conn.execute(
+            """INSERT INTO btc_trend_monitor (monitor_key, updated_at, status, snapshot_json)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(monitor_key) DO UPDATE SET updated_at=excluded.updated_at,
+                 status=excluded.status, snapshot_json=excluded.snapshot_json""",
+            ("btc_15m", snapshot["updated_at"], snapshot["status"], json.dumps(snapshot, separators=(",", ":"))),
+        )
+        conn.commit()
+        return snapshot
+    except Exception as exc:
+        # Monitoring failure must never crash the worker or be interpreted as a BUY.
+        note = f"{type(exc).__name__}: {str(exc)[:240]}"
+        snapshot = {"status": "degraded", "monitor_only": True, "updated_at": _utcnow().isoformat(),
+                    "provider": "Binance public REST", "symbol": "BTCUSDT", "error": note,
+                    "disclaimer": "Trend monitor unavailable; the worker still requires fresh inputs and all trade checks."}
+        try:
+            conn.execute(
+                """INSERT INTO btc_trend_monitor (monitor_key, updated_at, status, snapshot_json)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(monitor_key) DO UPDATE SET updated_at=excluded.updated_at,
+                     status=excluded.status, snapshot_json=excluded.snapshot_json""",
+                ("btc_15m", snapshot["updated_at"], snapshot["status"], json.dumps(snapshot, separators=(",", ":"))),
+            )
+            conn.commit()
+        except Exception as store_exc:
+            log.warning("Could not store BTC trend monitor state: %s", store_exc)
+        log.warning("BTC trend monitor unavailable; no trade decision inferred: %s", note)
+        return snapshot
+
+
 def _limits(conn, max_trade_dollars: float, max_daily_loss_dollars: float):
     today = _utcnow().date().isoformat()
     realized = float(conn.execute(
@@ -220,10 +301,10 @@ def _next_gainzalgo_signal(conn):
     max_age = max(30, min(900, int(os.getenv("TRADINGVIEW_MAX_SIGNAL_AGE_SECONDS", os.getenv("GAINZALGO_MAX_SIGNAL_AGE_SECONDS", "300")))))
     now = _utcnow()
     rows = conn.execute(
-        "SELECT id,created_at,direction,symbol,timeframe,payload_json FROM gainzalgo_signals WHERE processed_at IS NULL ORDER BY id ASC LIMIT 30"
+        "SELECT id,created_at,direction,symbol,timeframe,payload_json,processing_status FROM gainzalgo_signals WHERE processed_at IS NULL ORDER BY id ASC LIMIT 30"
     ).fetchall()
     for row in rows:
-        signal_id, created_at, raw_direction, symbol, timeframe, payload_json = row
+        signal_id, created_at, raw_direction, symbol, timeframe, payload_json, processing_status = row
         received = _parse_time(created_at)
         age = (now - received).total_seconds() if received else float("inf")
         body = _safe_external_payload(payload_json)
@@ -269,7 +350,7 @@ def _next_gainzalgo_signal(conn):
             log.warning("Alert %s did not include timeframe; verify chart/alert configuration", signal_id)
         return {"id": signal_id, "created_at": created_at, "direction": direction,
                 "symbol": symbol, "timeframe": timeframe_text or None, "payload_json": payload_json,
-                "age_seconds": round(age, 2)}, direction
+                "processing_status": processing_status or "queued", "age_seconds": round(age, 2)}, direction
     return None, None
 
 
@@ -283,14 +364,16 @@ def _mark_gainzalgo(conn, signal_id: int, status: str, note: str) -> None:
 
 def _record_signal_log(conn, *, created_at: str, ticker: str | None, direction: str, score: int,
                        btc_price: float, strike: float, seconds_remaining: int,
-                       max_entry_cents: float | None, payload: dict[str, Any]) -> None:
-    conn.execute(
+                       max_entry_cents: float | None, payload: dict[str, Any]) -> int | None:
+    """Persist one evaluation and return its ID so an opened trade can reference it."""
+    cur = conn.execute(
         """INSERT INTO signal_log (created_at,market_ticker,direction,score,btc_price,strike_price,
            seconds_remaining,max_entry_cents,payload_json) VALUES (?,?,?,?,?,?,?,?,?)""",
         (created_at, ticker, direction, int(score), float(btc_price), float(strike), int(seconds_remaining),
          max_entry_cents, json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)),
     )
     conn.commit()
+    return cur.lastrowid
 
 
 def _log_wait(conn, reason: str, *, ticker: str | None = None, external: dict | None = None,
@@ -314,9 +397,59 @@ def _log_wait(conn, reason: str, *, ticker: str | None = None, external: dict | 
     try:
         _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=ticker, direction="WAIT", score=score,
                            btc_price=btc, strike=strike, seconds_remaining=seconds,
-                           max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92), payload=payload)
+                           max_entry_cents=_entry_price_limits()[1], payload=payload)
     except (ValueError, TypeError) as exc:
         log.warning("Could not journal wait decision: %s", exc)
+
+
+def _quarter_hour_window_start(value: datetime) -> datetime:
+    """Return the UTC start of the 15-minute window containing value."""
+    if value.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    utc = value.astimezone(timezone.utc)
+    return utc.replace(minute=(utc.minute // 15) * 15, second=0, microsecond=0)
+
+
+def _entry_price_limits() -> tuple[float, float]:
+    """Return (configured hard cap, effective target cap) in cents.
+
+    The hard cap preserves the existing safety setting. The separate target cap
+    defaults to 80c so we do not chase expensive contracts while the model lacks
+    a calibrated per-signal probability. The effective entry ceiling is the lower
+    of those two limits.
+    """
+    hard_cap = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92)))
+    target_cap = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_ENTRY_TARGET_MAX_CENTS", "80"), 80)))
+    return hard_cap, min(hard_cap, target_cap)
+
+
+def _entry_price_gate(current_ask_cents: float, hard_cap_cents: float, target_cap_cents: float) -> tuple[str, str]:
+    """Fail-closed price discipline: enter only at/below the active target cap.
+
+    An expensive quote should wait, not be treated as an entry or as evidence of
+    an edge. Calling code still enforces signal freshness, market validity, and spread.
+    """
+    try:
+        ask = float(current_ask_cents)
+        hard_cap = float(hard_cap_cents)
+        target = min(hard_cap, float(target_cap_cents))
+    except (TypeError, ValueError, OverflowError):
+        return "invalid", "Entry price or configured limit is invalid."
+    if (not all(math.isfinite(v) for v in (ask, hard_cap, target))
+            or not (0 < ask < 100) or not (0 < hard_cap < 100) or not (0 < target < 100)):
+        return "invalid", "Current order-book ask or configured price limit is invalid; no entry."
+    if ask > target:
+        return "wait", f"Current ask {ask:.2f}c is above the entry target {target:.2f}c; waiting for a better price instead of chasing."
+    return "enter", f"Current ask {ask:.2f}c is at or below the entry target {target:.2f}c."
+
+
+def _set_gainzalgo_pending(conn, signal_id: int, status: str, note: str) -> None:
+    """Record a pending status without setting processed_at, so a fresh alert can retry."""
+    conn.execute(
+        "UPDATE gainzalgo_signals SET processing_status=?,processing_note=? WHERE id=? AND processed_at IS NULL",
+        (str(status)[:80], str(note)[:500], signal_id),
+    )
+    conn.commit()
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -420,7 +553,7 @@ def _manage_open(conn) -> None:
                 conn.execute("UPDATE paper_trades SET last_trend_check_at=? WHERE id=?", (now.isoformat(), trade_id))
                 conn.commit()
                 try:
-                    bundle = fetch_signal_candles() if (tp_enabled and tp_armed and reversal_enabled) else None
+                    bundle = _get_signal_bundle_for_evaluation() if (tp_enabled and tp_armed and reversal_enabled) else None
                     candles = bundle["candles_1m"] if bundle else fetch_closed_candles("1m", 100)
                     candle_ts = str(candles["timestamp"].iloc[-1]) if "timestamp" in candles.columns else str(candles.index[-1])
                     fresh_candles = bundle
@@ -468,7 +601,7 @@ def _manage_open(conn) -> None:
                                               up_ask_cents=yes_ask, down_ask_cents=no_ask,
                                               spread_cents=spread_now, estimated_fee_cents=float(entry_fee)),
                                 minimum_score=int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65)),
-                                max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92),
+                                max_entry_cents=_entry_price_limits()[1],
                                 max_spread_cents=_safe_float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"), 5),
                             ).to_dict()
                             veto, veto_reasons = _major_flaw_veto(direction, reversal, max(2, min(12, int(_safe_float(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"), 4)))))
@@ -553,7 +686,7 @@ def run_once() -> dict[str, Any]:
     exit_fee = max(0.0, _safe_float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"), 2.0))
     stop_pct = max(0.1, min(99.0, _safe_float(os.getenv("PAPER_STOP_LOSS_PERCENT", "35"), 35)))
     min_score = max(0, min(100, int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65))))
-    max_entry = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92)))
+    hard_max_entry, max_entry = _entry_price_limits()
     max_spread = max(0.0, min(100.0, _safe_float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"), 5)))
     tp_enabled = _truthy("PAPER_TAKE_PROFIT_ENABLED", False)
     tp_pct = _safe_float(os.getenv("PAPER_TAKE_PROFIT_PERCENT", "20"), 20)
@@ -569,6 +702,8 @@ def run_once() -> dict[str, Any]:
     try:
         conn = _connect()
         _manage_open(conn)
+        # Keep chart trends precomputed even when no TradingView alert is waiting.
+        _refresh_btc_trend_monitor(conn)
         use_external = source in {"gainzalgo", "hybrid"}
         queued, queued_direction = _next_gainzalgo_signal(conn) if use_external else (None, None)
         # WAIT is an informational state update. Record it promptly—even if daily
@@ -618,6 +753,15 @@ def run_once() -> dict[str, Any]:
                 # Keep a fresh external alert unprocessed while market discovery can retry; it is still age-limited.
                 _log_wait(conn, "No candidate had an explicit strike, valid 15m close time, and verified BTC-up title.", external=queued)
             return {"action": "wait", "reason": "no candidate had an explicit strike, valid 15m close time, and verified BTC-up market title"}
+        if queued:
+            # A price-waiting alert is only eligible in the same 15-minute window
+            # in which it was received. Never carry it into the next contract.
+            alert_time = _parse_time(str(queued.get("created_at") or ""))
+            if alert_time is None or _quarter_hour_window_start(alert_time) != _quarter_hour_window_start(_utcnow()):
+                note = "alert belongs to a prior or unverified 15-minute window; it cannot be reused for a later contract"
+                _mark_gainzalgo(conn, queued["id"], "ignored", note)
+                return {"action": "wait", "reason": note, "signal_id": queued["id"], "trade_placed": False,
+                        "mode": "SIMULATION_ONLY"}
         market = min(parsed, key=lambda item: item["seconds"])
         min_seconds = max(30, int(_safe_float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "30"), 30)))
         if market["seconds"] < min_seconds:
@@ -649,13 +793,15 @@ def run_once() -> dict[str, Any]:
         entry_candle_timestamp = None
         final_direction = "WAIT"
         score = 0
+        entry_signal_score: int | None = None
+        entry_signal_log_id: int | None = None
         entry = None
 
         if use_external:
             direction = queued_direction
             entry = float(yes_ask if direction == "UP" else no_ask)
-            if entry <= 0 or entry > max_entry:
-                note = f"alert side ask {entry:.2f}c exceeds max entry {max_entry:.2f}c"
+            if entry <= 0 or entry >= 100:
+                note = f"invalid side ask {entry:.2f}c; no entry"
                 _mark_gainzalgo(conn, queued["id"], "skipped", note)
                 _log_wait(conn, note, ticker=market["ticker"], external=queued)
                 return {"action": "wait", "reason": note, "ticker": market["ticker"], "entry_cents": entry}
@@ -665,8 +811,20 @@ def run_once() -> dict[str, Any]:
                 _log_wait(conn, note, ticker=market["ticker"], external=queued)
                 return {"action": "wait", "reason": note, "ticker": market["ticker"], "spread_cents": spread}
 
+            price_action, price_note = _entry_price_gate(entry, hard_max_entry, max_entry)
+            if price_action != "enter":
+                note = price_note
+                _set_gainzalgo_pending(conn, queued["id"], "waiting_for_better_price", note)
+                max_age_config = os.getenv("TRADINGVIEW_MAX_SIGNAL_AGE_SECONDS", os.getenv("GAINZALGO_MAX_SIGNAL_AGE_SECONDS", "300"))
+                max_age = max(30, min(900, int(_safe_float(max_age_config, 300))))
+                remaining = max(0.0, max_age - float(queued.get("age_seconds", 0) or 0))
+                return {"action": "wait_for_better_price", "reason": note, "ticker": market["ticker"],
+                        "direction": direction, "entry_ask_cents": entry, "entry_target_max_cents": max_entry,
+                        "signal_age_seconds": queued.get("age_seconds"), "signal_freshness_seconds_remaining": round(remaining, 1),
+                        "trade_placed": False, "mode": "SIMULATION_ONLY"}
+
             if source == "hybrid":
-                bundle = fetch_signal_candles()
+                bundle = _get_signal_bundle_for_evaluation()
                 internal_signal = evaluate_signal(
                     bundle["candles_1m"], bundle["candles_5m"], bundle["candles_15m"],
                     MarketContext(strike_price=market["strike"], seconds_remaining=market["seconds"],
@@ -706,9 +864,12 @@ def run_once() -> dict[str, Any]:
                     "final_decision_reason": "; ".join(fused.get("reasons", [])),
                     "disclaimer": "TradingView primary; internal rules veto only major conflicts. Score is not a win probability. Paper mode only.",
                 }
-                _record_signal_log(conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
-                                   score=score, btc_price=entry_btc, strike=market["strike"],
-                                   seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=payload)
+                entry_signal_log_id = _record_signal_log(
+                    conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
+                    score=score, btc_price=entry_btc, strike=market["strike"],
+                    seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=payload,
+                )
+                entry_signal_score = score
                 if not fused["approved"]:
                     note = "; ".join(fused.get("reasons", [])) or "fusion checks rejected the alert"
                     _mark_gainzalgo(conn, queued["id"], "vetoed" if fused.get("vetoed_by_internal") else "skipped", note)
@@ -730,12 +891,15 @@ def run_once() -> dict[str, Any]:
                     "warnings": ["External-only mode does not run internal confirmation."],
                     "disclaimer": "External indicator direction; paper mode only; score is not a win probability.",
                 }
-                _record_signal_log(conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
-                                   score=0, btc_price=entry_btc, strike=market["strike"],
-                                   seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=payload)
+                entry_signal_log_id = _record_signal_log(
+                    conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
+                    score=0, btc_price=entry_btc, strike=market["strike"],
+                    seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=payload,
+                )
+                entry_signal_score = None
                 warnings = payload["warnings"]
         else:
-            bundle = fetch_signal_candles()
+            bundle = _get_signal_bundle_for_evaluation()
             signal = evaluate_signal(
                 bundle["candles_1m"], bundle["candles_5m"], bundle["candles_15m"],
                 MarketContext(strike_price=market["strike"], seconds_remaining=market["seconds"],
@@ -758,12 +922,27 @@ def run_once() -> dict[str, Any]:
             entry = float(yes_ask if direction == "UP" else no_ask)
             final_direction = signal.direction
             warnings = signal.warnings
-            _record_signal_log(conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
-                               score=score, btc_price=signal.btc_price, strike=signal.strike_price,
-                               seconds_remaining=signal.seconds_remaining, max_entry_cents=signal.max_entry_cents, payload=payload)
+            entry_signal_log_id = _record_signal_log(
+                conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
+                score=score, btc_price=signal.btc_price, strike=signal.strike_price,
+                seconds_remaining=signal.seconds_remaining, max_entry_cents=signal.max_entry_cents, payload=payload,
+            )
+            entry_signal_score = score
 
         if entry is None:
             return {"action": "wait", "reason": "candidate entry price was not set; fail closed"}
+        price_action, price_note = _entry_price_gate(float(entry), hard_max_entry, max_entry)
+        if price_action != "enter":
+            wait_payload = dict(payload or {})
+            wait_payload["entry_price_gate"] = {"decision": "wait_for_better_price", "current_ask_cents": float(entry),
+                                                 "target_max_cents": max_entry, "reason": price_note}
+            wait_payload["reasons"] = list(wait_payload.get("reasons", [])) + [price_note]
+            _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
+                               score=score, btc_price=entry_btc, strike=market["strike"],
+                               seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=wait_payload)
+            return {"action": "wait_for_better_price", "reason": price_note, "ticker": market["ticker"],
+                    "entry_ask_cents": float(entry), "entry_target_max_cents": max_entry,
+                    "trade_placed": False, "mode": "SIMULATION_ONLY"}
         contracts = max(0, min(10, int((max_trade * 100) // (float(entry) + fee))))
         if contracts < 1:
             reason = "even one contract plus fees exceeds MAX_TRADE_DOLLARS"
@@ -788,11 +967,13 @@ def run_once() -> dict[str, Any]:
         conn.execute(
             """INSERT INTO paper_trades (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,
                notes,stop_loss_cents,entry_btc_price,high_water_btc,low_water_btc,last_stop_candle_timestamp,
-               take_profit_target_cents,entry_signal_source,external_signal_id,timeframe)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (now_text, market["ticker"], direction, contracts, float(entry), fee, note, stop,
+               take_profit_target_cents,entry_signal_source,external_signal_id,timeframe,
+               entry_signal_log_id,entry_signal_score)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (now_text, market["ticker"], direction, contracts, float(entry), fee,
+             note + f" | entry target <= {max_entry:.2f}c (configured hard cap {hard_max_entry:.2f}c)", stop,
              entry_btc, entry_btc, entry_btc, entry_candle_timestamp, tp_target, signal_source, external_id,
-             timeframe_note or "15m contract; TV timeframe unknown"),
+             timeframe_note or "15m contract; TV timeframe unknown", entry_signal_log_id, entry_signal_score),
         )
         conn.commit()
         if queued:
@@ -808,6 +989,8 @@ def run_once() -> dict[str, Any]:
                 "trend_stop_shadow_mode": _truthy("PAPER_TREND_STOP_SHADOW_MODE", False),
                 "take_profit_enabled": tp_enabled, "take_profit_target_cents": round(tp_target, 2) if tp_target is not None else None,
                 "take_profit_target_return_percent": tp_pct if tp_enabled else None, "entry_btc_price": round(entry_btc, 2),
+                "entry_target_max_cents": max_entry, "configured_hard_max_entry_cents": hard_max_entry,
+                "entry_signal_log_id": entry_signal_log_id, "entry_signal_score": entry_signal_score,
                 "mode": "SIMULATION_ONLY", "warnings": warnings}
     except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError) as exc:
         log.warning("Paper worker cycle failed closed: %s", exc)

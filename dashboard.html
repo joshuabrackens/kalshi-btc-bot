@@ -187,6 +187,28 @@
     </div>
   </section>
 
+  <section class="card section" aria-label="Continuous BTC chart trend monitor">
+    <div class="section-head">
+      <div><h2>Continuous BTC trend monitor</h2><p class="section-desc">The worker refreshes chart context while waiting for the indicator, so the latest trends are already available when an alert arrives. This panel is informational and never places trades by itself.</p></div>
+      <span class="badge wait" id="trend-monitor-badge">Waiting for first update</span>
+    </div>
+    <div class="grid-3">
+      <div class="mini"><div class="label">1-minute trend</div><div class="value" id="trend-monitor-1m">—</div><div class="help" id="trend-monitor-1m-time">Last closed candle not reported</div></div>
+      <div class="mini"><div class="label">5-minute trend</div><div class="value" id="trend-monitor-5m">—</div><div class="help" id="trend-monitor-5m-time">Last closed candle not reported</div></div>
+      <div class="mini"><div class="label">15-minute trend</div><div class="value" id="trend-monitor-15m">—</div><div class="help" id="trend-monitor-15m-time">Last closed candle not reported</div></div>
+    </div>
+    <div class="grid-3" style="margin-top:10px">
+      <div class="mini"><div class="label">Latest BTC price</div><div class="value" id="trend-monitor-price">—</div><div class="help" id="trend-monitor-updated">Last update —</div></div>
+      <div class="mini"><div class="label">Momentum / RSI</div><div class="value" id="trend-monitor-rsi">—</div><div class="help" id="trend-monitor-vwap">1-minute VWAP —</div></div>
+      <div class="mini"><div class="label">Chart evidence</div><div class="value" id="trend-monitor-score">—</div><div class="help" id="trend-monitor-bias">Pre-analysis bias —</div></div>
+    </div>
+    <div class="rowline"><span class="label">Volume confirmation</span><span class="value" id="trend-monitor-volume">—</span></div>
+    <div class="rowline"><span class="label">Market structure</span><span class="value" id="trend-monitor-structure">—</span></div>
+    <div class="rowline"><span class="label">Consolidation / box</span><span class="value" id="trend-monitor-box">—</span></div>
+    <div class="notice" id="trend-monitor-note">Waiting for a fresh chart snapshot. A fresh TradingView alert and all existing market, entry-price, spread, and risk checks are still required before a paper trade.</div>
+    <ul class="reason-list" id="trend-monitor-warnings"><li>No trend warnings available yet.</li></ul>
+  </section>
+
   <section class="grid-2 section" aria-label="Decision and worker status">
     <article class="card">
       <div class="card-titleline"><h2>Why the engine chose this</h2><span class="badge wait" id="decision-badge">Loading</span></div>
@@ -245,9 +267,15 @@
     <details style="margin-top:13px"><summary>Advanced diagnostics (technical details)</summary><pre id="advanced-json" style="margin-bottom:0">Waiting for data…</pre></details>
   </section>
 
+  <section class="card section" aria-label="Strategy performance by source">
+    <div class="section-head"><div><h2>Strategy performance</h2><p class="section-desc">Compare the paper-trade results for each recorded signal source. Counts use net P&amp;L sign after recorded fees; an evidence score is not a win probability.</p></div><span class="badge blue" id="strategy-performance-badge">Collecting results</span></div>
+    <div class="table-wrap"><table style="min-width:850px" aria-label="Strategy performance by signal source"><thead><tr><th>Signal source</th><th>Total</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Net P&amp;L</th><th>Open</th><th>Sample status</th></tr></thead><tbody id="strategy-performance"><tr><td colspan="9" class="empty">Waiting for strategy performance data…</td></tr></tbody></table></div>
+    <div class="notice"><strong>How to read this:</strong> old trades may not have an original score linked to them. Their source is classified from the saved source field or trade note when possible; otherwise it remains “legacy unknown.” Do not tune rules from a small sample or one unusually profitable trade.</div>
+  </section>
+
   <section class="card section" aria-label="Paper trade activity">
     <div class="section-head"><div><h2>Paper trade activity</h2><p class="section-desc">The journal records simulated entries, outcomes, and net profit/loss. Open positions are not counted as settled results.</p></div><span class="badge blue" id="trade-count-badge">Most recent trades</span></div>
-    <div class="table-wrap"><table aria-label="Paper trade activity"><thead><tr><th>Opened</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Net P&amp;L</th></tr></thead><tbody id="trades"><tr><td colspan="8" class="empty">Waiting for trades…</td></tr></tbody></table></div>
+    <div class="table-wrap"><table style="min-width:1000px" aria-label="Paper trade activity"><thead><tr><th>Opened</th><th>Market</th><th>Side</th><th>Signal source</th><th>Entry score</th><th>Contracts</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Net P&amp;L</th></tr></thead><tbody id="trades"><tr><td colspan="10" class="empty">Waiting for trades…</td></tr></tbody></table></div>
   </section>
 
   <section class="card section">
@@ -373,7 +401,7 @@
     write('distance-strike',hasCurrentEvaluation&&hasNum(s.distance_from_strike)?`${Number(s.distance_from_strike)>0?'+':Number(s.distance_from_strike)<0?'−':''}$${Math.abs(Number(s.distance_from_strike)).toFixed(2)}`:'—');
     write('seconds-remaining',hasCurrentEvaluation&&hasNum(s.seconds_remaining)?`${Math.round(Number(s.seconds_remaining))} sec`:'—');
     write('entry-ask',hasCurrentEvaluation?cents(s.entry_ask_cents):'—');
-    write('max-entry-cents',hasCurrentEvaluation?cents(s.max_entry_cents):'—');
+    write('max-entry-cents',hasCurrentEvaluation?cents(d.risk?.entry_target_max_cents??s.max_entry_cents):'—');
     write('evidence-score',score===null?'Not available':`${nfmt(score,0)} / 100`);
     if($('score-bar')) $('score-bar').style.width=`${score===null?0:score}%`;
     write('score-note',score===null?'No current-window score; previous scores are hidden':`Rule score; configured internal threshold ${threshold}/100`);
@@ -416,11 +444,28 @@
     const e=st.evidence_totals||{};write('up-points',hasNum(e.up_points)?e.up_points:'—');write('down-points',hasNum(e.down_points)?e.down_points:'—');write('net-points',hasNum(e.net_points)?e.net_points:'—');write('max-points',hasNum(e.maximum_theoretical_directional_points)?e.maximum_theoretical_directional_points:'—');
     write('strategy-score-badge',hasNum(e.net_points)?`Internal net ${e.net_points} points`:'Evidence details');
   }
+  function renderStrategyPerformance(d){
+    const tbody=$('strategy-performance');tbody.replaceChildren();
+    const rows=Array.isArray(d.strategy_performance)?d.strategy_performance:[];
+    const sourceLabel=(v)=>({'hybrid':'TradingView-primary hybrid','tradingview':'TradingView only','internal':'Internal strategy','internal_legacy':'Legacy auto-paper strategy','legacy_unknown':'Legacy / unknown source'})[String(v||'').toLowerCase()]||String(v||'Legacy / unknown source').replaceAll('_',' ');
+    write('strategy-performance-badge',`${rows.length} source group${rows.length===1?'':'s'}`);
+    if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=9;td.className='empty';td.textContent='No source-level trade results recorded yet.';tr.appendChild(td);tbody.appendChild(tr);return;}
+    for(const r of rows){
+      const tr=document.createElement('tr');
+      addCell(tr,sourceLabel(r.source));addCell(tr,r.total_trades??0);addCell(tr,r.settled_trades??0);
+      addCell(tr,r.wins??0,'positive');addCell(tr,r.losses??0,'negative');
+      addCell(tr,hasNum(r.win_rate_percent)?`${nfmt(r.win_rate_percent,1)}%`:'—');
+      addCell(tr,money(r.net_pnl_dollars),Number(r.net_pnl_dollars)>0?'positive':Number(r.net_pnl_dollars)<0?'negative':'');
+      addCell(tr,r.open_positions??0);addCell(tr,r.sample_note||'Descriptive only',Number(r.settled_trades)<20?'warning-text':'');
+      tbody.appendChild(tr);
+    }
+  }
   function renderTrades(d){
     const tbody=$('trades');tbody.replaceChildren();const trades=Array.isArray(d.trades)?d.trades:[];
     write('trade-count-badge',`Most recent ${trades.length} trades`);
-    if(!trades.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=8;td.className='empty';td.textContent='No paper trades recorded yet.';tr.appendChild(td);tbody.appendChild(tr);return;}
-    for(const t of trades){const tr=document.createElement('tr');addCell(tr,time(t.created_at));addCell(tr,t.market_ticker||'—');addCell(tr,direction(t.direction),dirTone(t.direction));addCell(tr,t.contracts??'—');addCell(tr,cents(t.entry_cents));addCell(tr,t.settled_at?'Settled':'Open',t.settled_at?'positive':'warning-text');addCell(tr,t.outcome?String(t.outcome).replaceAll('_',' '):'Pending');addCell(tr,t.pnl_dollars===null||t.pnl_dollars===undefined?'Not settled':money(t.pnl_dollars),hasNum(t.pnl_dollars)?(Number(t.pnl_dollars)>0?'positive':Number(t.pnl_dollars)<0?'negative':''):'');tbody.appendChild(tr);}
+    if(!trades.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=10;td.className='empty';td.textContent='No paper trades recorded yet.';tr.appendChild(td);tbody.appendChild(tr);return;}
+    const sourceLabel=(v)=>({'hybrid':'Hybrid','tradingview':'TradingView','internal':'Internal','internal_legacy':'Internal (legacy)','legacy_unknown':'Legacy / unknown'})[String(v||'').toLowerCase()]||String(v||'Legacy / unknown').replaceAll('_',' ');
+    for(const t of trades){const tr=document.createElement('tr');addCell(tr,time(t.created_at));addCell(tr,t.market_ticker||'—');addCell(tr,direction(t.direction),dirTone(t.direction));addCell(tr,sourceLabel(t.entry_signal_source));addCell(tr,hasNum(t.entry_signal_score)?`${nfmt(t.entry_signal_score,0)}/100`:'Not recorded',hasNum(t.entry_signal_score)?'':'warning-text');addCell(tr,t.contracts??'—');addCell(tr,cents(t.entry_cents));addCell(tr,t.settled_at?'Settled':'Open',t.settled_at?'positive':'warning-text');addCell(tr,t.outcome?String(t.outcome).replaceAll('_',' '):'Pending');addCell(tr,t.pnl_dollars===null||t.pnl_dollars===undefined?'Not settled':money(t.pnl_dollars),hasNum(t.pnl_dollars)?(Number(t.pnl_dollars)>0?'positive':Number(t.pnl_dollars)<0?'negative':''):'');tbody.appendChild(tr);}
   }
   function renderAlerts(d){
     const tbody=$('alerts');tbody.replaceChildren();const rows=Array.isArray(d.recent_external_alerts)?d.recent_external_alerts:[];
@@ -455,6 +500,36 @@
     write('settings-max-trade',money(r.max_trade_dollars));write('settings-max-loss',money(r.max_daily_loss_dollars));write('server-updated',time(h.checked_at));
     const updated=new Date();write('updated-pill',`Updated ${updated.toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'})}`);
     if(d.mode!=='SIMULATION_ONLY'||d.real_orders_enabled){write('paper-badge','CHECK TRADING MODE');if($('paper-badge'))$('paper-badge').className='top-pill red';}else{write('paper-badge','PAPER MODE ONLY');if($('paper-badge'))$('paper-badge').className='top-pill green';}
+  }
+  function renderTrendMonitor(d){
+    const t=d.btc_trend_monitor||null;
+    if(!t){
+      setBadge('trend-monitor-badge','No snapshot yet','amber');
+      write('trend-monitor-note','The worker has not saved a trend snapshot yet. It will appear after the next successful background-worker refresh.');
+      return;
+    }
+    const status=String(t.status||'unknown');
+    const stale=Boolean(t.is_stale);
+    setBadge('trend-monitor-badge',status==='ok'&&!stale?'Updating continuously':status==='ok'?'Trend snapshot stale':`Monitor ${status}`,status==='ok'&&!stale?'green':'amber');
+    const tf=t.timeframes||{},asof=t.candle_asof||{};
+    const trendLabel=v=>String(v||'unknown').replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());
+    for(const interval of ['1m','5m','15m']){
+      write(`trend-monitor-${interval}`,trendLabel(tf[interval]));
+      write(`trend-monitor-${interval}-time`,asof[interval]?`Candle timestamp ${time(asof[interval])}`:'Candle timestamp unavailable');
+    }
+    write('trend-monitor-price',hasNum(t.btc_price)?usd(t.btc_price):'—');
+    write('trend-monitor-updated',t.updated_at?`Updated ${age(t.age_seconds)} ago · ${time(t.updated_at)}`:'Last update unavailable');
+    const m=t.momentum||{};
+    write('trend-monitor-rsi',hasNum(m.rsi_1m)?nfmt(m.rsi_1m,1):'—');
+    write('trend-monitor-vwap',hasNum(m.vwap_1m)?`1-minute VWAP ${usd(m.vwap_1m)}`:'1-minute VWAP unavailable');
+    write('trend-monitor-score',hasNum(t.evidence_score)?`${t.evidence_score}/100`:'—');
+    write('trend-monitor-bias',`Chart-only bias: ${t.candidate_bias||'unknown'} · not a trade probability`);
+    write('trend-monitor-volume',t.volume_confirmation?.confirmed?'Confirmed':'Not confirmed');
+    write('trend-monitor-structure',t.market_structure?.label||'Unknown');
+    write('trend-monitor-box',t.box_theory?.state||'Unknown');
+    const note=t.error?`Trend monitor issue: ${t.error}`:stale?'The last snapshot is old. The worker must refresh chart data before relying on it for pre-analysis.':(t.disclaimer||'Chart-only pre-analysis. A fresh indicator and all execution checks are still required.');
+    write('trend-monitor-note',note);
+    const ul=$('trend-monitor-warnings');if(ul){ul.replaceChildren();const warns=Array.isArray(t.warnings)?t.warnings:[];if(!warns.length){const li=document.createElement('li');li.textContent='No additional trend warnings reported.';ul.appendChild(li);}else warns.forEach(msg=>{const li=document.createElement('li');li.textContent=String(msg);ul.appendChild(li);});}
   }
   function renderMarketDiagnostics(diag){
     if(!diag){setBadge('market-ready-badge','Diagnostics unavailable','amber');return;}
@@ -531,7 +606,7 @@
     try{
       const [dashboardResult,diagResult]=await Promise.allSettled([getJSON('/api/dashboard'),getJSON('/diagnostics/market-data')]);
       if(dashboardResult.status!=='fulfilled')throw dashboardResult.reason;
-      const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderTrades(data);renderAlerts(data);
+      const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderTrendMonitor(data);renderStrategyPerformance(data);renderTrades(data);renderAlerts(data);
       if(diagResult.status==='fulfilled')renderMarketDiagnostics(diagResult.value);else{setBadge('market-ready-badge','Diagnostics unavailable','amber');write('market-diagnostic-cache',diagResult.reason?.message||'Could not load diagnostic endpoint.');}
       setBadge('connection-badge','Dashboard connected','green');write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);
     }catch(err){setBadge('connection-badge','Dashboard connection issue','red');write('last-refresh',`Refresh failed: ${err?.message||'unknown error'}. Reload the page or check the web service.`);}

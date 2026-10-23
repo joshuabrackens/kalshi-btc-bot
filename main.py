@@ -257,6 +257,59 @@ def _current_window_decision(alerts: list[dict[str, Any]], now: datetime | None 
     }
 
 
+def _strategy_source_label(source: Any, notes: Any = None) -> str:
+    """Classify trade source without guessing missing historical metadata."""
+    explicit = str(source or "").strip().lower()
+    if explicit:
+        return explicit
+    note = str(notes or "")
+    if "TradingView-primary hybrid paper entry" in note:
+        return "hybrid"
+    if "TradingView/GainzAlgo paper entry" in note:
+        return "tradingview"
+    if note.startswith("AUTO PAPER ENTRY"):
+        return "internal_legacy"
+    if "Internal strategy paper entry" in note:
+        return "internal"
+    return "legacy_unknown"
+
+
+def _aggregate_strategy_performance(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    """Group settled results by source and P&L sign, not exit reason text."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for source, notes, settled_at, pnl_cents in rows:
+        label = _strategy_source_label(source, notes)
+        group = grouped.setdefault(label, {
+            "source": label, "total_trades": 0, "settled_trades": 0,
+            "wins": 0, "losses": 0, "break_even": 0, "open_positions": 0,
+            "net_pnl_cents": 0.0,
+        })
+        group["total_trades"] += 1
+        if settled_at is None:
+            group["open_positions"] += 1
+            continue
+        group["settled_trades"] += 1
+        pnl = float(pnl_cents or 0.0)
+        group["net_pnl_cents"] += pnl
+        if pnl > 0: group["wins"] += 1
+        elif pnl < 0: group["losses"] += 1
+        else: group["break_even"] += 1
+    result: list[dict[str, Any]] = []
+    for label in sorted(grouped):
+        group = grouped[label]
+        settled = group["settled_trades"]
+        group["win_rate_percent"] = round(100 * group["wins"] / settled, 2) if settled else None
+        group["net_pnl_cents"] = round(group["net_pnl_cents"], 4)
+        group["net_pnl_dollars"] = round(group["net_pnl_cents"] / 100, 4)
+        group["sample_note"] = (
+            "No settled trades yet." if settled == 0 else
+            "Small sample; do not tune rules from this group alone." if settled < 20 else
+            "More observations available; keep validating across market conditions."
+        )
+        result.append(group)
+    return result
+
+
 @app.get("/api/dashboard")
 def dashboard_data() -> dict[str, Any]:
     with db_connect() as conn:
@@ -273,8 +326,13 @@ def dashboard_data() -> dict[str, Any]:
         ).fetchone()
         rows = conn.execute(
             """SELECT id, created_at, settled_at, market_ticker, direction,
-                      contracts, entry_cents, outcome, pnl_cents, timeframe
+                      contracts, entry_cents, outcome, pnl_cents, timeframe,
+                      entry_signal_source, external_signal_id, entry_signal_log_id,
+                      entry_signal_score, entry_btc_price, notes
                FROM paper_trades ORDER BY id DESC LIMIT 20"""
+        ).fetchall()
+        performance_rows = conn.execute(
+            "SELECT entry_signal_source, notes, settled_at, pnl_cents FROM paper_trades"
         ).fetchall()
         signal_row = conn.execute(
             """SELECT created_at, market_ticker, direction, score, btc_price,
@@ -297,6 +355,31 @@ def dashboard_data() -> dict[str, Any]:
             """SELECT last_seen_at, signal_source, mode, last_action, last_reason
                FROM worker_heartbeat WHERE worker_name = 'paper_worker' LIMIT 1"""
         ).fetchone()
+        trend_monitor_row = conn.execute(
+            "SELECT updated_at, status, snapshot_json FROM btc_trend_monitor WHERE monitor_key=? LIMIT 1",
+            ("btc_15m",),
+        ).fetchone()
+
+    trend_monitor = None
+    if trend_monitor_row:
+        try:
+            trend_monitor = json.loads(trend_monitor_row[2] or "{}")
+            if not isinstance(trend_monitor, dict):
+                trend_monitor = {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            trend_monitor = {}
+        trend_monitor.setdefault("updated_at", trend_monitor_row[0])
+        trend_monitor.setdefault("status", trend_monitor_row[1])
+        try:
+            tm_updated = datetime.fromisoformat(str(trend_monitor.get("updated_at") or "").replace("Z", "+00:00"))
+            if tm_updated.tzinfo is None:
+                tm_updated = tm_updated.replace(tzinfo=timezone.utc)
+            trend_monitor_age = max(0, int((datetime.now(timezone.utc) - tm_updated.astimezone(timezone.utc)).total_seconds()))
+            trend_monitor["age_seconds"] = trend_monitor_age
+            trend_monitor["is_stale"] = trend_monitor_age > max(120, 4 * _env_int("BTC_TREND_MONITOR_INTERVAL_SECONDS", 30, 15, 300))
+        except (TypeError, ValueError, OverflowError):
+            trend_monitor["age_seconds"] = None
+            trend_monitor["is_stale"] = True
 
     worker_age = None
     if worker_row:
@@ -311,6 +394,7 @@ def dashboard_data() -> dict[str, Any]:
     worker_is_fresh = worker_age is not None and worker_age <= worker_stale_after
 
     total, settled, wins, losses, pnl, opened, exposure = totals
+    strategy_performance = _aggregate_strategy_performance(performance_rows)
     signal = None
     if signal_row:
         keys = ["created_at", "market_ticker", "direction", "score", "btc_price",
@@ -403,6 +487,8 @@ def dashboard_data() -> dict[str, Any]:
             "max_trade_dollars": round(_env_float("MAX_TRADE_DOLLARS", 1.00, 0.01), 2),
             "max_daily_loss_dollars": round(_env_float("MAX_DAILY_LOSS_DOLLARS", 10.00, 0.01), 2),
             "open_exposure_dollars": round(float(exposure or 0) / 100, 2),
+            "configured_hard_max_entry_cents": round(_env_float("PAPER_MAX_ENTRY_CENTS", 92.0, 1.0), 2),
+            "entry_target_max_cents": round(min(_env_float("PAPER_MAX_ENTRY_CENTS", 92.0, 1.0), _env_float("PAPER_ENTRY_TARGET_MAX_CENTS", 80.0, 1.0)), 2),
         },
         "stats": {
             "total_trades": int(total or 0),
@@ -413,6 +499,8 @@ def dashboard_data() -> dict[str, Any]:
             "win_rate_percent": round(100 * (wins or 0) / settled, 2) if settled else None,
             "net_pnl_dollars": round(float(pnl or 0) / 100, 2),
         },
+        "strategy_performance": strategy_performance,
+        "btc_trend_monitor": trend_monitor,
         "latest_signal": signal,
         "latest_external_alert": external_alerts[0] if external_alerts else None,
         "external_alert_count": external_alert_count,
@@ -431,6 +519,10 @@ def dashboard_data() -> dict[str, Any]:
             {"id": r[0], "created_at": r[1], "settled_at": r[2], "market_ticker": r[3],
              "direction": r[4], "contracts": r[5], "entry_cents": r[6], "outcome": r[7],
              "pnl_cents": r[8], "timeframe": r[9],
+             "entry_signal_source": _strategy_source_label(r[10], r[15]),
+             "external_signal_id": r[11], "entry_signal_log_id": r[12],
+             "entry_signal_score": r[13], "entry_btc_price": r[14],
+             "market_implied_probability_percent": round(float(r[6]), 2) if r[6] is not None else None,
              "pnl_dollars": round(float(r[8]) / 100, 2) if r[8] is not None else None}
             for r in rows
         ],
@@ -918,12 +1010,20 @@ def paper_trades(limit: int = 50) -> dict[str, Any]:
     with db_connect() as conn:
         rows = conn.execute(
             """SELECT id, created_at, settled_at, market_ticker, direction, contracts,
-                      entry_cents, fee_cents_per_contract, outcome, pnl_cents, notes, stop_loss_cents, timeframe
+                      entry_cents, fee_cents_per_contract, outcome, pnl_cents, notes, stop_loss_cents, timeframe,
+                      entry_signal_source, external_signal_id, entry_signal_log_id, entry_signal_score, entry_btc_price
                FROM paper_trades ORDER BY id DESC LIMIT ?""", (limit,)
         ).fetchall()
     keys = ["id", "created_at", "settled_at", "market_ticker", "direction", "contracts",
-            "entry_cents", "fee_cents_per_contract", "outcome", "pnl_cents", "notes", "stop_loss_cents", "timeframe"]
-    return {"trades": [dict(zip(keys, row)) for row in rows]}
+            "entry_cents", "fee_cents_per_contract", "outcome", "pnl_cents", "notes", "stop_loss_cents", "timeframe",
+            "entry_signal_source", "external_signal_id", "entry_signal_log_id", "entry_signal_score", "entry_btc_price"]
+    trades = []
+    for row in rows:
+        trade = dict(zip(keys, row))
+        trade["entry_signal_source"] = _strategy_source_label(trade.get("entry_signal_source"), trade.get("notes"))
+        trade["market_implied_probability_percent"] = round(float(trade["entry_cents"]), 2) if trade.get("entry_cents") is not None else None
+        trades.append(trade)
+    return {"trades": trades}
 
 
 @app.get("/paper/stats")
@@ -936,13 +1036,17 @@ def paper_stats() -> dict[str, Any]:
                       COALESCE(SUM(CASE WHEN settled_at IS NOT NULL THEN pnl_cents ELSE 0 END), 0)
                FROM paper_trades"""
         ).fetchone()
+        performance_rows = conn.execute(
+            "SELECT entry_signal_source, notes, settled_at, pnl_cents FROM paper_trades"
+        ).fetchall()
     settled, wins = int(settled or 0), int(wins or 0)
     return {
         "mode": "SIMULATION_ONLY", "total_paper_trades": int(total or 0),
         "settled_trades": settled, "winning_trades": wins,
         "win_rate_percent": round(100 * wins / settled, 2) if settled else None,
         "net_pnl_cents": round(float(pnl), 4), "net_pnl_dollars": round(float(pnl) / 100, 4),
-        "important": "Results only mean something if entries, fees, and official outcomes are recorded accurately.",
+        "strategy_performance": _aggregate_strategy_performance(performance_rows),
+        "important": "Evidence scores are not probabilities. Source-level metrics are descriptive and small samples should not drive strategy changes.",
     }
 
 

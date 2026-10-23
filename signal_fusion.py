@@ -94,7 +94,7 @@ def evaluate_fusion(
     down_ask_cents: float | None,
     spread_cents: float | None,
     fee_cents_per_contract: float,
-    max_entry_cents: float = 92.0,
+    max_entry_cents: float = 78.0,
     max_spread_cents: float = 5.0,
     max_alert_age_seconds: int = 300,
     min_seconds_remaining: int = 30,

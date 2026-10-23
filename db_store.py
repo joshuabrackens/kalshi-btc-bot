@@ -138,6 +138,7 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("take_profit_target_cents", "REAL"), ("take_profit_activated_at", "TEXT"),
         ("take_profit_peak_bid_cents", "REAL"), ("take_profit_last_reversal_candle_timestamp", "TEXT"),
         ("entry_signal_source", "TEXT"), ("external_signal_id", "INTEGER"),
+        ("entry_signal_log_id", "INTEGER"), ("entry_signal_score", "INTEGER"),
     ],
     "gainzalgo_signals": [
         ("created_at", "TEXT"), ("direction", "TEXT"), ("symbol", "TEXT"),
@@ -214,6 +215,11 @@ def ensure_schema(conn: DatabaseConnection) -> None:
             conn.execute("""CREATE TABLE IF NOT EXISTS worker_heartbeat (
                 worker_name TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, signal_source TEXT,
                 mode TEXT, last_action TEXT, last_reason TEXT)""")
+        # Latest precomputed BTC chart state, shared between the worker and dashboard.
+        # It is informational only and does not create or modify paper positions.
+        conn.execute("""CREATE TABLE IF NOT EXISTS btc_trend_monitor (
+            monitor_key TEXT PRIMARY KEY, updated_at TEXT NOT NULL,
+            status TEXT NOT NULL, snapshot_json TEXT NOT NULL)""")
         # Existing records don't identify the TradingView chart timeframe; don't invent it.
         conn.execute(
             "UPDATE paper_trades SET timeframe = '15m contract; TV timeframe unknown' "
