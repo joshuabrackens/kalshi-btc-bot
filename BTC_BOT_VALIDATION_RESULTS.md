@@ -2,7 +2,7 @@
 
 ## Final status
 
-- **27 isolated test modules passed: 111 test cases.** Each module was run as a separate process to avoid global/module stub state leaking between tests.
+- **27 isolated test modules passed: 115 test cases after major-drop profit-protection update.** Each module was run as a separate process to avoid global/module stub state leaking between tests.
 - **Offline end-to-end smoke test passed** from signed webhook intake through shared alert queue, hybrid decision, simulated paper entry, and dashboard heartbeat.
 - `python -m compileall -q .`: passed.
 - Both `.github/workflows/python-app.yml` and root `python-app.yml` parse as YAML, are byte-identical, and define the same 32-step workflow.
@@ -19,7 +19,7 @@
 |---|---:|---|
 | `test_paper_worker.py` | 9 | PASS |
 | `test_trend_stop.py` | 4 | PASS |
-| `test_hybrid_take_profit.py` | 13 | PASS |
+| `test_hybrid_take_profit.py` | 17 | PASS |
 | `test_paper_bot_fixes.py` | 4 | PASS |
 | `test_signal_fusion_trend_gate.py` | 7 | PASS |
 | `test_btc_trend_monitor.py` | 2 | PASS |
@@ -44,7 +44,7 @@
 | `test_manual_api_security.py` | 4 | PASS |
 | `test_app_http_surface.py` | 2 | PASS |
 | `test_dashboard_context.py` | 3 | PASS |
-| **Total** | **111** | **ALL PASS** |
+| **Total** | **115** | **ALL PASS** |
 
 The separate offline integration smoke test also passed:
 
@@ -79,3 +79,12 @@ Each newly settled paper trade receives an idempotent entry-feature snapshot plu
 - `MAX_DAILY_LOSS_DOLLARS=10.00`
 
 No new environment variables are required for the trade-learning loop. `ensure_schema()` creates the journal table on startup; keep `DATABASE_URL` shared by the Web Service and Background Worker.
+
+## Major-drop profit protection (paper-only)
+
+After a paper position has reached and armed its fee-adjusted take-profit target, optional profit protection can trigger an immediate simulated exit when either (a) the internal engine detects a predefined major opposing setup, or (b) a newly closed 1-minute BTC candle moves adversely by at least `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles. Configure `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` and `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER=2.5`. The exit is modeled from the observed Kalshi bid, subtracts entry and exit fees, and is logged as `PROFIT_PROTECTION`. This is best-effort only: gaps, wide spreads, missing liquidity, or polling delays can result in an exit below break-even; no no-loss outcome is guaranteed. It applies only to simulated paper positions and never enables real orders.
+
+## Major-drop profit protection addition
+
+After take-profit has previously armed on a fee-adjusted target, `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` adds a conditional exit on a major opposing internal setup or an adverse, fully closed 1-minute BTC candle whose adverse move meets `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles (default 2.5). It is not an exit on every trade. The simulated exit uses the actual observed Kalshi contract bid and subtracts entry and exit fees; it is recorded as `PROFIT_PROTECTION`. If the observed bid has already fallen below fee-adjusted break-even, the note explicitly records that a loss cannot be prevented at that quote. Polling delays, price gaps, slippage and missing liquidity mean no system can guarantee a no-loss exit. Tests cover large adverse movement on UP and DOWN positions, ordinary candles that must not trigger, and an integrated profit-armed protection exit.
+

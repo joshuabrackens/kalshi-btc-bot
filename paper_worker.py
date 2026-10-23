@@ -12,6 +12,8 @@ import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
+
+import pandas as pd
 from typing import Any
 
 from candle_feed import fetch_signal_candles, fetch_closed_candles, CandleFeedError
@@ -284,6 +286,56 @@ def _take_profit_trailing_floor(target_cents: float, peak_bid_cents: float, trai
         raise ValueError("PAPER_TAKE_PROFIT_TRAIL_PERCENT must be greater than 0 and at most 50")
     return round(max(float(target_cents), float(peak_bid_cents) * (1 - float(trail_percent) / 100)), 2)
 
+
+
+def _major_adverse_btc_move(candles, direction: str, atr_multiplier: float = 2.5, atr_period: int = 14) -> tuple[bool, str]:
+    """Detect a large adverse move on the latest fully closed 1m candle.
+
+    Uses the prior candles' ATR as a volatility baseline and deliberately
+    excludes the latest candle from that baseline to avoid diluting a shock.
+    This is a warning/exit trigger, not a prediction or fill guarantee.
+    """
+    if str(direction).upper() not in {"UP", "DOWN"}:
+        return False, "invalid trade direction"
+    if not math.isfinite(float(atr_multiplier)) or float(atr_multiplier) <= 0:
+        return False, "invalid ATR multiplier"
+    required = {"open", "high", "low", "close"}
+    if candles is None or not required.issubset(set(getattr(candles, "columns", []))):
+        return False, "candle data missing required OHLC columns"
+    if len(candles) < max(atr_period + 2, 20):
+        return False, "not enough closed candles for a major-move check"
+    try:
+        frame = candles.copy()
+        for col in ("open", "high", "low", "close"):
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+        frame = frame.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+        if len(frame) < max(atr_period + 2, 20):
+            return False, "not enough valid closed candles for a major-move check"
+        previous_close = float(frame["close"].iloc[-2])
+        current_close = float(frame["close"].iloc[-1])
+        current_open = float(frame["open"].iloc[-1])
+        previous_closes = frame["close"].shift(1)
+        true_range = pd.concat([
+            frame["high"] - frame["low"],
+            (frame["high"] - previous_closes).abs(),
+            (frame["low"] - previous_closes).abs(),
+        ], axis=1).max(axis=1)
+        baseline = true_range.iloc[-(atr_period + 1):-1].dropna()
+        atr = float(baseline.mean()) if len(baseline) else 0.0
+        if not math.isfinite(atr) or atr <= 0:
+            return False, "ATR baseline unavailable"
+        if str(direction).upper() == "UP":
+            adverse_move = max(previous_close - current_close, current_open - current_close, 0.0)
+            label = "sharp BTC drop against UP position"
+        else:
+            adverse_move = max(current_close - previous_close, current_close - current_open, 0.0)
+            label = "sharp BTC rally against DOWN position"
+        threshold = atr * float(atr_multiplier)
+        if adverse_move >= threshold:
+            return True, f"{label}: adverse move {adverse_move:.2f} exceeded {atr_multiplier:.2f}x prior ATR ({threshold:.2f})"
+        return False, f"no major adverse BTC move: {adverse_move:.2f} below {atr_multiplier:.2f}x prior ATR ({threshold:.2f})"
+    except (ValueError, TypeError, IndexError, KeyError, OverflowError):
+        return False, "major-move check unavailable due to invalid candle data"
 
 def _safe_external_payload(raw_payload: str) -> dict[str, Any]:
     try:
@@ -681,6 +733,8 @@ def _manage_open(conn) -> None:
     tp_pct = _safe_float(os.getenv("PAPER_TAKE_PROFIT_PERCENT", "20"), 20)
     trail_pct = _safe_float(os.getenv("PAPER_TAKE_PROFIT_TRAIL_PERCENT", "5"), 5)
     reversal_enabled = _truthy("PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED", True)
+    profit_protection_enabled = _truthy("PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED", False)
+    major_move_atr_multiplier = _safe_float(os.getenv("PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER", "2.5"), 2.5)
     exit_fee = max(0.0, _safe_float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"), 2.0))
     check_seconds = max(30.0, min(180.0, _safe_float(os.getenv("PAPER_TREND_STOP_CHECK_SECONDS", "45"), 45)))
     atr_mult = _safe_float(os.getenv("PAPER_TREND_STOP_ATR_MULTIPLIER", "2.5"), 2.5)
@@ -732,6 +786,8 @@ def _manage_open(conn) -> None:
             tp_target = float(stored_tp_target) if stored_tp_target is not None else None
             tp_triggered = False
             tp_reason = ""
+            profit_protection_triggered = False
+            profit_protection_reason = ""
             if tp_enabled:
                 if tp_target is None:
                     tp_target = _take_profit_target_cents(float(entry), float(entry_fee), exit_fee, tp_pct)
@@ -758,11 +814,12 @@ def _manage_open(conn) -> None:
             trend_reason = ""
             fresh_candles = None
             candle_ts = None
-            if due and (trend_enabled or shadow_enabled or (tp_enabled and tp_armed and reversal_enabled)):
+            if due and (trend_enabled or shadow_enabled or (tp_enabled and tp_armed and (reversal_enabled or profit_protection_enabled))):
                 conn.execute("UPDATE paper_trades SET last_trend_check_at=? WHERE id=?", (now.isoformat(), trade_id))
                 conn.commit()
                 try:
-                    bundle = _get_signal_bundle_for_evaluation() if (tp_enabled and tp_armed and reversal_enabled) else None
+                    tp_safety_check = tp_enabled and tp_armed and (reversal_enabled or profit_protection_enabled)
+                    bundle = _get_signal_bundle_for_evaluation() if tp_safety_check else None
                     candles = bundle["candles_1m"] if bundle else fetch_closed_candles("1m", 100)
                     candle_ts = str(candles["timestamp"].iloc[-1]) if "timestamp" in candles.columns else str(candles.index[-1])
                     fresh_candles = bundle
@@ -789,36 +846,63 @@ def _manage_open(conn) -> None:
                             trend_triggered = ((direction == "UP" and last_close <= float(trailing_stop))
                                                or (direction == "DOWN" and last_close >= float(trailing_stop)))
                             trend_reason = f"last closed BTC candle {last_close:.2f} breached stored chart stop {float(trailing_stop):.2f}"
-                    if tp_enabled and tp_armed and reversal_enabled and fresh_candles and candle_ts != tp_last_reversal_ts and tp_target is not None and tp_target <= 100:
-                        parsed_market = _extract_market(market_payload)
-                        if parsed_market:
-                            quote = _best_quotes(orderbook)
-                            yes_bid, no_bid = quote["yes_bid"], quote["no_bid"]
-                            yes_ask, no_ask = quote["yes_ask"], quote["no_ask"]
-                            spread_values = []
-                            if yes_bid is not None and yes_ask is not None:
-                                spread_values.append(yes_ask - yes_bid)
-                            if no_bid is not None and no_ask is not None:
-                                spread_values.append(no_ask - no_bid)
-                            spread_now = max(spread_values) if len(spread_values) == 2 else None
-                            if yes_ask is None or no_ask is None or spread_now is None or spread_now < 0:
-                                log.warning("Paper trade %s reversal check skipped: invalid orderbook-derived quotes", trade_id)
-                                continue
-                            reversal = evaluate_signal(
-                                fresh_candles["candles_1m"], fresh_candles["candles_5m"], fresh_candles["candles_15m"],
-                                MarketContext(strike_price=parsed_market["strike"], seconds_remaining=parsed_market["seconds"],
-                                              up_ask_cents=yes_ask, down_ask_cents=no_ask,
-                                              spread_cents=spread_now, estimated_fee_cents=float(entry_fee)),
-                                minimum_score=int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65)),
-                                max_entry_cents=_entry_price_limits()[1],
-                                max_spread_cents=_safe_float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"), 5),
-                            ).to_dict()
-                            veto, veto_reasons = _major_flaw_veto(direction, reversal, max(2, min(12, int(_safe_float(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"), 4)))))
-                            conn.execute("UPDATE paper_trades SET take_profit_last_reversal_candle_timestamp=? WHERE id=?", (candle_ts, trade_id))
-                            conn.commit()
-                            if veto and not tp_triggered:
+                    if tp_enabled and tp_armed and tp_safety_check and fresh_candles and candle_ts != tp_last_reversal_ts and tp_target is not None and tp_target <= 100:
+                        safety_reasons: list[str] = []
+                        if profit_protection_enabled:
+                            major_move, major_move_reason = _major_adverse_btc_move(
+                                candles, direction, major_move_atr_multiplier
+                            )
+                            if major_move:
+                                safety_reasons.append(major_move_reason)
+                        if reversal_enabled:
+                            parsed_market = _extract_market(market_payload)
+                            if parsed_market:
+                                quote = _best_quotes(orderbook)
+                                yes_bid, no_bid = quote["yes_bid"], quote["no_bid"]
+                                yes_ask, no_ask = quote["yes_ask"], quote["no_ask"]
+                                spread_values = []
+                                if yes_bid is not None and yes_ask is not None:
+                                    spread_values.append(yes_ask - yes_bid)
+                                if no_bid is not None and no_ask is not None:
+                                    spread_values.append(no_ask - no_bid)
+                                spread_now = max(spread_values) if len(spread_values) == 2 else None
+                                if yes_ask is None or no_ask is None or spread_now is None or spread_now < 0:
+                                    log.warning("Paper trade %s reversal check skipped: invalid orderbook-derived quotes", trade_id)
+                                else:
+                                    reversal = evaluate_signal(
+                                        fresh_candles["candles_1m"], fresh_candles["candles_5m"], fresh_candles["candles_15m"],
+                                        MarketContext(strike_price=parsed_market["strike"], seconds_remaining=parsed_market["seconds"],
+                                                      up_ask_cents=yes_ask, down_ask_cents=no_ask,
+                                                      spread_cents=spread_now, estimated_fee_cents=float(entry_fee)),
+                                        minimum_score=int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65)),
+                                        max_entry_cents=_entry_price_limits()[1],
+                                        max_spread_cents=_safe_float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"), 5),
+                                    ).to_dict()
+                                    veto, veto_reasons = _major_flaw_veto(direction, reversal, max(2, min(12, int(_safe_float(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"), 4)))))
+                                    if veto:
+                                        safety_reasons.extend("major opposing setup: " + reason for reason in veto_reasons)
+                        conn.execute("UPDATE paper_trades SET take_profit_last_reversal_candle_timestamp=? WHERE id=?", (candle_ts, trade_id))
+                        conn.commit()
+                        if safety_reasons:
+                            protection_note = "; ".join(safety_reasons)
+                            if profit_protection_enabled:
+                                profit_protection_triggered = True
+                                profit_protection_reason = protection_note
+                                break_even_bid = float(entry) + float(entry_fee) + exit_fee
+                                if float(bid) < break_even_bid:
+                                    profit_protection_reason += (
+                                        f"; WARNING: observed bid {float(bid):.2f}c is below fee-adjusted break-even "
+                                        f"({break_even_bid:.2f}c), so a loss cannot be prevented at this quote"
+                                    )
+                                else:
+                                    profit_protection_reason += (
+                                        f"; observed bid {float(bid):.2f}c is at/above fee-adjusted break-even "
+                                        f"({break_even_bid:.2f}c)"
+                                    )
+                                log.warning("Paper trade %s profit-protection exit triggered: %s", trade_id, profit_protection_reason)
+                            elif not tp_triggered:
                                 tp_triggered = True
-                                tp_reason = "major opposing setup after take-profit activation: " + "; ".join(veto_reasons)
+                                tp_reason = "major opposing setup after take-profit activation: " + protection_note
                                 log.info("Paper trade %s reversal exit triggered: %s", trade_id, tp_reason)
                 except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError, IndexError) as exc:
                     log.warning("Paper trade %s trend/profit-protection check unavailable: %s", trade_id, exc)
@@ -837,12 +921,18 @@ def _manage_open(conn) -> None:
                 if cur.rowcount:
                     log.info("Paper trade %s trend-stop SHADOW only at bid %.2fc; hypothetical PnL %.2fc", trade_id, bid, shadow_pnl)
 
-            if (trend_triggered and trend_enabled) or fixed_triggered or tp_triggered:
+            if (trend_triggered and trend_enabled) or fixed_triggered or profit_protection_triggered or tp_triggered:
                 pnl = (float(bid) - float(entry) - float(entry_fee) - exit_fee) * int(contracts)
                 if trend_triggered and trend_enabled:
                     outcome, note = "TREND_STOP_LOSS", f" | simulated chart-stop exit at bid {bid:.2f}c; {trend_reason}"
                 elif fixed_triggered:
                     outcome, note = "STOP_LOSS", f" | simulated fixed-stop exit at bid {bid:.2f}c"
+                elif profit_protection_triggered:
+                    outcome, note = "PROFIT_PROTECTION", (
+                        f" | simulated profit-protection exit at observed Kalshi bid {bid:.2f}c; "
+                        f"target had previously been reached; {profit_protection_reason}; "
+                        f"net P&L {pnl:.2f}c after fees; exits are not guaranteed at the observed quote"
+                    )
                 else:
                     outcome, note = "TAKE_PROFIT", f" | simulated trailing take-profit at bid {bid:.2f}c; {tp_reason}; target={tp_target}c"
                 conn.execute("UPDATE paper_trades SET settled_at=?,outcome=?,pnl_cents=?,notes=COALESCE(notes,'') || ? WHERE id=?",
@@ -854,7 +944,8 @@ def _manage_open(conn) -> None:
                         direction=str(direction), decision=outcome.lower(), reason=note.strip(),
                         entry_ask_cents=float(entry), created_at=_utcnow().isoformat(),
                         payload={"simulated_exit_bid_cents": float(bid), "net_pnl_cents": round(pnl, 4),
-                                 "exit_reason": outcome, "paper_only": True},
+                                 "exit_reason": outcome, "profit_protection_triggered": bool(profit_protection_triggered),
+                                 "paper_only": True},
                     )
                     conn.commit()
                 except Exception as audit_exc:

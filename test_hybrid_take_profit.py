@@ -211,6 +211,39 @@ class TakeProfitTests(unittest.TestCase):
         self.assertAlmostEqual(w._take_profit_trailing_floor(64.4, 80, 5), 76.0)
         self.assertAlmostEqual(w._take_profit_trailing_floor(64.4, 65, 5), 64.4)
 
+    def test_major_adverse_btc_drop_detected_for_up_position(self):
+        frame = pd.DataFrame({
+            "open": [100.0] * 24 + [100.0],
+            "high": [101.0] * 24 + [100.5],
+            "low": [99.0] * 24 + [88.0],
+            "close": [100.0] * 24 + [88.0],
+        })
+        triggered, reason = w._major_adverse_btc_move(frame, "UP", 2.5)
+        self.assertTrue(triggered)
+        self.assertIn("sharp BTC drop", reason)
+
+    def test_major_adverse_btc_rally_detected_for_down_position(self):
+        frame = pd.DataFrame({
+            "open": [100.0] * 24 + [100.0],
+            "high": [101.0] * 24 + [112.0],
+            "low": [99.0] * 24 + [99.5],
+            "close": [100.0] * 24 + [112.0],
+        })
+        triggered, reason = w._major_adverse_btc_move(frame, "DOWN", 2.5)
+        self.assertTrue(triggered)
+        self.assertIn("sharp BTC rally", reason)
+
+    def test_ordinary_candle_does_not_trigger_major_move_protection(self):
+        frame = pd.DataFrame({
+            "open": [100.0] * 24 + [100.0],
+            "high": [101.0] * 24 + [101.2],
+            "low": [99.0] * 24 + [99.6],
+            "close": [100.0] * 24 + [100.2],
+        })
+        triggered, reason = w._major_adverse_btc_move(frame, "UP", 2.5)
+        self.assertFalse(triggered)
+        self.assertIn("no major adverse", reason)
+
     def test_first_touch_arms_take_profit_without_closing_trade(self):
         tmp = tempfile.TemporaryDirectory()
         old_db = os.environ.get("BOT_DB_PATH")
@@ -304,6 +337,63 @@ class TakeProfitTests(unittest.TestCase):
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
             tmp.cleanup()
 
+    def test_major_btc_drop_after_target_armed_triggers_profit_protection_exit(self):
+        tmp = tempfile.TemporaryDirectory()
+        old_db = os.environ.get("BOT_DB_PATH")
+        old_url = os.environ.get("DATABASE_URL")
+        old_get_market, old_get_orderbook = w.get_market, w.get_orderbook
+        old_bundle_fn = w._get_signal_bundle_for_evaluation
+        try:
+            _use_test_db(Path(tmp.name) / "tp_major_drop.sqlite3")
+            conn = w._connect()
+            now = w._utcnow().isoformat()
+            conn.execute(
+                """INSERT INTO paper_trades
+                   (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,
+                    notes,stop_loss_cents,take_profit_target_cents,take_profit_activated_at,take_profit_peak_bid_cents)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (now, "KXBTC15M-TEST", "UP", 1, 50, 2, "test", None, 64.4,
+                 (w._utcnow() - timedelta(minutes=2)).isoformat(), 72.0),
+            )
+            conn.commit()
+            conn.close()
+
+            rows = []
+            for i in range(24):
+                rows.append({"timestamp": f"2026-10-22T00:{i:02d}:00+00:00",
+                             "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 100.0})
+            rows.append({"timestamp": "2026-10-22T00:24:00+00:00",
+                         "open": 100.0, "high": 100.5, "low": 88.0, "close": 88.0, "volume": 250.0})
+            frame = pd.DataFrame(rows)
+            bundle = {"candles_1m": frame, "candles_5m": frame, "candles_15m": frame}
+            w._get_signal_bundle_for_evaluation = lambda: bundle
+            w.get_market = lambda ticker: {"market": {"status": "active"}}
+            w.get_orderbook = lambda ticker: {"orderbook_fp": {"yes_dollars": [["0.7000", "5"]]}}
+            with patch.dict(os.environ, {
+                "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+                "PAPER_TAKE_PROFIT_ENABLED": "true", "PAPER_TAKE_PROFIT_PERCENT": "20",
+                "PAPER_TAKE_PROFIT_TRAIL_PERCENT": "5",
+                "PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED": "false",
+                "PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED": "true",
+                "PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER": "2.5",
+                "PAPER_TREND_STOP_LOSS_ENABLED": "false", "PAPER_TREND_STOP_SHADOW_MODE": "false",
+                "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
+            }, clear=False):
+                conn = w._connect()
+                w._manage_open(conn)
+                row = conn.execute("SELECT settled_at,outcome,pnl_cents,notes FROM paper_trades").fetchone()
+                conn.close()
+            self.assertIsNotNone(row[0])
+            self.assertEqual(row[1], "PROFIT_PROTECTION")
+            self.assertAlmostEqual(row[2], 70 - 50 - 2 - 2)
+            self.assertIn("sharp BTC drop", row[3])
+            self.assertIn("at/above fee-adjusted break-even", row[3])
+        finally:
+            _restore_db_environment(old_db, old_url)
+            w.get_market, w.get_orderbook = old_get_market, old_get_orderbook
+            w._get_signal_bundle_for_evaluation = old_bundle_fn
+            tmp.cleanup()
+
     def test_major_internal_reversal_can_exit_after_target_armed(self):
         tmp = tempfile.TemporaryDirectory()
         old_db = os.environ.get("BOT_DB_PATH")
@@ -356,6 +446,8 @@ class TakeProfitTests(unittest.TestCase):
                 "PAPER_TAKE_PROFIT_ENABLED": "true", "PAPER_TAKE_PROFIT_PERCENT": "20",
                 "PAPER_TAKE_PROFIT_TRAIL_PERCENT": "5",
                 "PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED": "true",
+                "PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED": "true",
+                "PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER": "2.5",
                 "PAPER_HYBRID_VETO_MIN_POINTS": "4",
                 "PAPER_TREND_STOP_LOSS_ENABLED": "false", "PAPER_TREND_STOP_SHADOW_MODE": "false",
                 "PAPER_STOP_LOSS_ENABLED": "false", "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2",
@@ -365,9 +457,10 @@ class TakeProfitTests(unittest.TestCase):
                 row = conn.execute("SELECT settled_at,outcome,pnl_cents,notes FROM paper_trades").fetchone()
                 conn.close()
             self.assertIsNotNone(row[0])
-            self.assertEqual(row[1], "TAKE_PROFIT")
+            self.assertEqual(row[1], "PROFIT_PROTECTION")
             self.assertAlmostEqual(row[2], 68 - 50 - 2 - 2)
             self.assertIn("major opposing setup", row[3])
+            self.assertIn("fee-adjusted break-even", row[3])
         finally:
             _restore_db_environment(old_db, old_url)
             w.get_market, w.get_orderbook = old_get_market, old_get_orderbook

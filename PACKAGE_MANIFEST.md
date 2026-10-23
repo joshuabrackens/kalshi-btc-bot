@@ -54,3 +54,8 @@ The package retains the repository's existing `candle_feed.py`, `trend_stop.py`,
 - `MAX_TRADE_DOLLARS=1.00`
 - `MAX_DAILY_LOSS_DOLLARS=10.00`
 - No secrets, production environment files, or local database are included. `PAPER_ADAPTIVE_ENTRY_TARGET_ENABLED` is optional (default `true`); set it to `false` on the Background Worker to disable the bounded entry-target adaptation. If you override it, keep the setting consistent with the Web Service so the displayed policy status matches worker behavior.
+
+## Major-drop profit protection (paper-only)
+
+After a paper position has reached and armed its fee-adjusted take-profit target, optional profit protection can trigger an immediate simulated exit when either (a) the internal engine detects a predefined major opposing setup, or (b) a newly closed 1-minute BTC candle moves adversely by at least `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles. Configure `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` and `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER=2.5`. The exit is modeled from the observed Kalshi bid, subtracts entry and exit fees, and is logged as `PROFIT_PROTECTION`. This is best-effort only: gaps, wide spreads, missing liquidity, or polling delays can result in an exit below break-even; no no-loss outcome is guaranteed. It applies only to simulated paper positions and never enables real orders.
+
