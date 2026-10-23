@@ -703,7 +703,8 @@ def run_once() -> dict[str, Any]:
         conn = _connect()
         _manage_open(conn)
         # Keep chart trends precomputed even when no TradingView alert is waiting.
-        _refresh_btc_trend_monitor(conn)
+        # Retain this exact snapshot for the entry decision later in this cycle.
+        trend_snapshot = _refresh_btc_trend_monitor(conn)
         use_external = source in {"gainzalgo", "hybrid"}
         queued, queued_direction = _next_gainzalgo_signal(conn) if use_external else (None, None)
         # WAIT is an informational state update. Record it promptly—even if daily
@@ -846,6 +847,11 @@ def run_once() -> dict[str, Any]:
                     fee_cents_per_contract=fee, max_entry_cents=max_entry, max_spread_cents=max_spread,
                     max_alert_age_seconds=max(30, min(900, int(_safe_float(os.getenv("TRADINGVIEW_MAX_SIGNAL_AGE_SECONDS", "300"), 300)))),
                     min_seconds_remaining=min_seconds, minimum_opposing_points=max(2, min(12, int(_safe_float(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"), 4)))),
+                    trend_snapshot=trend_snapshot,
+                    max_trend_snapshot_age_seconds=max(15.0, min(180.0, _safe_float(os.getenv("BTC_TREND_MONITOR_MAX_CACHE_AGE_SECONDS", "45"), 45.0))),
+                    require_trend_snapshot=True,
+                    minimum_trend_conflict_score=max(0, min(100, int(_safe_float(os.getenv("PAPER_HYBRID_TREND_VETO_MIN_SCORE", "65"), 65)))),
+                    minimum_trend_conflict_margin=max(1, min(11, int(_safe_float(os.getenv("PAPER_HYBRID_TREND_VETO_MIN_MARGIN", "4"), 4)))),
                 ).to_dict()
                 final_direction = fused["direction"]
                 score = int(internal_payload.get("score", 0) or 0)
@@ -859,6 +865,14 @@ def run_once() -> dict[str, Any]:
                                          "timeframe": queued.get("timeframe"), "age_seconds": queued.get("age_seconds"),
                                          "payload": _safe_external_payload(queued["payload_json"])},
                     "fusion": fused,
+                    "chart_trend_at_decision": {
+                        "status": (trend_snapshot or {}).get("status"),
+                        "updated_at": (trend_snapshot or {}).get("updated_at"),
+                        "candidate_bias": (trend_snapshot or {}).get("candidate_bias"),
+                        "evidence_score": (trend_snapshot or {}).get("evidence_score"),
+                        "evidence_points": (trend_snapshot or {}).get("evidence_points"),
+                        "timeframes": (trend_snapshot or {}).get("timeframes"),
+                    },
                     "reasons": list(fused.get("reasons", [])) + [f"Internal diagnostics: {r}" for r in internal_payload.get("reasons", [])],
                     "warnings": list(internal_payload.get("warnings", [])) + list(fused.get("warnings", [])),
                     "final_decision_reason": "; ".join(fused.get("reasons", [])),
