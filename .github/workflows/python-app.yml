@@ -30,3 +30,6 @@ jobs:
 
       - name: Run paper worker safety tests
         run: python -m unittest -v test_paper_worker.py test_trend_stop.py
+
+      - name: Run trend fusion gate tests
+        run: python -m unittest -v test_signal_fusion_trend_gate
