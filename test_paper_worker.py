@@ -149,7 +149,10 @@ class WorkerSafetyTests(unittest.TestCase):
             }):
                 w._manage_open(conn)
             trade = conn.execute(
-                "SELECT settled_at, outcome, pnl_cents FROM paper_trades"
+                """SELECT settled_at, outcome, pnl_cents
+                   FROM paper_trades
+                   WHERE created_at=? AND market_ticker=?""",
+                (now, "KXBTC15M-TEST"),
             ).fetchone()
             self.assertIsNotNone(trade[0])
             self.assertEqual(trade[1], "STOP_LOSS")
@@ -210,8 +213,10 @@ class WorkerSafetyTests(unittest.TestCase):
                           trend_stop_shadow_pnl_cents,
                           trend_stop_shadow_reason,
                           trend_stop_shadow_candle_timestamp
-                   FROM paper_trades"""
-            ).fetchone()
+                   FROM paper_trades
+                   WHERE created_at=? AND market_ticker=?""",
+            (now, "KXBTC15M-TEST"),
+        ).fetchone()
             self.assertIsNone(row[0], "shadow mode must not settle/close the trade")
             self.assertIsNone(row[1], "shadow mode must not set an outcome")
             self.assertIsNone(row[2], "hypothetical P&L must not become realized P&L")
