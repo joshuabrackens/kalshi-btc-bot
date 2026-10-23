@@ -5,12 +5,22 @@ import importlib.util
 import os
 import sys
 import types
+from pathlib import Path
 import unittest
 from datetime import datetime, timezone
 
 # Stub project-specific connectors; this tests dashboard status derivation only.
 def _install_stub(name, **attrs):
-    if importlib.util.find_spec(name) is None and name not in sys.modules:
+    if name in sys.modules:
+        return
+    # The project source in this directory must win over a process-wide test stub.
+    if Path(__file__).with_name(f"{name}.py").is_file():
+        return
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ValueError, ModuleNotFoundError):
+        spec = None
+    if spec is None:
         mod = types.ModuleType(name)
         for key, value in attrs.items():
             setattr(mod, key, value)

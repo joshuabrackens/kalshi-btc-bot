@@ -15,8 +15,17 @@ from unittest.mock import patch
 # This coordinated package intentionally does not ship every project-specific
 # connector module. Stub missing market/feed connectors only; these tests never
 # access external services or place any orders.
-def _install_missing_stub(module_name: str, **attrs):
-    if importlib.util.find_spec(module_name) is None and module_name not in sys.modules:
+def _install_missing_stub(module_name, **attrs):
+    if module_name in sys.modules:
+        return
+    # Prefer real project source files over process-global placeholder modules.
+    if Path(__file__).with_name(f"{module_name}.py").is_file():
+        return
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except (ValueError, ModuleNotFoundError):
+        spec = None
+    if spec is None:
         mod = types.ModuleType(module_name)
         for key, value in attrs.items():
             setattr(mod, key, value)

@@ -4,12 +4,15 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from pathlib import Path
 import unittest
 
 # The test runner in the user's repository has all project modules available.
 # For isolated local validation, stub optional runtime-only modules if absent.
 def _stub_if_missing(name: str, **attrs):
     if name in sys.modules:
+        return
+    if Path(__file__).with_name(f"{name}.py").is_file():
         return
     try:
         spec = importlib.util.find_spec(name)

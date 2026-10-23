@@ -5,6 +5,7 @@ import importlib.util
 import os
 import sys
 import types
+from pathlib import Path
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -12,19 +13,21 @@ from unittest.mock import patch
 import pandas as pd
 
 
-def _install_stub(name: str, **attrs):
+def _install_stub(name, **attrs):
     if name in sys.modules:
+        return
+    # Prefer real project source files over process-global placeholder modules.
+    if Path(__file__).with_name(f"{name}.py").is_file():
         return
     try:
         spec = importlib.util.find_spec(name)
     except (ValueError, ModuleNotFoundError):
         spec = None
     if spec is None:
-        module = types.ModuleType(name)
+        mod = types.ModuleType(name)
         for key, value in attrs.items():
-            setattr(module, key, value)
-        sys.modules[name] = module
-
+            setattr(mod, key, value)
+        sys.modules[name] = mod
 
 class _KalshiPlaceholderError(Exception):
     pass

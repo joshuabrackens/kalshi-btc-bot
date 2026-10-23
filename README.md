@@ -34,7 +34,9 @@ The 92¢ value is the hard cap; 80¢ is a soft preferred entry target, not an en
 - `db_store.py`: shared SQLite/PostgreSQL adapter and schema migrations.
 - `performance_analytics.py`: descriptive historical P&L and decision cohort analysis.
 - `trade_learning.py`: idempotent per-settled-trade feature snapshots, outcome reviews, cohort insights, and a bounded paper-only adaptive entry-target policy. It can tighten the preferred target after repeated poor high-price hybrid outcomes; it never loosens the target or changes the hard cap/dollar risk limits.
-- `market_category_registry.py`: Phase 7 readiness scaffold. BTC 15m is the only paper-enabled profile; all non-BTC categories are research-only.
+- `market_category_registry.py` / `market_router.py`: Phase 4 market-catalog classification and bounded scan. BTC 15m is the only paper-enabled profile; all non-BTC categories are research-only and the scanner never executes orders.
+- `trading_mode.py`: fail-closed dashboard mode gate and live-readiness checklist. The real option requests a readiness check; this build cannot enable live execution because it has no order-submission adapter.
+- `multi_user_security.py`: password/session security primitives and readiness checklist; no login middleware, tenant-scoped journal, or public account signup is enabled.
 - `payload_safety.py`: recursive sensitive-key removal for untrusted webhook payloads.
 - `dashboard.html`: current-window state, preserved latest directional evaluation, active-position entry rationale, trend and decision detail, journal, and analytics UI.
 
@@ -61,6 +63,9 @@ Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `PO
 - `GET /api/learning` — persistent post-trade outcome feedback, entry-feature snapshots, cohort summaries, research notes, and the active bounded adaptive-entry policy. The endpoint is read-only; the worker applies the policy after settled outcomes are journaled.
 - `GET /api/decision-audit` — recent audit events, read-only.
 - `GET /api/category-readiness` — research readiness profiles; this endpoint never enables or routes trades.
+- `GET /api/market-scan` — manually invoked, cached (30-second default; `MARKET_SCAN_CACHE_TTL_SECONDS` is optional) and bounded public-market inventory; concurrent/repeated dashboard clicks do not repeatedly call the upstream API during the cache window. Non-BTC and unknown markets cannot reach the BTC strategy. The scanner follows at most five 100-market pages (500 total), is cached for 30 seconds by default, and does not submit trades.
+- `GET /api/trading-mode`, `POST /api/trading-mode` — show the effective paper-only state or reject a request for real mode; the browser cannot modify deployment settings.
+- `GET /api/live-readiness`, `GET /api/multi-user-readiness` — checklists for unimplemented live-order and production multi-user requirements; neither endpoint enables these capabilities.
 - `GET /diagnostics/market-data` — cached public-market diagnostic; it never places or modifies trades.
 - `POST /webhooks/gainzalgo` — authenticated alert intake only; recording an alert does not place a trade.
 - `GET /api/alerts/recent`, `GET /journal/recent`, `GET /paper/trades`, `GET /paper/stats` — read-only signal/trade inspection.
@@ -81,7 +86,7 @@ pip install -r requirements.txt pytest pyyaml
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The test workflow in `.github/workflows/python-app.yml` compiles the code, runs each unit/integration module in an isolated process, exercises the shared webhook-to-worker paper flow using offline provider stubs, and tests category-readiness and API safety. Run the smoke test directly with `python smoke_shared_alert_flow.py`; it uses a temporary database and deterministic stubs only.
+The test workflow in `.github/workflows/python-app.yml` compiles the code, runs unit/integration modules, exercises the shared webhook-to-worker paper flow using offline provider stubs, and tests category readiness and API safety. Run `python -m pytest -q`, `python smoke_shared_alert_flow.py`, and `python stress_phase456_readiness.py` locally; the stress script is deterministic and offline, does not use credentials, and never places orders.
 
 ## Operational guidance
 
@@ -92,7 +97,7 @@ The test workflow in `.github/workflows/python-app.yml` compiles the code, runs 
 5. Observe a sufficiently large out-of-sample paper sample before changing strategy thresholds. Review drawdown and fee-adjusted net P&L, not only win rate.
 6. Confirm `/api/learning` records each newly settled trade once and keeps hypothetical rejected-signal/exit-shadow results separate from actual results. Keep manual write endpoints protected and never expose secrets in GitHub, screenshots, logs or returned payloads.
 
-Do not enable live trading as part of this project. Historical results, simulated exits, market-implied odds, internal scores and rejected-signal counterfactuals are descriptive evidence, not guarantees of future returns or executable prices.
+The dashboard has a Paper/Real mode selector, but the Real option is deliberately locked and only displays readiness blockers; it cannot enable or place orders. Before a real-order adapter could be considered, it must be built and tested against Kalshi Demo with separate demo credentials, idempotent client order IDs, fill/position reconciliation, exact market fees, slippage checks, concurrency-safe limits, authenticated private APIs, and an emergency cancel/reconcile procedure. Historical results, simulated exits, market-implied odds, internal scores and rejected-signal counterfactuals are descriptive evidence, not guarantees of future returns or executable prices.
 
 ## Major-drop profit protection (paper-only)
 

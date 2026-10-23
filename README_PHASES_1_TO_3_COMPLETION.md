@@ -27,7 +27,7 @@ This bundle is based on the saved BTC bot project snapshot, the latest master/so
 
 ## Validation
 
-The isolated local matrix reports 28 test modules / 124 test cases passing. See `BTC_BOT_PHASE123_VALIDATION.md` for the module-by-module summary, compile result, dashboard checks, and offline smoke-test result. GitHub Actions still needs to pass after these files are committed.
+The initial Phase 1–3 validation matrix reported 124 tests across 28 isolated modules passing. The later Phase 4–6 readiness update adds scanner/security/mode-gate coverage; see the current Phase 4–6 validation report for its current full-suite result. See `BTC_BOT_PHASE123_VALIDATION.md` for the module-by-module summary, compile result, dashboard checks, and offline smoke-test result. GitHub Actions still needs to pass after these files are committed.
 
 Passing offline tests does not prove the production Render Web Service and Background Worker share the same PostgreSQL database or that a production webhook reaches the live worker. Verify the deployed heartbeat, processing status, worker signal source, and shared `DATABASE_URL` after deployment.
 

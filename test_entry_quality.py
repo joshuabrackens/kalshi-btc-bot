@@ -2,6 +2,7 @@
 import importlib.util
 import sys
 import types
+from pathlib import Path
 import math
 import unittest
 from datetime import datetime, timezone
@@ -10,6 +11,9 @@ from datetime import datetime, timezone
 # are not mounted into the local test environment. Existing repo modules win.
 def _stub_if_missing(name, **attrs):
     if name in sys.modules:
+        return
+    # The project source in this directory must win over a process-wide test stub.
+    if Path(__file__).with_name(f"{name}.py").is_file():
         return
     try:
         spec = importlib.util.find_spec(name)

@@ -97,13 +97,16 @@ def category_profiles() -> list[dict[str, Any]]:
 
 def classify_market(ticker: str | None, title: str | None = None, explicit_category: str | None = None) -> dict[str, Any]:
     """Classify conservatively; unknown markets are never routed to a trading strategy."""
-    ticker_text = str(ticker or "").strip().upper()
-    title_text = str(title or "").strip().lower()
+    # These values originate in public metadata; accept only string fields and
+    # bound work before normalization. Unexpected object types stay unclassified.
+    ticker_text = ticker[:120].strip().upper() if isinstance(ticker, str) else ""
+    title_text = title[:600].strip().lower() if isinstance(title, str) else ""
     key = None
     if ticker_text.startswith("KXBTC15M-") and ("btc" in title_text or "bitcoin" in title_text):
         key = "btc_15m"
     elif explicit_category:
-        key = _ALIASES.get(str(explicit_category).strip().lower().replace(" ", "_"))
+        category_text = explicit_category[:80].strip().lower().replace(" ", "_") if isinstance(explicit_category, str) else ""
+        key = _ALIASES.get(category_text)
         if key == "btc_15m":
             # Do not allow a caller-provided category label to bypass BTC ticker/title validation.
             key = None

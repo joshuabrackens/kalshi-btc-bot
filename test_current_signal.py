@@ -1,13 +1,25 @@
 """Tests for a single current-signal display and three-minute indicator response allowance."""
 from __future__ import annotations
 import importlib.util, os, sys, types, unittest
+from pathlib import Path
 from datetime import datetime, timezone
 
 def _install_stub(name, **attrs):
-    if importlib.util.find_spec(name) is None and name not in sys.modules:
-        mod=types.ModuleType(name)
-        for key,value in attrs.items(): setattr(mod,key,value)
-        sys.modules[name]=mod
+    if name in sys.modules:
+        return
+    # The project source in this directory must win over a process-wide test stub.
+    if Path(__file__).with_name(f"{name}.py").is_file():
+        return
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ValueError, ModuleNotFoundError):
+        spec = None
+    if spec is None:
+        mod = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(mod, key, value)
+        sys.modules[name] = mod
+
 class _PlaceholderError(Exception): pass
 _install_stub("market_discovery", discover=lambda: {"candidates": []})
 _install_stub("kalshi_api", get_market=lambda *_a, **_k: {}, get_orderbook=lambda *_a, **_k: {}, KalshiAPIError=_PlaceholderError)

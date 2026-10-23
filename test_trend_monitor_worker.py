@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import types
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,9 @@ def _fetch_signal_candles():
 def _stub_if_missing(name, **attrs):
     if name in sys.modules:
         return
+    # The project source in this directory must win over a process-wide test stub.
+    if Path(__file__).with_name(f"{name}.py").is_file():
+        return
     try:
         spec = importlib.util.find_spec(name)
     except (ValueError, ModuleNotFoundError):
@@ -47,7 +51,6 @@ def _stub_if_missing(name, **attrs):
         for key, value in attrs.items():
             setattr(mod, key, value)
         sys.modules[name] = mod
-
 
 _stub_if_missing("candle_feed", fetch_signal_candles=_fetch_signal_candles,
                  fetch_closed_candles=lambda *_a, **_k: None, CandleFeedError=RuntimeError)

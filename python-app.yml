@@ -117,5 +117,20 @@ jobs:
       - name: Run dashboard active-position context regression tests
         run: python -m pytest -q test_dashboard_context.py
 
+      - name: Run fail-closed trading-mode and live-readiness tests
+        run: python -m pytest -q test_trading_mode.py test_phase456_http.py
+
+      - name: Run market-router isolation tests
+        run: python -m pytest -q test_market_router.py
+
+      - name: Run multi-user security primitive tests
+        run: python -m pytest -q test_multi_user_security.py
+
+      - name: Run dashboard mode-selector and market-scanner checks
+        run: python -m pytest -q test_phase456_dashboard.py
+
+      - name: Run deterministic offline Phase 4–6 stress checks
+        run: python stress_phase456_readiness.py
+
       - name: Run shared alert-flow smoke test (offline stubs)
         run: python smoke_shared_alert_flow.py

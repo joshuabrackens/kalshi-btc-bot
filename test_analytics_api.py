@@ -14,7 +14,7 @@ for name, attrs in {
     "kalshi_api": {"get_market": lambda *_a, **_k: {}, "get_orderbook": lambda *_a, **_k: {}, "KalshiAPIError": _error},
     "candle_feed": {"fetch_signal_candles": lambda: {}, "fetch_closed_candles": lambda *_a, **_k: {}, "CandleFeedError": _error},
 }.items():
-    if name not in sys.modules:
+    if name not in sys.modules and not Path(__file__).with_name(f"{name}.py").is_file():
         module = types.ModuleType(name)
         for key, value in attrs.items(): setattr(module, key, value)
         sys.modules[name] = module

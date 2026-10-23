@@ -16,7 +16,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
@@ -30,12 +30,19 @@ from performance_analytics import build_performance_analytics
 from trade_learning import build_learning_report, sync_settled_trade_learning
 from payload_safety import sanitize_sensitive_payload
 from market_category_registry import category_profiles, classify_market
+from market_router import scan_market_catalog
+from trading_mode import LiveModeLocked, live_readiness_report, request_mode, trading_mode_status
+from multi_user_security import multi_user_readiness
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
+try:
+    from kalshi_api import get_markets
+except ImportError:  # Offline tests may inject a minimal public-data stub.
+    def get_markets(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise KalshiAPIError("Public market-catalog function is unavailable in the configured provider.")
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("BOT_DB_PATH", str(APP_DIR / "bot_journal.sqlite3"))).expanduser()
-
 
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -60,6 +67,15 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 86400) ->
     except (TypeError, ValueError, OverflowError):
         value = default
     return max(minimum, min(maximum, value))
+
+
+# The dashboard market scanner is a public, read-only feature. Cache it so a
+# visitor cannot turn repeated button presses into repeated upstream API calls.
+MARKET_SCAN_CACHE_TTL_SECONDS = _env_int("MARKET_SCAN_CACHE_TTL_SECONDS", 30, minimum=5, maximum=600)
+MARKET_SCAN_MAX_CURSOR_LENGTH = 512
+_market_scan_cache_lock = threading.Lock()
+_market_scan_cache_payload: dict[str, Any] | None = None
+_market_scan_cache_fetched_at = 0.0
 
 
 @contextmanager
@@ -140,6 +156,10 @@ class PaperTradeRequest(BaseModel):
 class PaperSettleRequest(BaseModel):
     outcome: str
     notes: str | None = Field(default=None, max_length=500)
+
+
+class TradingModeRequest(BaseModel):
+    requested_mode: Literal["paper", "real"]
 
 
 def startup() -> None:
@@ -1405,6 +1425,115 @@ def trade_learning_report() -> dict[str, Any]:
     """Post-trade feedback report. It only records outcome snapshots/reads insights; it never tunes live rules."""
     with db_connect() as conn:
         return build_learning_report(conn)
+
+
+@app.get("/api/trading-mode")
+def api_trading_mode() -> dict[str, Any]:
+    """Expose the effective mode and fail-closed live switch state."""
+    return trading_mode_status()
+
+
+@app.post("/api/trading-mode")
+def api_request_trading_mode(request: TradingModeRequest) -> dict[str, Any]:
+    """Dashboard mode control. Live mode is rejected; no order API is called."""
+    try:
+        return request_mode(request.requested_mode)
+    except LiveModeLocked as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "live_mode_locked",
+                "message": str(exc),
+                "effective_mode": exc.status.get("effective_mode", "blocked"),
+                "live_execution_enabled": False,
+                "live_blockers": exc.status.get("live_blockers", []),
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/live-readiness")
+def api_live_readiness() -> dict[str, Any]:
+    """Read-only live-risk readiness checklist; it cannot enable real execution."""
+    return live_readiness_report()
+
+
+@app.get("/api/multi-user-readiness")
+def api_multi_user_readiness() -> dict[str, Any]:
+    """Describe remaining production requirements before any multi-user access."""
+    return multi_user_readiness()
+
+
+@app.get("/api/market-scan")
+def api_market_scan() -> dict[str, Any]:
+    """Bounded, cached public catalog scan for readiness; never submits trades."""
+    global _market_scan_cache_payload, _market_scan_cache_fetched_at
+    with _market_scan_cache_lock:
+        now = time.monotonic()
+        if _market_scan_cache_payload is not None:
+            age = max(0.0, now - _market_scan_cache_fetched_at)
+            if age < MARKET_SCAN_CACHE_TTL_SECONDS:
+                return {**_market_scan_cache_payload, "cache_hit": True, "cache_age_seconds": round(age, 2)}
+        try:
+            # Follow at most five cursor pages; every request and the total input
+            # are bounded. Do not loop forever if an upstream cursor repeats.
+            markets: list[dict[str, Any]] = []
+            cursor: str | None = None
+            seen_cursors: set[str] = set()
+            pages_scanned = 0
+            cursor_available = False
+            pagination_warning: str | None = None
+            for _page in range(5):
+                response = get_markets(status="open", limit=100, cursor=cursor)
+                page_markets = response.get("markets", []) if isinstance(response, dict) else []
+                if isinstance(page_markets, list):
+                    markets.extend(item for item in page_markets[:max(0, 500 - len(markets))] if isinstance(item, dict))
+                pages_scanned += 1
+                raw_cursor = response.get("cursor") if isinstance(response, dict) else None
+                if raw_cursor in (None, ""):
+                    cursor_available = False
+                    break
+                if not isinstance(raw_cursor, str):
+                    cursor_available = True
+                    pagination_warning = "Catalog returned a non-text cursor; scan stopped without requesting another page."
+                    break
+                next_cursor = raw_cursor[:MARKET_SCAN_MAX_CURSOR_LENGTH + 1].strip()
+                if not next_cursor:
+                    cursor_available = False
+                    break
+                if len(raw_cursor) > MARKET_SCAN_MAX_CURSOR_LENGTH or len(next_cursor) > MARKET_SCAN_MAX_CURSOR_LENGTH:
+                    cursor_available = True
+                    pagination_warning = "Catalog cursor exceeded the safety length; scan stopped without requesting another page."
+                    break
+                if next_cursor in seen_cursors:
+                    cursor_available = True
+                    pagination_warning = "Catalog cursor repeated; scan stopped to avoid an unbounded pagination loop."
+                    break
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+                cursor_available = True
+            result = scan_market_catalog(markets, max_results=50)
+            result["source"] = "Kalshi public market catalog"
+            result["cursor_available"] = cursor_available
+            result["pages_scanned"] = pages_scanned
+            result["pagination_warning"] = pagination_warning
+            result["cache_hit"] = False
+            result["cache_age_seconds"] = 0.0
+            # Cache data only after a fully successful fetch/classification.
+            _market_scan_cache_payload = dict(result)
+            _market_scan_cache_fetched_at = time.monotonic()
+            return result
+        except KalshiAPIError as exc:
+            raise HTTPException(status_code=502, detail="Public market catalog unavailable; no markets were routed.") from exc
+
+
+def _clear_market_scan_cache_for_tests() -> None:
+    """Clear module-level market-scan cache between isolated HTTP tests."""
+    global _market_scan_cache_payload, _market_scan_cache_fetched_at
+    with _market_scan_cache_lock:
+        _market_scan_cache_payload = None
+        _market_scan_cache_fetched_at = 0.0
 
 
 @app.get("/api/category-readiness")

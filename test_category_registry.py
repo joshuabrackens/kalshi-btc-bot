@@ -42,3 +42,11 @@ def test_category_readiness_api_reports_non_btc_as_research_only():
     assert profiles["btc_15m"]["paper_strategy_enabled"] is True
     assert all(not profile["paper_strategy_enabled"] for key, profile in profiles.items() if key != "btc_15m")
     assert "cannot be routed" in response["safety_note"]
+
+
+def test_registry_rejects_non_text_identifiers_instead_of_coercing_them():
+    from market_category_registry import classify_market
+
+    result = classify_market(["KXBTC15M-TEST"], {"title": "Bitcoin price up"}, {"category": "Crypto"})
+    assert result["status"] == "blocked_unclassified"
+    assert result["paper_strategy_enabled"] is False
