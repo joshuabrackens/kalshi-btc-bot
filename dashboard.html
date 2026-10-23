@@ -48,6 +48,8 @@
     .small-line { color:var(--muted); font-size:13px; margin-top:11px; }
     .alert-direction { font-size:30px; font-weight:850; line-height:1.1; letter-spacing:-.03em; }
     .alert-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:17px; }
+    .current-summary { margin-top:17px; }
+    .current-summary .detail-box .value { font-size:17px; }
     .detail-box { border:1px solid rgba(167,205,235,.32); border-radius:11px; padding:11px 12px; background:rgba(13,39,67,.28); min-width:0; }
     .detail-box .label { font-size:12px; text-transform:uppercase; letter-spacing:.045em; color:var(--muted); font-weight:700; }
     .detail-box .value { font-size:18px; font-weight:760; margin-top:4px; overflow-wrap:anywhere; }
@@ -63,7 +65,7 @@
     tr:last-child td { border-bottom:0; }
     td { overflow-wrap:anywhere; }
     .empty { color:var(--muted); padding:18px; }
-    .green-text { color:var(--green); } .red-text { color:var(--red); } .amber-text { color:var(--amber); }
+    .green-text { color:var(--green); } .red-text { color:var(--red); } .amber-text { color:var(--amber); } .blue-text { color:var(--blue); }
     .inline-note { color:var(--muted); font-size:13px; margin-top:10px; }
     .kv { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
     .kv .detail-box .value { font-size:16px; }
@@ -108,14 +110,19 @@
   <section class="card hero section" aria-live="polite">
     <div class="hero-top">
       <div>
-        <h2>What’s happening right now?</h2>
-        <p class="muted" id="current-time-line">Checking the latest alert and bot decision…</p>
+        <h2>Current signal</h2>
+        <p class="muted" id="current-time-line">Checking the active 15-minute window…</p>
       </div>
       <span id="current-status-badge" class="badge wait">WAIT THIS WINDOW</span>
     </div>
     <div id="current-status-title" class="hero-status amber-text">WAIT THIS WINDOW</div>
-    <p id="current-status-explanation" class="hero-copy">The dashboard is checking for a recent alert and a recorded decision. Until a paper trade is recorded, do not assume a trade was taken.</p>
-    <p id="current-status-next" class="small-line">Next: the bot will keep checking conditions on its next cycle.</p>
+    <p id="current-status-explanation" class="hero-copy">No fresh UP or DOWN alert is available yet. Older signals are never reused as the current signal.</p>
+    <div class="alert-summary current-summary">
+      <div class="detail-box"><div class="label">Current 15-minute window</div><div class="value" id="current-window-value">Checking…</div><div class="help">Times shown in your local timezone</div></div>
+      <div class="detail-box"><div class="label">Indicator response</div><div class="value" id="indicator-response-value">Allowing up to 3 minutes</div><div class="help" id="indicator-response-help">Waiting for the indicator's current decision</div></div>
+      <div class="detail-box"><div class="label">Current alert</div><div class="value" id="current-alert-value">No fresh alert yet</div><div class="help" id="current-alert-help">Old alerts are history only</div></div>
+    </div>
+    <p id="current-status-next" class="small-line">The dashboard refreshes every five seconds and will show a new direction when a fresh alert arrives.</p>
   </section>
 
   <section class="section" aria-label="Practice results">
@@ -128,48 +135,6 @@
     </div>
   </section>
 
-  <section class="section two-col">
-    <div class="card">
-      <div class="section-head"><h2>Latest TradingView alert</h2><p class="section-desc">This is what the alert service received. An alert is a suggestion, not proof that the bot traded.</p></div>
-      <div class="hero-top">
-        <div><div id="alert-direction" class="alert-direction">No alert yet</div><p id="alert-symbol" class="muted">Waiting for TradingView / GainzAlgo</p></div>
-        <span id="alert-process-badge" class="badge wait">No alert</span>
-      </div>
-      <div class="alert-summary">
-        <div class="detail-box"><div class="label">Received at</div><div class="value" id="alert-time">—</div><div class="help">Your local time</div></div>
-        <div class="detail-box"><div class="label">Chart timeframe</div><div class="value" id="alert-timeframe">—</div><div class="help">Chart interval used by the alert</div></div>
-        <div class="detail-box"><div class="label">Processing status</div><div class="value" id="alert-processing">—</div><div class="help" id="alert-processing-help">Whether the worker handled it</div></div>
-      </div>
-      <div class="explain-box"><strong>What does this mean?</strong><p id="alert-meaning">When an alert arrives, the bot still checks timing, prices and risk limits before it can create a paper trade.</p></div>
-      <p id="webhook-status" class="inline-note">Webhook status: waiting for first attempt.</p>
-    </div>
-
-    <div class="card">
-      <div class="section-head"><h2>Last bot check</h2><p class="section-desc">The most recent internal review. It may be newer or older than the latest TradingView alert.</p></div>
-      <div class="hero-top">
-        <div><div class="alert-direction" id="signal-direction">No check yet</div><p id="signal-market" class="muted">No market checked yet</p></div>
-        <span id="signal-freshness" class="badge wait">No check yet</span>
-      </div>
-      <div class="alert-summary">
-        <div class="detail-box"><div class="label">Checked at</div><div class="value" id="signal-time">—</div></div>
-        <div class="detail-box"><div class="label">Evidence score</div><div class="value" id="signal-score">—</div><div class="help">Not a win probability</div></div>
-        <div class="detail-box"><div class="label">BTC price</div><div class="value" id="btc-price">—</div></div>
-        <div class="detail-box"><div class="label">Market strike</div><div class="value" id="strike">—</div></div>
-      </div>
-      <div class="explain-box"><strong>Why did the bot decide this?</strong><ul id="reasons" class="plain-list"><li>No explanation recorded yet.</li></ul></div>
-      <p id="disclaimer" class="inline-note">An evidence score is a rules-based rating of the available clues. It is not the chance of winning.</p>
-      <details class="section"><summary>More technical details (optional)</summary>
-        <div class="kv" style="margin-top:12px">
-          <div class="detail-box"><div class="label">BTC vs. strike</div><div class="value" id="distance">—</div><div class="help">How far BTC is above or below the contract strike</div></div>
-          <div class="detail-box"><div class="label">Time remaining</div><div class="value" id="seconds-left">—</div><div class="help">Time left in the 15-minute market</div></div>
-          <div class="detail-box"><div class="label">Contract ask</div><div class="value" id="entry-ask">—</div><div class="help">Displayed price to buy, before fees</div></div>
-          <div class="detail-box"><div class="label">Price cap</div><div class="value" id="entry-cap">—</div><div class="help">Highest allowed entry price in settings</div></div>
-        </div>
-        <h3 class="section">Warnings</h3><ul id="warnings" class="plain-list"><li>No warnings recorded.</li></ul>
-        <details class="section"><summary>Raw strategy diagnostics</summary><pre id="strategies">No diagnostics available.</pre></details>
-      </details>
-    </div>
-  </section>
 
   <section class="card section">
     <div class="section-head"><h2>Recent practice trades</h2><p class="section-desc">A trade appears here only when it has been saved in the paper-trading journal.</p></div>
@@ -178,9 +143,12 @@
   </section>
 
   <section class="card section">
-    <div class="section-head"><h2>Recent alerts</h2><p class="section-desc">This history helps explain what happened after each alert was received.</p></div>
-    <div class="table-wrap"><table aria-label="Recent received alerts"><thead><tr><th>Received (local time)</th><th>Alert</th><th>Symbol</th><th>Chart timeframe</th><th>What happened</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No alerts recorded yet.</td></tr></tbody></table></div>
-    <p class="inline-note" id="alert-count">0 alerts received</p>
+    <details>
+      <summary>Past alert history (for reference only)</summary>
+      <p class="section-desc" style="margin-bottom:12px">These are older messages, not the current signal. Previous UP/DOWN alerts are never carried into a new window.</p>
+      <div class="table-wrap"><table aria-label="Historical received alerts"><thead><tr><th>Received (local time)</th><th>Alert</th><th>Symbol</th><th>Chart timeframe</th><th>What happened</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No alerts recorded in history yet.</td></tr></tbody></table></div>
+      <p class="inline-note" id="alert-count">0 alerts recorded in history</p>
+    </details>
   </section>
 
   <section class="section">
@@ -255,48 +223,12 @@
     const d=String(direction||'').toUpperCase();
     return ['BUY_UP','UP','BUY','LONG'].includes(d) ? 'green-text' : ['BUY_DOWN','DOWN','SELL','SHORT'].includes(d) ? 'red-text' : 'amber-text';
   }
-  function renderAlert(data) {
-    const alert = data.latest_external_alert;
-    const event = data.latest_webhook_event;
-    write('alert-count', `${Number(data.external_alert_count||0).toLocaleString()} alerts have been received in total.`);
-    if (event) {
-      const code = Number(event.status_code);
-      const isOk = code >= 200 && code < 300;
-      write('webhook-status', `Last delivery attempt: ${safeNum(code) ? 'HTTP '+code : 'status unknown'} · ${dateTime(event.received_at)}${event.reason ? ' · ' + event.reason : ''}. A successful response means the endpoint accepted that request; it does not mean a trade was placed.`);
-      $('webhook-status').className = 'inline-note ' + (isOk ? 'green-text' : 'red-text');
-    } else {
-      write('webhook-status', 'No webhook delivery attempt is recorded in this dashboard database. If TradingView sent an alert, check its delivery history and the web service logs.');
-      $('webhook-status').className = 'inline-note amber-text';
-    }
-    if (!alert) {
-      write('alert-direction','No alert yet'); write('alert-symbol','Waiting for TradingView / GainzAlgo');
-      write('alert-time','—'); write('alert-timeframe','—'); write('alert-processing','—');
-      write('alert-processing-help','No alert has been saved');
-      setBadge('alert-process-badge','No alert recorded','wait');
-      write('alert-meaning','The bot cannot use an alert it has not recorded. Check that TradingView is sending alerts to this application.');
-    } else {
-      write('alert-direction',directionFriendly(alert.direction)); $('alert-direction').className = 'alert-direction ' + cssToneForDirection(alert.direction);
-      write('alert-symbol',alert.symbol || 'Symbol not included in alert');
-      write('alert-time',dateTime(alert.received_at)); write('alert-timeframe',alert.timeframe || 'Not provided');
-      const st=String(alert.processing_status||'queued').toLowerCase();
-      write('alert-processing',statusFriendly(st));
-      write('alert-processing-help',`Received ${ageText(alert.age_seconds)}.`);
-      const tone = ['processed','accepted'].includes(st) ? 'good' : ['skipped','vetoed','ignored','error','rejected'].includes(st) ? 'bad' : 'wait';
-      setBadge('alert-process-badge',statusFriendly(st),tone);
-      const explanations = {
-        queued:'The alert was saved, but it has not yet been marked as processed. Receiving an alert does not mean a trade happened.',
-        wait:'The indicator explicitly reported WAIT THIS WINDOW. The bot recorded this as a status update and did not open a paper trade.',
-        processed:'The worker recorded a paper-trade entry for this alert. Check the recent practice trades below for its details.',
-        skipped:`The alert was not used for a new trade. ${alert.processing_note || 'The worker recorded no additional reason.'}`,
-        vetoed:`The internal safety check blocked this alert. ${alert.processing_note || 'No additional reason was recorded.'}`,
-        ignored:`The alert did not meet the worker’s input requirements. ${alert.processing_note || 'No additional reason was recorded.'}`
-      };
-      write('alert-meaning',explanations[st] || `The alert’s current status is “${statusFriendly(st)}”. See the recent alert history for more detail.`);
-    }
+  function renderAlertHistory(data) {
+    write('alert-count', `${Number(data.external_alert_count||0).toLocaleString()} total alerts recorded in history.`);
     const tbody=$('external-alerts'); tbody.replaceChildren();
     const rows=Array.isArray(data.recent_external_alerts)?data.recent_external_alerts:[];
     if (!rows.length) {
-      const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=5; td.className='empty'; td.textContent='No alerts have been saved yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
+      const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=5; td.className='empty'; td.textContent='No alerts recorded in history yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
     }
     rows.forEach(item=>{
       const tr=document.createElement('tr');
@@ -307,75 +239,87 @@
     });
   }
   function renderCurrentStatus(data) {
-    const alert=data.latest_external_alert, sig=data.latest_signal, health=data.health||{}, event=data.latest_webhook_event;
+    const decision=data.current_window_decision||{};
     const trades=Array.isArray(data.trades)?data.trades:[];
     const timeOf=v=>v?Date.parse(v):NaN;
-    const alertT=alert?timeOf(alert.received_at):NaN, sigT=sig?timeOf(sig.created_at):NaN, eventT=event?timeOf(event.received_at):NaN;
-    let status='WAIT THIS WINDOW', tone='wait', title='WAIT THIS WINDOW';
-    let explanation='The bot has not confirmed a new paper trade for the latest alert. Waiting is a valid result when a signal is old, unclear, too expensive, or fails a safety check.';
-    let when=alert&&alert.received_at?`Latest alert: ${dateTime(alert.received_at)}`:'No accepted alert recorded yet.';
-    let next='The bot should keep checking on its next scheduled cycle. The dashboard does not force a trade.';
-    const st=String(alert&&alert.processing_status||'').toLowerCase();
-    const matchedTrade=sig&&trades.find(t=>String(t.market_ticker||'')===String(sig.market_ticker||'')&&String(t.direction||'').toUpperCase()===(sig.direction==='BUY_UP'?'UP':sig.direction==='BUY_DOWN'?'DOWN':'')&&Number.isFinite(timeOf(t.created_at))&&Number.isFinite(sigT)&&timeOf(t.created_at)>=sigT);
-    if (event && Number.isFinite(eventT) && (!Number.isFinite(alertT)||eventT>alertT) && Number(event.status_code)>=300) {
-      explanation=`The latest webhook request was rejected (${event.status_code}). ${event.reason||'The application did not provide a reason.'} That alert cannot be used to create a trade.`;
-      when=`Last delivery attempt: ${dateTime(event.received_at)}`;
-      next='Check the webhook result in the recent delivery details before expecting a new trade.';
-    } else if (!alert) {
-      explanation='No TradingView / GainzAlgo alert is currently recorded here. If alerts were sent, confirm that they reached this deployment.';
-      next='Wait for a valid alert to arrive. A blank or disconnected feed is not the same as a market-based WAIT decision.';
-    } else if (st === 'wait') {
-      status='WAIT THIS WINDOW'; title='WAIT THIS WINDOW'; tone='wait';
-      explanation=`The indicator reported that it is not suggesting an entry. ${alert.processing_note||'The bot recorded the wait state; no paper trade was opened.'}`;
-      when=`Latest WAIT alert: ${dateTime(alert.received_at)}`;
-      next='Wait for the next valid directional signal. A WAIT alert never opens or closes a paper position.';
-    } else if (['skipped','vetoed','ignored','error','rejected'].includes(st)) {
-      explanation=`The latest alert was ${statusFriendly(st).toLowerCase()}. ${alert.processing_note||'The worker did not record an additional reason.'}`;
-      next='The bot should wait for the next eligible alert rather than forcing this one through.';
-    } else if (matchedTrade) {
-      status='PAPER TRADE RECORDED'; title='PAPER TRADE RECORDED'; tone='good';
-      explanation=`The journal contains paper trade #${matchedTrade.id} for ${matchedTrade.direction} on ${matchedTrade.market_ticker}. This is a simulated entry, not a real order.`;
-      when=`Trade recorded: ${dateTime(matchedTrade.created_at)}`;
-      next='Review its entry cost and status in Recent practice trades below.';
-    } else if (st==='queued' || (Number.isFinite(alertT)&&Number.isFinite(sigT)&&alertT>sigT)) {
-      explanation='A newer alert has arrived than the latest recorded bot check, or the alert is still waiting to be processed. No new entry has been confirmed yet.';
-      next='Wait for the worker to process the alert. Do not treat the alert direction as a completed trade.';
-    } else if (sig && sig.direction==='WAIT') {
-      const r=Array.isArray(sig.reasons)?sig.reasons.slice(0,2).join(' '):'';
-      explanation=`The latest bot check decided not to enter a trade. ${r || 'The available evidence or market conditions did not pass its rules.'}`;
-      when=`Last check: ${dateTime(sig.created_at)}`;
-      next='The bot will look again during a later cycle; it should not enter solely to create activity.';
-    } else if (sig && sig.is_stale) {
-      explanation='The last bot check is old. An older direction should not be treated as a current recommendation.';
-      when=`Last check: ${dateTime(sig.created_at)}`;
-      next='Wait for a new evaluation before relying on the displayed signal.';
-    } else if (sig) {
-      explanation=`The last recorded check says “${directionFriendly(sig.direction)}”, but there is no matching paper-trade record shown. A signal is not a trade.`;
-      when=`Last check: ${dateTime(sig.created_at)}`;
-      next='Until a trade is recorded, the current status remains WAIT THIS WINDOW.';
+    const windowStartT=timeOf(decision.window_start), windowEndT=timeOf(decision.window_end);
+    const windowLine=Number.isFinite(windowStartT)&&Number.isFinite(windowEndT)
+      ? `${new Date(windowStartT).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}–${new Date(windowEndT).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}`
+      : 'Being calculated';
+    const currentAlerts=Array.isArray(data.recent_external_alerts)?data.recent_external_alerts:[];
+    const currentAlert=decision.alert_received_at
+      ? currentAlerts.find(a=>String(a.received_at||'')===String(decision.alert_received_at))
+      : null;
+    const phase=String(decision.phase||'').toLowerCase();
+    let status='WAIT THIS WINDOW', tone='wait';
+    let explanation=decision.reason||'No fresh UP/DOWN signal is available for the current 15-minute window. Older signals are not reused.';
+    let next='The bot will keep waiting. A fresh signal still must pass its market and risk checks; this status never forces a trade.';
+    let alertValue='No fresh alert yet';
+    let alertHelp='Old alerts are history only';
+    let responseValue='3-minute response allowance';
+    let responseHelp='Waiting for the indicator’s current decision';
+
+    if (phase==='signal_received' && ['UP','DOWN'].includes(String(decision.direction||'').toUpperCase())) {
+      status=`${String(decision.direction).toUpperCase()} SIGNAL RECEIVED`;
+      tone='blue';
+      alertValue=`${String(decision.direction).toUpperCase()} signal`;
+      alertHelp=currentAlert && currentAlert.timeframe ? `Chart timeframe: ${currentAlert.timeframe}` : 'Fresh alert in this window';
+      responseValue='Signal received';
+      responseHelp=`Received ${ageText(decision.alert_age_seconds)}.`;
+      explanation=decision.reason||`A fresh ${decision.direction} signal arrived for this current window. It is not proof that a trade was placed.`;
+      next='The worker must still check freshness, market availability, entry price, spread, time remaining, and risk limits. A signal is not a trade.';
+    } else if (phase==='indicator_wait') {
+      status='WAIT THIS WINDOW'; tone='wait';
+      alertValue='Indicator says WAIT';
+      alertHelp=`Received ${dateTime(decision.alert_received_at)}${decision.timeframe?` · ${decision.timeframe}`:''}`;
+      responseValue='Response received';
+      responseHelp='The indicator explicitly selected WAIT';
+      explanation=decision.reason||'The indicator explicitly reported WAIT. No paper trade is created from this status.';
+      next='Keep waiting for a fresh eligible direction. A WAIT status never opens or closes a paper position.';
+    } else if (phase==='awaiting_indicator') {
+      status='WAIT THIS WINDOW'; tone='wait';
+      const remaining=Math.max(0,Number(decision.indicator_grace_remaining_seconds)||0);
+      alertValue='No fresh signal yet';
+      alertHelp='No previous direction carried forward';
+      responseValue=`Waiting · ${number(remaining,0)}s left`;
+      responseHelp='Indicator typically takes about 3 minutes';
+      explanation=`The indicator usually takes about 3 minutes to respond. We are allowing it time to produce the current decision; until a fresh UP/DOWN alert arrives, the current signal is WAIT THIS WINDOW. An older signal will not be shown as current.`;
+      next='This is only a dashboard status. It does not create a TradingView alert or a paper trade.';
+    } else if (phase==='no_fresh_signal') {
+      status='WAIT THIS WINDOW'; tone='wait';
+      alertValue='No current signal';
+      alertHelp='The 3-minute response allowance has passed';
+      responseValue='Response period passed';
+      responseHelp='Still waiting for a fresh current-window alert';
+      explanation=decision.reason||'No fresh UP/DOWN signal arrived during the expected response period. The old signal has been cleared from the current view.';
+      next='If a fresh directional alert arrives later in this same window, the current signal will update. Otherwise, continue to wait; the bot will not reuse an old direction.';
+    } else if (phase==='internal_mode') {
+      status='NO EXTERNAL SIGNAL REQUIRED'; tone='blue';
+      alertValue='External signal not required';
+      alertHelp='The current source is not hybrid/GainzAlgo';
+      responseValue='Internal mode'; responseHelp='See source setting in Safety and bot settings';
+      explanation=decision.reason||explanation;
     }
-    setBadge('current-status-badge',status,tone); write('current-status-title',title); $('current-status-title').className='hero-status '+(tone==='good'?'green-text':tone==='bad'?'red-text':'amber-text');
-    write('current-status-explanation',explanation); write('current-time-line',when); write('current-status-next',next);
-  }
-  function renderSignal(sig) {
-    if (!sig) {
-      ['signal-direction','signal-market','signal-time','signal-score','btc-price','strike','distance','seconds-left','entry-ask','entry-cap'].forEach(id=>write(id,'—'));
-      setBadge('signal-freshness','No check yet','wait'); fillList('reasons',[],'No bot evaluation has been recorded.'); fillList('warnings',[],'No warnings recorded.'); write('strategies','No diagnostics available yet.');
-      write('disclaimer','When available, the evidence score summarizes programmed rules. It is not a probability of winning.'); return;
+
+    // A trade in this 15-minute window is a separate outcome, not an old signal.
+    const tradeInWindow=Number.isFinite(windowStartT)&&Number.isFinite(windowEndT)
+      ? trades.find(t=>Number.isFinite(timeOf(t.created_at))&&timeOf(t.created_at)>=windowStartT&&timeOf(t.created_at)<windowEndT)
+      : null;
+    if (tradeInWindow && phase==='signal_received') {
+      next=`A simulated ${tradeInWindow.direction} trade was recorded at ${dateTime(tradeInWindow.created_at)}. Review it in Recent practice trades below.`;
     }
-    const d=String(sig.direction||'').toUpperCase();
-    write('signal-direction',d==='WAIT'?'WAIT — no trade suggested':d==='BUY_UP'?'UP candidate':d==='BUY_DOWN'?'DOWN candidate':d);
-    $('signal-direction').className='alert-direction '+(d==='BUY_UP'?'green-text':d==='BUY_DOWN'?'red-text':'amber-text');
-    write('signal-market',sig.market_ticker||'Market identifier not recorded'); write('signal-time',dateTime(sig.created_at));
-    write('signal-score',safeNum(sig.score)?`${number(sig.score,0)}/100`:'Not available');
-    setBadge('signal-freshness',sig.is_stale?`Old check · ${ageText(sig.age_seconds)}`:`Recent check · ${ageText(sig.age_seconds)}`,sig.is_stale?'bad':'good');
-    write('btc-price',safeNum(sig.btc_price)?'$'+number(sig.btc_price):'—'); write('strike',safeNum(sig.strike_price)?'$'+number(sig.strike_price):'—');
-    write('distance',safeNum(sig.distance_from_strike)?`${Number(sig.distance_from_strike)>=0?'+':''}$${number(Math.abs(Number(sig.distance_from_strike)))}`:'—');
-    write('seconds-left',safeNum(sig.seconds_remaining)?`${number(sig.seconds_remaining,0)} seconds`: '—');
-    write('entry-ask',cents(sig.entry_ask_cents)); write('entry-cap',cents(sig.max_entry_cents));
-    write('disclaimer',sig.disclaimer||'The score is a heuristic evidence rating only. It is not a calibrated chance of winning.');
-    fillList('reasons',sig.reasons,'No explanation was saved with this check.'); fillList('warnings',sig.warnings,'No warnings were recorded for this check.');
-    write('strategies',JSON.stringify(sig.strategies||{},null,2));
+
+    write('current-time-line',`Current 15-minute window: ${windowLine} (local time)`);
+    setBadge('current-status-badge',status,tone);
+    write('current-status-title',status);
+    $('current-status-title').className='hero-status '+(tone==='good'?'green-text':tone==='bad'?'red-text':tone==='blue'?'blue-text':'amber-text');
+    write('current-status-explanation',explanation);
+    write('current-status-next',next);
+    write('current-window-value',windowLine);
+    write('indicator-response-value',responseValue);
+    write('indicator-response-help',responseHelp);
+    write('current-alert-value',alertValue);
+    write('current-alert-help',alertHelp);
   }
   function renderTrades(data) {
     const tbody=$('trades'); tbody.replaceChildren();
@@ -400,7 +344,7 @@
     write('open-count',stats.open_positions||0); write('exposure','Cost of open positions: '+money(risk.open_exposure_dollars||0));
     write('worker',worker[0]); write('worker-detail',worker[1]);
     if (health.worker_status==='running') $('worker').className='metric-value green-text'; else if (health.worker_status==='stale') $('worker').className='metric-value red-text';
-    renderAlert(data); renderSignal(data.latest_signal); renderCurrentStatus(data); renderTrades(data);
+    renderAlertHistory(data); renderCurrentStatus(data); renderTrades(data);
     write('mode',data.mode==='SIMULATION_ONLY'?'Practice / simulation only':data.mode||'Unknown');
     write('real-orders',data.real_orders_enabled?'Enabled — investigate':'Disabled');
     write('signal-source',({'hybrid':'TradingView + internal safety checks','gainzalgo':'TradingView / GainzAlgo alerts','internal':'Internal rules only'})[String(health.signal_source||'').toLowerCase()]||health.signal_source||'Not reported');

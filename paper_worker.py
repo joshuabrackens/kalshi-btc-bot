@@ -294,7 +294,7 @@ def _log_wait(conn, reason: str, *, ticker: str | None = None, external: dict | 
     try:
         _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=ticker, direction="WAIT", score=score,
                            btc_price=btc, strike=strike, seconds_remaining=seconds,
-                           max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "78"), 78), payload=payload)
+                           max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92), payload=payload)
     except (ValueError, TypeError) as exc:
         log.warning("Could not journal wait decision: %s", exc)
 
@@ -444,7 +444,7 @@ def _manage_open(conn) -> None:
                                               up_ask_cents=parsed_market["yes_ask"], down_ask_cents=parsed_market["no_ask"],
                                               spread_cents=spread_now, estimated_fee_cents=float(entry_fee)),
                                 minimum_score=int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65)),
-                                max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "78"), 78),
+                                max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92),
                                 max_spread_cents=_safe_float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"), 5),
                             ).to_dict()
                             veto, veto_reasons = _major_flaw_veto(direction, reversal, max(2, min(12, int(_safe_float(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"), 4)))))
@@ -529,7 +529,7 @@ def run_once() -> dict[str, Any]:
     exit_fee = max(0.0, _safe_float(os.getenv("PAPER_EXIT_FEE_CENTS_PER_CONTRACT", "2.0"), 2.0))
     stop_pct = max(0.1, min(99.0, _safe_float(os.getenv("PAPER_STOP_LOSS_PERCENT", "35"), 35)))
     min_score = max(0, min(100, int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65))))
-    max_entry = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "78"), 78)))
+    max_entry = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92)))
     max_spread = max(0.0, min(100.0, _safe_float(os.getenv("PAPER_MAX_SPREAD_CENTS", "5"), 5)))
     tp_enabled = _truthy("PAPER_TAKE_PROFIT_ENABLED", False)
     tp_pct = _safe_float(os.getenv("PAPER_TAKE_PROFIT_PERCENT", "20"), 20)

@@ -1,0 +1,2 @@
+# Add this line to the existing requirements.txt; do not replace the existing dependencies.
+psycopg[binary]>=3.2,<4

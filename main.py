@@ -12,7 +12,7 @@ import os
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -106,7 +106,7 @@ class EvaluateRequest(BaseModel):
     candles_15m: list[Candle] = Field(min_length=20)
     market: MarketInput
     minimum_score: int = Field(default=65, ge=0, le=100)
-    max_entry_cents: float = Field(default=78, gt=0, lt=100)
+    max_entry_cents: float = Field(default=92, gt=0, lt=100)
 
 
 class PaperTradeRequest(BaseModel):
@@ -142,6 +142,117 @@ def home():
     if not dashboard_path.is_file():
         raise HTTPException(status_code=404, detail="dashboard.html is missing from the application directory.")
     return FileResponse(dashboard_path, media_type="text/html")
+
+
+def _external_signal_max_age_seconds() -> int:
+    """Match the worker's accepted external-alert age window."""
+    fallback = _env_int("GAINZALGO_MAX_SIGNAL_AGE_SECONDS", 300, 30, 900)
+    return _env_int("TRADINGVIEW_MAX_SIGNAL_AGE_SECONDS", fallback, 30, 900)
+
+
+def _current_window_decision(alerts: list[dict[str, Any]], now: datetime | None = None,
+                             signal_source: str | None = None) -> dict[str, Any]:
+    """Return only the effective signal for the current 15-minute window.
+
+    Old alerts are deliberately never carried forward. For the first three minutes
+    of each UTC-aligned window, the status explains that the indicator may still be
+    responding. This grace period affects dashboard messaging only; it does not
+    extend the worker's signal-freshness limit or create a synthetic alert/trade.
+    """
+    now_utc = now or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    now_utc = now_utc.astimezone(timezone.utc)
+    window_seconds = 15 * 60
+    window_start = datetime.fromtimestamp(int(now_utc.timestamp() // window_seconds) * window_seconds, timezone.utc)
+    window_end = window_start + timedelta(seconds=window_seconds)
+    elapsed = max(0, int((now_utc - window_start).total_seconds()))
+    grace_seconds = _env_int("INDICATOR_RESPONSE_GRACE_SECONDS", 180, 0, 900)
+    grace_remaining = max(0, grace_seconds - elapsed)
+    max_age = _external_signal_max_age_seconds()
+    source = (signal_source or os.getenv("PAPER_SIGNAL_SOURCE", "internal")).strip().lower()
+    alert_mode = source in {"hybrid", "gainzalgo"}
+
+    for alert in alerts:
+        received_at = alert.get("received_at")
+        try:
+            created = datetime.fromisoformat(str(received_at).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            created = created.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+        age_seconds = max(0, int((now_utc - created).total_seconds()))
+        if not alert_mode or created < window_start or created >= window_end or age_seconds > max_age:
+            continue
+        direction = _normalize_webhook_direction({"direction": alert.get("direction")})
+        if direction not in {"UP", "DOWN", "WAIT"}:
+            continue
+
+        explicit_wait = direction == "WAIT"
+        return {
+            "status": "WAIT THIS WINDOW" if explicit_wait else f"{direction} SIGNAL RECEIVED",
+            "source": "indicator_wait" if explicit_wait else "fresh_directional_alert",
+            "phase": "indicator_wait" if explicit_wait else "signal_received",
+            "automatic_fallback": False,
+            "direction": direction,
+            "alert_received_at": created.isoformat(),
+            "alert_age_seconds": age_seconds,
+            "symbol": alert.get("symbol"),
+            "timeframe": alert.get("timeframe"),
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "window_elapsed_seconds": elapsed,
+            "indicator_response_grace_seconds": grace_seconds,
+            "indicator_grace_remaining_seconds": 0,
+            "max_age_seconds": max_age,
+            "reason": (
+                "The indicator explicitly reported WAIT. This is a status update only; no paper trade is opened from it."
+                if explicit_wait else
+                f"A fresh {direction} alert is available in the current 15-minute window. It must still pass the worker's safety checks; receiving it does not mean a trade was placed."
+            ),
+        }
+
+    if not alert_mode:
+        phase = "internal_mode"
+        reason = f"Signal source is {source}. External-signal fallback is only used in hybrid/GainzAlgo mode."
+        status = "NO EXTERNAL SIGNAL REQUIRED"
+    elif grace_remaining > 0:
+        phase = "awaiting_indicator"
+        reason = (
+            f"No fresh UP or DOWN signal has arrived for the current 15-minute window yet. "
+            f"The indicator usually takes about 3 minutes to respond; allow another {grace_remaining} seconds. "
+            "The current display remains WAIT THIS WINDOW, and no older signal is carried forward."
+        )
+        status = "WAIT THIS WINDOW"
+    else:
+        phase = "no_fresh_signal"
+        reason = (
+            "No fresh UP or DOWN signal has arrived within the expected 3-minute response period for this 15-minute window. "
+            "Keep waiting for a fresh current-window signal; the bot will not reuse a prior UP/DOWN signal. "
+            "This status is not a fabricated TradingView alert and does not open or close a paper position."
+        )
+        status = "WAIT THIS WINDOW"
+
+    return {
+        "status": status,
+        "source": "automatic_fallback" if alert_mode else "internal_mode",
+        "phase": phase,
+        "automatic_fallback": alert_mode,
+        "direction": "WAIT" if alert_mode else None,
+        "alert_received_at": None,
+        "alert_age_seconds": None,
+        "symbol": None,
+        "timeframe": None,
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "window_elapsed_seconds": elapsed,
+        "indicator_response_grace_seconds": grace_seconds,
+        "indicator_grace_remaining_seconds": grace_remaining,
+        "max_age_seconds": max_age,
+        "reason": reason,
+    }
 
 
 @app.get("/api/dashboard")
@@ -304,6 +415,10 @@ def dashboard_data() -> dict[str, Any]:
         "latest_external_alert": external_alerts[0] if external_alerts else None,
         "external_alert_count": external_alert_count,
         "recent_external_alerts": external_alerts,
+        "current_window_decision": _current_window_decision(
+            external_alerts, now=datetime.now(timezone.utc),
+            signal_source=os.getenv("PAPER_SIGNAL_SOURCE", "internal"),
+        ),
         "latest_webhook_event": ({
             "received_at": last_webhook_event[0], "status_code": last_webhook_event[1],
             "status": last_webhook_event[2], "reason": last_webhook_event[3],
