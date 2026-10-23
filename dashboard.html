@@ -497,7 +497,7 @@
     write('decision-age',hasDisplayedEvaluation?age(ageSeconds):(currentAlert&&alertAge!==null?age(alertAge):'No fresh current alert'));
     write('decision-score',score===null?'Not available':`${nfmt(score,0)}/100`);
     setBadge('decision-badge',hasCurrentEvaluation?'Current signal analyzed':currentAlert?'Evaluation pending':isHistorical?'Historical details retained':waitingLabel,hasCurrentEvaluation?'blue':currentAlert?'green':isHistorical?'amber':'amber');
-    setList('signal-reasons',hasDisplayedEvaluation?(s.reasons||[]).map(formatReason):[],hasDisplayedEvaluation?'No reasons were recorded.':currentAlert?'Current alert received; waiting for evaluation details.':'No directional evaluation has been recorded yet.');
+    setList('signal-reasons',hasDisplayedEvaluation?(Array.isArray(s.reasons)?s.reasons.map(formatReason):[]):[],hasDisplayedEvaluation?'No reasons were recorded.':currentAlert?'Current alert received; waiting for evaluation details.':'No directional evaluation has been recorded yet.');
     setList('signal-warnings',hasDisplayedEvaluation?(s.warnings||[]):[],hasDisplayedEvaluation?'No warnings were recorded.':currentAlert?'Current evaluation warnings will appear when available.':'No directional-evaluation warnings are available yet.');
     if(hasCurrentEvaluation) write('decision-summary',s.disclaimer||'Current-window evaluation; not a measured probability of winning.');
     else if(currentAlert) write('decision-summary','Fresh alert received for this window; its evaluation is pending. Historical details remain separate.');
@@ -764,14 +764,66 @@
   }
   async function getJSON(url){const response=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'}});if(!response.ok)throw new Error(`${url} returned ${response.status}`);return response.json();}
   async function refresh(){
-    try{
-      const [dashboardResult,diagResult,analyticsResult]=await Promise.allSettled([getJSON('/api/dashboard'),getJSON('/diagnostics/market-data'),getJSON('/api/analytics')]);
-      if(dashboardResult.status!=='fulfilled')throw dashboardResult.reason;
-      const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderActivePosition(data);renderTrendMonitor(data);renderStrategyPerformance(data);renderTrades(data);renderAlerts(data);
-      if(diagResult.status==='fulfilled')renderMarketDiagnostics(diagResult.value);else{setBadge('market-ready-badge','Diagnostics unavailable','amber');write('market-diagnostic-cache',diagResult.reason?.message||'Could not load diagnostic endpoint.');}
-      if(analyticsResult.status==='fulfilled')renderAnalytics(analyticsResult.value);else{setBadge('analytics-badge','Analytics unavailable','amber');write('analytics-caution',analyticsResult.reason?.message||'Could not load analytics.');}
-      setBadge('connection-badge','Dashboard connected','green');write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);
-    }catch(err){setBadge('connection-badge','Dashboard connection issue','red');write('last-refresh',`Refresh failed: ${err?.message||'unknown error'}. Reload the page or check the web service.`);}
+    const [dashboardResult,diagResult,analyticsResult]=await Promise.allSettled([
+      getJSON('/api/dashboard'), getJSON('/diagnostics/market-data'), getJSON('/api/analytics')
+    ]);
+    if(dashboardResult.status!=='fulfilled'){
+      const err=dashboardResult.reason;
+      setBadge('connection-badge','Dashboard connection issue','red');
+      write('last-refresh',`Dashboard API request failed: ${err?.message||'unknown error'}. The last good display is retained; check the web service/API response.`);
+      console.error('[BTC dashboard] /api/dashboard request failed', err);
+      if(diagResult.status==='fulfilled'){
+        try{renderMarketDiagnostics(diagResult.value);}catch(renderErr){console.error('[BTC dashboard] diagnostics rendering failed',renderErr);}
+      }
+      if(analyticsResult.status==='fulfilled'){
+        try{renderAnalytics(analyticsResult.value);}catch(renderErr){console.error('[BTC dashboard] analytics rendering failed',renderErr);}
+      }
+      return;
+    }
+
+    // An HTTP/API success is separate from a failure in any one display panel.
+    // Previously a rendering exception after the health card updated could leave
+    // perfectly good API data on screen with a misleading connection-error badge.
+    const data=dashboardResult.value;
+    setBadge('connection-badge','API connected','green');
+    const renderFailures=[];
+    const safeRender=(name,fn)=>{
+      try{fn();}
+      catch(err){
+        renderFailures.push(name);
+        console.error(`[BTC dashboard] ${name} panel failed to render`,err);
+      }
+    };
+    safeRender('engine status',()=>renderHealth(data));
+    safeRender('signal evaluation',()=>renderSignal(data,data.stats||{}));
+    safeRender('current window',()=>renderCurrentWindow(data));
+    safeRender('active position',()=>renderActivePosition(data));
+    safeRender('trend monitor',()=>renderTrendMonitor(data));
+    safeRender('strategy performance',()=>renderStrategyPerformance(data));
+    safeRender('trade journal',()=>renderTrades(data));
+    safeRender('external alerts',()=>renderAlerts(data));
+
+    if(diagResult.status==='fulfilled'){
+      safeRender('market diagnostics',()=>renderMarketDiagnostics(diagResult.value));
+    }else{
+      setBadge('market-ready-badge','Diagnostics unavailable','amber');
+      write('market-diagnostic-cache',diagResult.reason?.message||'Could not load diagnostic endpoint.');
+    }
+    if(analyticsResult.status==='fulfilled'){
+      safeRender('analytics',()=>renderAnalytics(analyticsResult.value));
+    }else{
+      setBadge('analytics-badge','Analytics unavailable','amber');
+      write('analytics-caution',analyticsResult.reason?.message||'Could not load analytics.');
+    }
+
+    if(renderFailures.length){
+      const labels=renderFailures.join(', ');
+      setBadge('connection-badge',`API connected · display warning (${renderFailures.length})`,'amber');
+      write('last-refresh',`API connected at ${new Date().toLocaleTimeString()}, but these panel(s) failed to render: ${labels}. Other sections remain refreshed. Open browser console for details.`);
+    }else{
+      setBadge('connection-badge','Dashboard connected','green');
+      write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);
+    }
   }
   refresh();window.setInterval(refresh,5000);window.setInterval(updateIndicatorCountdown,1000);
 })();

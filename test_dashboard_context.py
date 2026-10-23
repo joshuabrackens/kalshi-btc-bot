@@ -110,3 +110,11 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
     assert "latest_directional_signal" in html
     assert "renderActivePosition(data)" in html
     assert "HISTORICAL CONTEXT" in html
+
+
+def test_dashboard_connection_badge_distinguishes_api_failure_from_panel_render_error():
+    html = (Path(main.__file__).resolve().parent / "dashboard.html").read_text(encoding="utf-8")
+    assert "Dashboard API request failed:" in html
+    assert "API connected · display warning" in html
+    assert "safeRender('active position'" in html
+    assert "safeRender('analytics'" in html
