@@ -136,6 +136,9 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
     assert "Preferred entry target (soft)" in html
     assert "Current ask" in html and "hard cap" in html
     assert "chartScoreCandidates" in html, "WAIT placeholder score should fall back to stored chart evidence"
+    assert "const alreadyEvaluated=" in html, "Current-window waiting panel must define its evaluated-state variable"
+    assert "worker_signal_source" in html, "Dashboard should expose Web Service vs worker signal-source mismatches"
+    assert "waiting_for_orderbook" in html, "Dashboard should show the worker note for a pending order-book check"
     assert "reasonScoreMatch" in html, "WAIT placeholder score should fall back to the evidence score in the actual reason text"
     # KPI/status/guardrail row is the first content after the header; the intro
     # follows it, then the active-position panel remains near the top.
@@ -154,3 +157,14 @@ def test_dashboard_connection_badge_distinguishes_api_failure_from_panel_render_
     assert "API connected · display warning" in html
     assert "safeRender('active position'" in html
     assert "safeRender('analytics'" in html
+
+def test_normalized_wait_evaluation_retains_external_alert_link():
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps({"external_signal": {"id": 391, "direction": "UP"}, "reasons": ["Waiting on quote."], "fusion": {"approved": False}})
+    row = (88, now, "KXBTC15M-TEST", "WAIT", 0, 81800.0, 81810.0, 500, 92.0,
+           "skipped", "UP", 87.0, 3.0, "UP", 52, 2.0, payload)
+    normalized = main._dashboard_signal_from_row(row)
+    assert normalized["external_signal_id"] == 391
+    assert normalized["direction"] == "UP"
+    assert normalized["decision_status"] == "skipped"
+

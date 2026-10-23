@@ -49,6 +49,18 @@ class CurrentSignalTests(unittest.TestCase):
         self.assertEqual(d["status"],"UP SIGNAL RECEIVED")
         self.assertEqual(d["phase"],"signal_received")
         self.assertEqual(d["timeframe"],"1m")
+    def test_current_alert_exposes_worker_processing_note(self):
+        now=datetime(2026,10,23,0,7,0,tzinfo=timezone.utc)
+        alerts=[{
+            "id": 391, "direction":"UP", "received_at":"2026-10-23T00:06:00+00:00",
+            "processing_status":"waiting_for_orderbook", "processing_note":"No usable YES/NO best bid was available.",
+            "processed_at":None, "symbol":"BTCUSDT", "timeframe":"1m",
+        }]
+        d=_current_window_decision(alerts,now=now,signal_source="hybrid")
+        self.assertEqual(d["alert_id"],391)
+        self.assertEqual(d["processing_status"],"waiting_for_orderbook")
+        self.assertIn("No usable YES/NO best bid",d["reason"])
+
     def test_explicit_wait_is_current_window_only(self):
         now=datetime(2026,10,23,0,7,0,tzinfo=timezone.utc)
         alerts=[{"direction":"WAIT","received_at":"2026-10-23T00:06:00+00:00","processing_status":"wait"}]

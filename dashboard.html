@@ -493,18 +493,31 @@
         (Number.isFinite(alertTime)&&alertTime>=windowStart&&alertTime<windowEnd));
     const currentAlert=String(cw.phase||'')==='signal_received' && directionalAlert &&
       alertAge!==null && alertAge<=maxAlertAge && inActiveWindow;
+    const currentProcessingStatus=String(cw.processing_status||'queued').toLowerCase();
+    const terminalProcessingStatus=Boolean(cw.processed_at)||['processed','paper_opened','vetoed','skipped','ignored','wait','blocked'].includes(currentProcessingStatus);
     const created=saved.created_at?Date.parse(saved.created_at):NaN;
     const createdInWindow=Number.isFinite(created)&&Number.isFinite(windowStart)&&Number.isFinite(windowEnd)&&created>=windowStart&&created<windowEnd;
     const savedAge=hasNum(saved.age_seconds)?Number(saved.age_seconds):null;
     const savedFresh=!saved.is_stale&&(savedAge===null||savedAge<=maxAlertAge);
-    const sameDirection=direction(saved.direction)===cwSide;
-    const evaluatedCurrentSignal=currentAlert&&createdInWindow&&savedFresh&&sameDirection;
-    const historicalDirection=direction(historical.direction||historical.proposed_direction);
+    const savedDirection=direction(saved.proposed_direction||saved.direction);
+    const historicalDirection=direction(historical.proposed_direction||historical.direction);
+    const historicalCreated=historical.created_at?Date.parse(historical.created_at):NaN;
+    const historicalInWindow=Number.isFinite(historicalCreated)&&Number.isFinite(windowStart)&&Number.isFinite(windowEnd)&&historicalCreated>=windowStart&&historicalCreated<windowEnd;
+    const historicalFresh=!historical.is_stale&&(hasNum(historical.age_seconds)?Number(historical.age_seconds)<=maxAlertAge:true);
+    const linkedToCurrentAlert=currentAlert&&hasNum(cw.alert_id)&&hasNum(historical.external_signal_id)&&Number(cw.alert_id)===Number(historical.external_signal_id);
+    const historicalEvaluationMatchesAlert=hasNum(cw.alert_id)&&hasNum(historical.external_signal_id)
+      ?linkedToCurrentAlert:(historicalInWindow&&Boolean(historical.decision_status));
+    const linkedDirectionalEvaluation=currentAlert&&historicalFresh&&['BUY UP','BUY DOWN'].includes(historicalDirection)&&
+      historicalDirection===cwSide&&historicalEvaluationMatchesAlert;
+    const evaluatedSavedSignal=currentAlert&&createdInWindow&&savedFresh&&savedDirection===cwSide&&Boolean(saved.decision_status||saved.reasons?.length);
+    const evaluatedCurrentSignal=Boolean(linkedDirectionalEvaluation||evaluatedSavedSignal);
+    const currentAlertPending=currentAlert&&!evaluatedCurrentSignal&&!terminalProcessingStatus;
     const hasHistoricalDirection=Boolean(historical.created_at)&&['BUY UP','BUY DOWN'].includes(historicalDirection);
-    // A stale directional call remains visible as historical context. It is never
-    // relabeled current, and the separate current-window status continues to say WAIT.
+    // A stale directional call remains historical context. For the current window, prefer
+    // the saved row linked to this exact TradingView alert—even if its logged action is WAIT
+    // because the signal was vetoed or the entry quote was unavailable.
     const showHistorical=!evaluatedCurrentSignal&&!currentAlert&&hasHistoricalDirection;
-    const s=evaluatedCurrentSignal?saved:(showHistorical?historical:{});
+    const s=evaluatedCurrentSignal?(linkedDirectionalEvaluation?historical:saved):(showHistorical?historical:{});
     const hasDisplayedEvaluation=evaluatedCurrentSignal||showHistorical;
     const hasCurrentEvaluation=evaluatedCurrentSignal;
     const isHistorical=showHistorical;
@@ -536,10 +549,15 @@
       write('signal-meta',`Current-window evaluation · ${time(s.created_at)} · signal age ${age(ageSeconds)}`);
       setBadge('signal-age-badge',`Current · ${age(ageSeconds)}`,'green');
       write('signal-eyebrow','Latest evaluated signal · current window');
-    }else if(currentAlert){
-      write('signal-meta',`Fresh ${cwSide} alert received ${alertAge===null?'recently':age(alertAge)} · ${windowText} · waiting for its evaluation`);
+    }else if(currentAlertPending){
+      const waitHint=currentProcessingStatus==='waiting_for_orderbook'?' · waiting for Kalshi quotes':currentProcessingStatus==='waiting_for_market'?' · waiting for an eligible market':' · waiting for evaluation';
+      write('signal-meta',`Fresh ${cwSide} alert received ${alertAge===null?'recently':age(alertAge)} · ${windowText}${waitHint}`);
       setBadge('signal-age-badge','Current alert received','green');
       write('signal-eyebrow','Latest alert · evaluation pending');
+    }else if(currentAlert){
+      write('signal-meta',`Fresh ${cwSide} alert · worker status: ${String(cw.processing_status||'processed').replaceAll('_',' ')} · ${windowText}`);
+      setBadge('signal-age-badge','Alert status recorded','amber');
+      write('signal-eyebrow','Latest alert · processing status reported');
     }else if(isHistorical){
       write('signal-meta',`Recorded ${time(s.created_at)} · ${age(ageSeconds)} · HISTORICAL CONTEXT${decisionStatus?` · last decision: ${decisionStatus}`:''}`);
       setBadge('signal-age-badge',`Historical · ${age(ageSeconds)}`,'amber');
@@ -551,7 +569,8 @@
     }
     setBadge('signal-direction-badge',hasDisplayedEvaluation?side:(currentAlert?side:'No current alert'),
       hasCurrentEvaluation?(side.includes('DOWN')?'red':'green'):(currentAlert?(side.includes('DOWN')?'red':'green'):(isHistorical?'blue':'amber')));
-    write('signal-direction',hasCurrentEvaluation?side:(currentAlert?`${side} · AWAITING EVALUATION`:isHistorical?`${side} · HISTORICAL CONTEXT`:waitingLabel));
+    const directionStatusSuffix=currentAlertPending?' · AWAITING EVALUATION':(currentAlert&&!evaluatedCurrentSignal?` · ${String(cw.processing_status||'processed').replaceAll('_',' ').toUpperCase()}`:'');
+    write('signal-direction',hasCurrentEvaluation?side:(currentAlert?`${side}${directionStatusSuffix}`:isHistorical?`${side} · HISTORICAL CONTEXT`:waitingLabel));
     if($('signal-direction')) $('signal-direction').style.color=hasCurrentEvaluation||currentAlert?(side.includes('DOWN')?'var(--red)':'var(--green)'):(isHistorical?'var(--blue)':'var(--amber)');
     write('signal-decision-label',isHistorical?'Last directional call':currentAlert?'Current alert':'Current decision');
     write('decision-section-title',isHistorical?'Why the last directional call was evaluated this way':'Why the engine chose this');
@@ -569,8 +588,12 @@
         :low?`The internal evidence score (${score}/100) is below the ${threshold}/100 threshold.`
         :'Review market-data and risk checks before interpreting this as actionable.';
       summary=`${side} is the current-window evaluation from the configured ${source.toUpperCase()} signal path. ${lowScoreNote} This is paper-only and is not a measured probability of winning.`;
+    }else if(currentAlertPending){
+      const workerNote=String(cw.processing_note||cw.reason||'').trim();
+      summary=workerNote||`A fresh ${side} alert has arrived for the current 15-minute window. Its evaluation details are not available yet. The last evaluated call is kept separately as historical context and is not substituted into this current alert.`;
     }else if(currentAlert){
-      summary=`A fresh ${side} alert has arrived for the current 15-minute window. Its evaluation details are not available yet. The last evaluated call is kept separately as historical context and is not substituted into this current alert.`;
+      const workerNote=String(cw.processing_note||cw.reason||'').trim();
+      summary=`The worker recorded status “${String(cw.processing_status||'processed').replaceAll('_',' ')}” for this ${side} alert, but no matching detailed evaluation row is available to this panel. ${workerNote}`.trim();
     }else if(isHistorical){
       const finalDecision=decisionStatus?` The recorded outcome was “${decisionStatus}”.`:'';
       summary=`The most recent directional proposal was ${side}, recorded ${age(ageSeconds)} ago.${finalDecision} This is retained so you can inspect its original analysis, but it is NOT a new/current-window entry instruction. Current window status: ${String(cw.status||waitingLabel).replaceAll('_',' ')}.`;
@@ -601,10 +624,11 @@
     write('decision-age',hasDisplayedEvaluation?age(ageSeconds):(currentAlert&&alertAge!==null?age(alertAge):'No fresh current alert'));
     write('decision-score',score===null?'Not available':`${nfmt(score,0)}/100`);
     setBadge('decision-badge',hasCurrentEvaluation?'Current signal analyzed':currentAlert?'Evaluation pending':isHistorical?'Historical details retained':waitingLabel,hasCurrentEvaluation?'blue':currentAlert?'green':isHistorical?'amber':'amber');
-    setList('signal-reasons',hasDisplayedEvaluation?(Array.isArray(s.reasons)?s.reasons.map(formatReason):[]):[],hasDisplayedEvaluation?'No reasons were recorded.':currentAlert?'Current alert received; waiting for evaluation details.':'No directional evaluation has been recorded yet.');
-    setList('signal-warnings',hasDisplayedEvaluation?(s.warnings||[]):[],hasDisplayedEvaluation?'No warnings were recorded.':currentAlert?'Current evaluation warnings will appear when available.':'No directional-evaluation warnings are available yet.');
+    setList('signal-reasons',hasDisplayedEvaluation?(Array.isArray(s.reasons)?s.reasons.map(formatReason):[]):[],hasDisplayedEvaluation?'No reasons were recorded.':currentAlertPending?'Current alert received; waiting for evaluation details.':currentAlert?'Worker status was recorded; matching evaluation reasons are unavailable in the dashboard response.':'No directional evaluation has been recorded yet.');
+    setList('signal-warnings',hasDisplayedEvaluation?(s.warnings||[]):[],hasDisplayedEvaluation?'No warnings were recorded.':currentAlertPending?'Current evaluation warnings will appear when available.':currentAlert?'The worker status is available, but no matching evaluation warnings were returned.':'No directional-evaluation warnings are available yet.');
     if(hasCurrentEvaluation) write('decision-summary',s.disclaimer||'Current-window evaluation; not a measured probability of winning.');
-    else if(currentAlert) write('decision-summary','Fresh alert received for this window; its evaluation is pending. Historical details remain separate.');
+    else if(currentAlertPending) write('decision-summary','Fresh alert received for this window; its evaluation is pending. Historical details remain separate.');
+    else if(currentAlert) write('decision-summary',`Worker status: ${String(cw.processing_status||'processed').replaceAll('_',' ')}. ${cw.processing_note||'No matching detailed evaluation was returned.'}`);
     else if(isHistorical) write('decision-summary',`${s.disclaimer||'Stored decision context.'} This signal is historical and is not being reused as a new entry.`);
     else write('decision-summary','No current or historical directional details are available yet.');
     renderStrategies(hasDisplayedEvaluation?(s.strategies||{}):{});
@@ -707,14 +731,17 @@
     const windowStartMs=cw.window_start?Date.parse(cw.window_start):NaN;
     const windowEndMs=cw.window_end?Date.parse(cw.window_end):NaN;
     const lastEvalMs=lastEval.created_at?Date.parse(lastEval.created_at):NaN;
+    const lastSide=direction(lastEval.proposed_direction||lastEval.direction);
     const evalInThisWindow=Number.isFinite(lastEvalMs)&&
       (!Number.isFinite(windowStartMs)||lastEvalMs>=windowStartMs)&&
-      (!Number.isFinite(windowEndMs)||lastEvalMs<windowEndMs)&&
-      direction(lastEval.direction||lastEval.proposed_direction)===directionNow;
+      (!Number.isFinite(windowEndMs)||lastEvalMs<windowEndMs)&&lastSide===directionNow;
     const evaluatedStatus=String(lastEval.decision_status||'').toLowerCase();
-    const lastSide=direction(lastEval.proposed_direction||lastEval.direction);
-    const waitingForPrice=hasFreshAlert&&evalInThisWindow&&!lastEval.is_stale&&
-      evaluatedStatus==='wait_for_better_price'&&['BUY UP','BUY DOWN'].includes(lastSide)&&lastSide===directionNow;
+    const linkedToCurrentAlert=hasNum(cw.alert_id)&&hasNum(lastEval.external_signal_id)&&Number(cw.alert_id)===Number(lastEval.external_signal_id);
+    const evaluationMatchesAlert=hasNum(cw.alert_id)&&hasNum(lastEval.external_signal_id)?linkedToCurrentAlert:evalInThisWindow;
+    const terminalAlertStatus=Boolean(cw.processed_at)||['processed','paper_opened','vetoed','skipped','ignored','wait','blocked'].includes(String(cw.processing_status||'').toLowerCase());
+    const alreadyEvaluated=hasFreshAlert&&((!lastEval.is_stale&&Boolean(evaluatedStatus)&&
+      ['BUY UP','BUY DOWN'].includes(lastSide)&&lastSide===directionNow&&evaluationMatchesAlert)||terminalAlertStatus);
+    const waitingForPrice=alreadyEvaluated&&evaluatedStatus==='wait_for_better_price';
     const currentAsk=hasNum(lastEval.entry_ask_cents)?Number(lastEval.entry_ask_cents):null;
     const targetAsk=hasNum(data.risk?.entry_target_max_cents)?Number(data.risk.entry_target_max_cents):
       (hasNum(lastEval.preferred_entry_target_cents)?Number(lastEval.preferred_entry_target_cents):null);
@@ -730,9 +757,21 @@
       summary=`The indicator selected ${lastSide}. The current executable ask is ${currentAsk===null?'not available':cents(currentAsk)}${targetAsk===null?'':`; the preferred target is ${cents(targetAsk)} (soft preference)`}${hardCap===null?'':`; the hard entry cap is ${cents(hardCap)}`}. A quote above the preferred target can still enter if it is within the hard cap and all signal, market, and risk checks pass. This price-wait state applies only when the ask is above the hard cap; the alert must remain fresh and within this 15-minute window.`;
       badge='Waiting for better price';badgeTone='amber';
     }else if(hasFreshAlert&&!alreadyEvaluated){
-      status=`${directionNow} ALERT RECEIVED · EVALUATION PENDING`;
-      summary='A fresh alert is registered for this 15-minute window. It is not a trade confirmation: current market quotes, trend data, entry price, spread, signal freshness, and risk checks must still pass.';
-      badge='Alert received',badgeTone='green';
+      const workerStatus=String(cw.processing_status||'queued').toLowerCase();
+      const workerNote=String(cw.processing_note||cw.reason||'').trim();
+      if(workerStatus==='waiting_for_orderbook'){
+        status=`${directionNow} · WAITING FOR KALSHI QUOTE`;
+        summary=workerNote||'The alert is queued, but the worker cannot validate the candidate-side ask from the current order book yet.';
+        badge='Waiting for quote',badgeTone='amber';
+      }else if(workerStatus==='waiting_for_market'){
+        status=`${directionNow} · WAITING FOR MARKET`;
+        summary=workerNote||'The worker has not found a currently eligible 15-minute BTC market for this alert yet.';
+        badge='Waiting for market',badgeTone='amber';
+      }else{
+        status=`${directionNow} ALERT RECEIVED · EVALUATION PENDING`;
+        summary=workerNote||'A fresh alert is registered for this 15-minute window. It is not a trade confirmation: current market quotes, trend data, entry price, spread, signal freshness, and risk checks must still pass. If this remains queued, verify the Background Worker uses PAPER_SIGNAL_SOURCE=hybrid and the same DATABASE_URL as the Web Service.';
+        badge='Alert received',badgeTone='green';
+      }
     }else if(alreadyEvaluated){
       summary=`The current-window ${directionNow} alert has already been evaluated (${evaluatedStatus.replaceAll('_',' ')}). No position is currently open; the bot is waiting for the next fresh eligible signal and will not reuse this alert.`;
       badge='Signal already evaluated',badgeTone='amber';
@@ -974,7 +1013,13 @@
     write('next-worker-status',worker==='running'?'Worker running':worker==='stale'?'Heartbeat stale':'Worker not confirmed');
     write('next-last-signal',d.latest_signal?.created_at?time(d.latest_signal.created_at):'No saved signal');
     write('api-status',h.api_ok?'Healthy':'Check API');if($('api-status'))$('api-status').className='value '+(h.api_ok?'positive':'negative');
-    write('signal-source',({'hybrid':'TradingView primary + internal veto checks','gainzalgo':'TradingView / GainzAlgo','internal':'Internal rules only'})[String(h.signal_source||'').toLowerCase()]||h.signal_source||'Not reported');
+    const webSignalSource=String(h.signal_source||'unknown').toLowerCase();
+    const workerSignalSource=String(h.worker_signal_source||'unknown').toLowerCase();
+    const signalSourceLabel=({'hybrid':'TradingView primary + internal veto checks','gainzalgo':'TradingView / GainzAlgo','internal':'Internal rules only'})[webSignalSource]||webSignalSource;
+    const workerSourceLabel=({'hybrid':'hybrid','gainzalgo':'gainzalgo','internal':'internal'})[workerSignalSource]||workerSignalSource;
+    const sourcesMismatch=workerSignalSource!=='unknown'&&webSignalSource!==workerSignalSource;
+    write('signal-source',`${signalSourceLabel} · worker: ${workerSourceLabel}${sourcesMismatch?' — MISMATCH: worker and web service settings differ':''}`);
+    if($('signal-source')) $('signal-source').classList.toggle('warning-text',sourcesMismatch);
     write('trend-stop',h.trend_stop_enabled?(h.trend_stop_shadow_mode?'Enabled · shadow mode':'Enabled · simulated exits'):'Disabled');
     write('worker-last-action',h.worker_last_action||'—');write('worker-last-reason',h.worker_last_reason||'—');
     write('mode',d.mode==='SIMULATION_ONLY'?'SIMULATION ONLY':d.mode||'Unknown');write('real-orders-details',d.real_orders_enabled?'Enabled — investigate':'Disabled');write('database-backend',h.database_backend||'Unknown');

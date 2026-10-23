@@ -222,27 +222,42 @@ def _current_window_decision(alerts: list[dict[str, Any]], now: datetime | None 
             continue
 
         explicit_wait = direction == "WAIT"
+        processing_status = str(alert.get("processing_status") or "queued").strip().lower()
+        processing_note = str(alert.get("processing_note") or "").strip()
+        processed_at = alert.get("processed_at")
+        if explicit_wait:
+            reason = "The indicator explicitly reported WAIT. This is a status update only; no paper trade is opened from it."
+        elif processing_status in {"waiting_for_market", "waiting_for_orderbook"}:
+            reason = processing_note or (
+                "The worker has received the alert but is waiting for verified market data before completing evaluation."
+            )
+        elif processed_at and processing_status:
+            reason = f"The worker recorded processing status '{processing_status}'. " + (processing_note or "See the saved decision audit for the final reason.")
+        elif processing_status in {"queued", "pending", ""}:
+            reason = "TradingView alert received, but the worker has not yet recorded an evaluation status. Check that the Background Worker uses the same DATABASE_URL and PAPER_SIGNAL_SOURCE=hybrid."
+        else:
+            reason = processing_note or f"A fresh {direction} alert is available in the current 15-minute window. It still must pass all worker safety checks; receipt does not mean a trade was placed."
         return {
             "status": "WAIT THIS WINDOW" if explicit_wait else f"{direction} SIGNAL RECEIVED",
             "source": "indicator_wait" if explicit_wait else "fresh_directional_alert",
             "phase": "indicator_wait" if explicit_wait else "signal_received",
             "automatic_fallback": False,
             "direction": direction,
+            "alert_id": alert.get("id"),
             "alert_received_at": created.isoformat(),
             "alert_age_seconds": age_seconds,
             "symbol": alert.get("symbol"),
             "timeframe": alert.get("timeframe"),
+            "processing_status": processing_status,
+            "processing_note": processing_note or None,
+            "processed_at": processed_at,
             "window_start": window_start.isoformat(),
             "window_end": window_end.isoformat(),
             "window_elapsed_seconds": elapsed,
             "indicator_response_grace_seconds": grace_seconds,
             "indicator_grace_remaining_seconds": 0,
             "max_age_seconds": max_age,
-            "reason": (
-                "The indicator explicitly reported WAIT. This is a status update only; no paper trade is opened from it."
-                if explicit_wait else
-                f"A fresh {direction} alert is available in the current 15-minute window. It must still pass the worker's safety checks; receiving it does not mean a trade was placed."
-            ),
+            "reason": reason,
         }
 
     if not alert_mode:
@@ -360,6 +375,12 @@ def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | 
     fusion = payload.get("fusion")
     if not isinstance(fusion, dict):
         fusion = {}
+    external_signal = payload.get("external_signal") if isinstance(payload.get("external_signal"), dict) else {}
+    external_signal_id = external_signal.get("id", payload.get("external_signal_id"))
+    try:
+        external_signal_id = int(external_signal_id) if external_signal_id is not None else None
+    except (TypeError, ValueError, OverflowError):
+        external_signal_id = None
     chosen_direction = str(raw_direction or "").upper()
     proposed_text = str(proposed_direction or "").upper()
     if chosen_direction not in {"BUY_UP", "BUY_DOWN", "UP", "DOWN"} and proposed_text in {"UP", "DOWN", "BUY_UP", "BUY_DOWN"}:
@@ -383,6 +404,7 @@ def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | 
         trend_score_value = None
     return {
         "id": signal_id, "created_at": created_at, "market_ticker": ticker,
+        "external_signal_id": external_signal_id,
         "direction": chosen_direction or "WAIT", "logged_direction": raw_direction,
         "proposed_direction": proposed_text or None, "decision_status": decision_status or payload.get("decision_status"),
         "score": score_value, "btc_price": btc_price, "strike_price": strike,
@@ -679,6 +701,8 @@ def dashboard_data() -> dict[str, Any]:
             "worker_status": "running" if worker_is_fresh else ("stale" if worker_row else "not_observed"),
             "worker_last_seen_at": worker_row[0] if worker_row else None,
             "worker_last_seen_age_seconds": worker_age,
+            "worker_signal_source": worker_row[1] if worker_row else None,
+            "worker_mode": worker_row[2] if worker_row else None,
             "worker_last_action": worker_row[3] if worker_row else None,
             "worker_last_reason": worker_row[4] if worker_row else None,
             "signal_source": os.getenv("PAPER_SIGNAL_SOURCE", "internal").strip().lower(),
