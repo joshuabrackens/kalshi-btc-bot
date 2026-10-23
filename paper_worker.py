@@ -112,7 +112,10 @@ def _extract_market(raw: dict) -> dict | None:
     if status in {"settled", "finalized", "closed", "inactive"}:
         return None
     return {"raw": m, "ticker": str(ticker), "strike": strike, "seconds": seconds,
-            "yes_ask": _price(m, "yes", "ask"), "no_ask": _price(m, "no", "ask"),
+            # Summary asks can be inconsistent with a later order-book snapshot.
+            # Executable asks are derived from the corresponding current order book.
+            "market_summary_yes_ask": _price(m, "yes", "ask"),
+            "market_summary_no_ask": _price(m, "no", "ask"),
             "status": status, "title": title}
 
 
@@ -137,6 +140,23 @@ def _top_bid(book: dict, side: str) -> float | None:
             except (ValueError, TypeError, IndexError, OverflowError):
                 continue
     return max(values) if values else None
+
+
+def _best_quotes(book: dict) -> dict[str, float | None]:
+    """Normalize Kalshi's bid-only binary orderbook into best bid/implied ask prices.
+
+    Kalshi provides bid levels for YES and NO. A YES ask is 100 - best NO bid,
+    and a NO ask is 100 - best YES bid. Market-summary ask fields are not used
+    for simulated entry pricing because they may be inconsistent with the book.
+    """
+    yes_bid = _top_bid(book, "yes")
+    no_bid = _top_bid(book, "no")
+    return {
+        "yes_bid": yes_bid,
+        "no_bid": no_bid,
+        "yes_ask": (100.0 - no_bid) if no_bid is not None else None,
+        "no_ask": (100.0 - yes_bid) if yes_bid is not None else None,
+    }
 
 
 def _connect():
@@ -430,18 +450,22 @@ def _manage_open(conn) -> None:
                     if tp_enabled and tp_armed and reversal_enabled and fresh_candles and candle_ts != tp_last_reversal_ts and tp_target is not None and tp_target <= 100:
                         parsed_market = _extract_market(market_payload)
                         if parsed_market:
-                            yes_bid = _top_bid(orderbook, "yes")
-                            no_bid = _top_bid(orderbook, "no")
+                            quote = _best_quotes(orderbook)
+                            yes_bid, no_bid = quote["yes_bid"], quote["no_bid"]
+                            yes_ask, no_ask = quote["yes_ask"], quote["no_ask"]
                             spread_values = []
-                            if yes_bid is not None and parsed_market["yes_ask"] is not None:
-                                spread_values.append(parsed_market["yes_ask"] - yes_bid)
-                            if no_bid is not None and parsed_market["no_ask"] is not None:
-                                spread_values.append(parsed_market["no_ask"] - no_bid)
+                            if yes_bid is not None and yes_ask is not None:
+                                spread_values.append(yes_ask - yes_bid)
+                            if no_bid is not None and no_ask is not None:
+                                spread_values.append(no_ask - no_bid)
                             spread_now = max(spread_values) if len(spread_values) == 2 else None
+                            if yes_ask is None or no_ask is None or spread_now is None or spread_now < 0:
+                                log.warning("Paper trade %s reversal check skipped: invalid orderbook-derived quotes", trade_id)
+                                continue
                             reversal = evaluate_signal(
                                 fresh_candles["candles_1m"], fresh_candles["candles_5m"], fresh_candles["candles_15m"],
                                 MarketContext(strike_price=parsed_market["strike"], seconds_remaining=parsed_market["seconds"],
-                                              up_ask_cents=parsed_market["yes_ask"], down_ask_cents=parsed_market["no_ask"],
+                                              up_ask_cents=yes_ask, down_ask_cents=no_ask,
                                               spread_cents=spread_now, estimated_fee_cents=float(entry_fee)),
                                 minimum_score=int(_safe_float(os.getenv("PAPER_MINIMUM_SCORE", "65"), 65)),
                                 max_entry_cents=_safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92),
@@ -603,10 +627,11 @@ def run_once() -> dict[str, Any]:
             return {"action": "wait", "reason": "too little time remains for a fresh entry", "ticker": market["ticker"]}
 
         orderbook = get_orderbook(market["ticker"])
-        yes_bid, no_bid = _top_bid(orderbook, "yes"), _top_bid(orderbook, "no")
-        yes_ask, no_ask = market["yes_ask"], market["no_ask"]
+        quote = _best_quotes(orderbook)
+        yes_bid, no_bid = quote["yes_bid"], quote["no_bid"]
+        yes_ask, no_ask = quote["yes_ask"], quote["no_ask"]
         if any(x is None for x in (yes_ask, no_ask, yes_bid, no_bid)):
-            return {"action": "wait", "reason": "market/orderbook missing an explicit yes/no ask or bid", "ticker": market["ticker"]}
+            return {"action": "wait", "reason": "current orderbook is missing a usable YES/NO best bid to derive asks", "ticker": market["ticker"]}
         spread_values = [float(yes_ask) - float(yes_bid), float(no_ask) - float(no_bid)]
         spread = max(spread_values)
         if (not all(math.isfinite(v) for v in [float(yes_ask), float(no_ask), float(yes_bid), float(no_bid), spread])

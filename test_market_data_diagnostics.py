@@ -73,7 +73,46 @@ class MarketDataDiagnosticsTests(unittest.TestCase):
         self.assertEqual(kalshi["status"], "ok")
         self.assertEqual(kalshi["ticker"], self.ticker)
         self.assertEqual(kalshi["quotes"]["yes_bid_cents"], 52.0)
+        self.assertEqual(kalshi["quotes"]["yes_ask_cents"], 55.0)
+        self.assertEqual(kalshi["quotes"]["no_ask_cents"], 48.0)
         self.assertFalse(report["trade_placed"])
+
+    def test_uses_orderbook_derived_asks_when_summary_asks_are_crossed(self):
+        # Summary fields may be stale relative to the current orderbook. Kalshi's
+        # bid-only book is the source of truth for asks: ask = 100 - opposite bid.
+        self.market["yes_ask"] = 47
+        self.market["no_ask"] = 54
+        self.orderbook = {"orderbook_fp": {"yes": [[49, 100]], "no": [[50, 100]]}}
+        with patch("main.fetch_signal_candles", return_value=self.candles), \
+             patch("main.discover", return_value=self.discovery), \
+             patch("main.get_market", return_value={"market": self.market}), \
+             patch("main.get_orderbook", return_value=self.orderbook):
+            report = main._probe_market_data()
+        self.assertTrue(report["ready_for_evaluation"])
+        quotes = report["sources"]["kalshi_market"]["quotes"]
+        self.assertEqual(quotes["yes_bid_cents"], 49.0)
+        self.assertEqual(quotes["yes_ask_cents"], 50.0)
+        self.assertEqual(quotes["no_bid_cents"], 50.0)
+        self.assertEqual(quotes["no_ask_cents"], 51.0)
+        self.assertTrue(report["sources"]["kalshi_market"]["market_summary_asks_differ_from_orderbook"])
+
+    def test_candle_age_is_reported_since_close_not_open(self):
+        # The timestamp from Binance's candle feed represents candle OPEN time.
+        now = datetime.now(timezone.utc)
+        candles = {
+            "candles_1m": pd.DataFrame([{"timestamp": (now - timedelta(seconds=120)).isoformat(), "close": 81234.5, "volume": 9.0}]),
+            "candles_5m": pd.DataFrame([{"timestamp": (now - timedelta(seconds=360)).isoformat(), "close": 81234.5, "volume": 9.0}]),
+            "candles_15m": pd.DataFrame([{"timestamp": (now - timedelta(seconds=1200)).isoformat(), "close": 81234.5, "volume": 9.0}]),
+        }
+        with patch("main.fetch_signal_candles", return_value=candles), \
+             patch("main.discover", return_value={"candidate_count": 0, "candidates": []}):
+            report = main._probe_market_data()
+        intervals = report["sources"]["btc_candles"]["intervals"]
+        # Approximate elapsed time after each candle's close: 120-60, 360-300, 1200-900.
+        self.assertAlmostEqual(intervals["1m"]["age_seconds"], 60, delta=2)
+        self.assertAlmostEqual(intervals["5m"]["age_seconds"], 60, delta=2)
+        self.assertAlmostEqual(intervals["15m"]["age_seconds"], 300, delta=2)
+        self.assertIn("latest_candle_open_at", intervals["15m"])
 
     def test_missing_current_market_fails_closed_in_diagnostic(self):
         with patch("main.fetch_signal_candles", return_value=self.candles), \

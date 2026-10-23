@@ -667,7 +667,13 @@ def _probe_market_data() -> dict[str, Any]:
             if latest_at is None:
                 intervals[interval] = {"status": "error", "reason": "latest candle timestamp is invalid or lacks timezone"}
                 continue
-            age = max(0.0, (datetime.now(timezone.utc) - latest_at).total_seconds())
+            # candle_feed timestamps are Binance candle OPEN times, not close times.
+            # Derive approximate close time so displayed age matches real freshness.
+            interval_seconds = {"1m": 60, "5m": 300, "15m": 900}[interval]
+            latest_close_at = latest_at + timedelta(seconds=interval_seconds)
+            now_at_check = datetime.now(timezone.utc)
+            age_since_close = max(0.0, (now_at_check - latest_close_at).total_seconds())
+            age_since_open = max(0.0, (now_at_check - latest_at).total_seconds())
             try:
                 close_price = float(frame["close"].iloc[-1])
             except (TypeError, ValueError, OverflowError):
@@ -675,13 +681,16 @@ def _probe_market_data() -> dict[str, Any]:
             if close_price is None or not pd.notna(close_price) or close_price <= 0:
                 intervals[interval] = {"status": "error", "reason": "latest candle close is invalid"}
                 continue
-            # The feed returns completed candles, so age up to ~2 intervals can be normal.
+            # Match candle_feed's closed-candle stale guard (two intervals plus a small buffer).
             max_age = {"1m": 130.0, "5m": 610.0, "15m": 1810.0}[interval]
             intervals[interval] = {
-                "status": "ok" if age <= max_age else "stale",
-                "latest_closed_candle_at": latest_at.isoformat(),
-                "age_seconds": round(age, 2),
+                "status": "ok" if age_since_close <= max_age else "stale",
+                "latest_candle_open_at": latest_at.isoformat(),
+                "approximate_candle_close_at": latest_close_at.isoformat(),
+                "age_seconds": round(age_since_close, 2),
+                "seconds_since_candle_open": round(age_since_open, 2),
                 "close_price": round(close_price, 4),
+                "max_age_seconds": max_age,
             }
         candles_ok = bool(intervals) and all(item.get("status") == "ok" for item in intervals.values())
         candles_source = {"provider": "Binance public REST", "status": "ok" if candles_ok else "degraded",
@@ -712,23 +721,46 @@ def _probe_market_data() -> dict[str, Any]:
                 kalshi_source.update({"status": "not_ready", "reason": "Detailed market response did not pass the same current-window checks."})
             else:
                 book = get_orderbook(selected["ticker"])
-                yes_ask = _diagnostic_price_cents(market, "yes", "ask")
-                no_ask = _diagnostic_price_cents(market, "no", "ask")
+                # Kalshi's orderbook exposes bids on YES and NO, not direct asks.
+                # Derive asks from the opposite-side best bid to avoid mixing a
+                # potentially stale market-summary ask with the current order book.
                 yes_bid = _diagnostic_top_bid(book, "yes")
                 no_bid = _diagnostic_top_bid(book, "no")
+                yes_ask = (100.0 - no_bid) if no_bid is not None else None
+                no_ask = (100.0 - yes_bid) if yes_bid is not None else None
                 quotes = {"yes_bid_cents": yes_bid, "yes_ask_cents": yes_ask,
                           "no_bid_cents": no_bid, "no_ask_cents": no_ask}
                 quotes_complete = all(value is not None for value in quotes.values())
-                quotes_valid = quotes_complete and yes_bid <= yes_ask and no_bid <= no_ask and 0 < yes_ask < 100 and 0 < no_ask < 100
+                quotes_valid = bool(
+                    quotes_complete
+                    and 0 < yes_bid < 100 and 0 < no_bid < 100
+                    and 0 < yes_ask < 100 and 0 < no_ask < 100
+                    and yes_bid <= yes_ask and no_bid <= no_ask
+                )
+                summary_yes_ask = _diagnostic_price_cents(market, "yes", "ask")
+                summary_no_ask = _diagnostic_price_cents(market, "no", "ask")
+                summary_differs = (
+                    summary_yes_ask is not None and yes_ask is not None and abs(summary_yes_ask - yes_ask) > 1.0
+                ) or (
+                    summary_no_ask is not None and no_ask is not None and abs(summary_no_ask - no_ask) > 1.0
+                )
                 kalshi_source.update({
                     "status": "ok" if quotes_valid else "degraded",
                     "ticker": selected["ticker"], "title": detail_candidate["title"],
                     "strike_price": detail_candidate["strike_price"],
                     "close_time": detail_candidate["close_time"],
                     "seconds_remaining": detail_candidate["seconds_remaining"],
+                    "quote_source": "current orderbook bids; asks derived as 100 minus opposite-side best bid",
                     "quotes": quotes,
+                    "market_summary_asks_cents": {"yes_ask_cents": summary_yes_ask, "no_ask_cents": summary_no_ask},
+                    "market_summary_asks_differ_from_orderbook": bool(summary_differs),
                     "quotes_valid": bool(quotes_valid),
-                    "reason": None if quotes_valid else "At least one quote is missing, invalid, or crossed.",
+                    "reason": (
+                        "Orderbook-derived quotes are valid; market summary asks differ and are ignored."
+                        if quotes_valid and summary_differs else
+                        None if quotes_valid else
+                        "Orderbook is missing usable best bids or implied asks are invalid/crossed."
+                    ),
                 })
     except Exception as exc:
         kalshi_source["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
