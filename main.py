@@ -337,7 +337,6 @@ def _aggregate_strategy_performance(rows: list[tuple[Any, ...]]) -> list[dict[st
     return result
 
 
-@app.get("/api/dashboard")
 def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | None:
     """Normalize a persisted signal row for history/position-context display."""
     if not row:
@@ -405,6 +404,7 @@ def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | 
     }
 
 
+@app.get("/api/dashboard")
 def dashboard_data() -> dict[str, Any]:
     with db_connect() as conn:
         totals = conn.execute(

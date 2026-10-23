@@ -30,6 +30,12 @@ def test_read_only_routes_work_and_manual_writes_are_disabled_by_default():
         with patch.dict(os.environ, env, clear=False):
             with TestClient(main.app) as client:
                 assert client.get("/health").status_code == 200
+                dashboard_response = client.get("/api/dashboard")
+                assert dashboard_response.status_code == 200, dashboard_response.text
+                dashboard_data = dashboard_response.json()
+                assert dashboard_data["mode"] == "SIMULATION_ONLY"
+                assert "current_window_decision" in dashboard_data
+                assert "active_position" in dashboard_data
                 assert client.get("/api/category-readiness").json()["current_active_strategy"] == "btc_15m"
                 assert client.get("/api/analytics").json()["mode"] == "SIMULATION_ONLY"
                 denied_open = client.post("/paper/open", json={
