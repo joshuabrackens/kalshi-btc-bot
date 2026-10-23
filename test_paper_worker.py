@@ -147,7 +147,7 @@ class WorkerSafetyTests(unittest.TestCase):
                 "PAPER_TREND_STOP_LOSS_ENABLED": "false",
                 "PAPER_TREND_STOP_SHADOW_MODE": "false",
             }):
-                w._manage_open(conn, 10.0)
+                w._manage_open(conn)
             trade = conn.execute(
                 "SELECT settled_at, outcome, pnl_cents FROM paper_trades"
             ).fetchone()
@@ -200,7 +200,7 @@ class WorkerSafetyTests(unittest.TestCase):
                 "PAPER_EXIT_FEE_CENTS_PER_CONTRACT": "2.0",
             }), patch.object(w, "fetch_closed_candles", return_value=frame), \
                  patch.object(w, "update_trend_stop", return_value=fake_update) as update_mock:
-                w._manage_open(conn, 10.0)
+                w._manage_open(conn)
 
             update_mock.assert_called_once()
             row = conn.execute(
