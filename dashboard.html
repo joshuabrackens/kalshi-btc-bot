@@ -4,368 +4,444 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>BTC Practice Bot — Paper Trading Dashboard</title>
+  <title>BTC Engine | Paper Trading</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg:#0b1322; --surface:#183b60; --surface-soft:#214c75;
-      --line:#47759b; --text:#f4f8ff; --muted:#d0e0ef;
-      --blue:#b9ddff; --blue-soft:#1d527e; --green:#72efae; --green-soft:#174c42;
-      --red:#ff9eaa; --red-soft:#542c43; --amber:#ffda87; --amber-soft:#574624;
-      --shadow:0 10px 28px rgba(0,0,0,.22);
+      --bg:#101a2c; --bg2:#152942; --panel:#1c4269; --panel2:#22517c;
+      --panel-deep:#173752; --line:#477ba3; --text:#f4f8ff; --muted:#c8d9eb;
+      --blue:#b9dcff; --green:#6ce6a2; --green-bg:#1a5947; --red:#ff9eaa;
+      --red-bg:#5b2d40; --amber:#ffdb87; --amber-bg:#5a4827;
+      --shadow:0 9px 25px rgba(0,0,0,.19);
     }
-    * { box-sizing:border-box; }
-    body { margin:0; background:radial-gradient(ellipse at top left,#182b45 0%,var(--bg) 58%); color:var(--text); font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    header { background:linear-gradient(115deg,#174a83 0%,#164c70 52%,#173c52 100%); border-bottom:1px solid var(--line); padding:22px clamp(16px,4vw,38px); }
-    .header-inner, main { max-width:1180px; margin:0 auto; }
-    .header-inner { display:flex; gap:16px; justify-content:space-between; align-items:center; flex-wrap:wrap; }
-    h1 { margin:0; font-size:clamp(25px,4vw,34px); line-height:1.2; letter-spacing:-.03em; }
-    h2 { font-size:21px; line-height:1.3; margin:0 0 9px; letter-spacing:-.02em; }
-    h3 { font-size:15px; margin:0 0 7px; }
-    p { margin:0; }
-    .subtitle { margin-top:7px; color:var(--muted); font-size:15px; }
-    main { padding:22px clamp(12px,3vw,26px) 42px; }
-    .section { margin-top:18px; }
-    .section-head { margin-bottom:12px; }
-    .section-desc, .muted { color:var(--muted); }
-    .section-desc { font-size:14px; margin-top:4px; }
-    .card { min-width:0; background:linear-gradient(145deg,rgba(42,100,151,.96),rgba(25,65,100,.98)); border:1px solid var(--line); border-radius:16px; padding:19px; box-shadow:var(--shadow); }
-    .grid { display:grid; gap:13px; grid-template-columns:repeat(4,minmax(0,1fr)); }
-    .two-col { display:grid; gap:14px; grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr); }
-    .metric-label { color:var(--muted); font-size:14px; font-weight:650; }
-    .metric-value { font-size:clamp(25px,3.3vw,34px); line-height:1.15; font-weight:800; letter-spacing:-.035em; margin-top:7px; overflow-wrap:anywhere; }
-    .metric-note { margin-top:8px; font-size:13px; color:var(--muted); }
-    .badge { display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:999px; padding:6px 11px; font-size:13px; font-weight:750; border:1px solid var(--line); background:var(--surface-soft); color:var(--text); }
-    .badge::before { content:""; width:8px; height:8px; border-radius:50%; background:currentColor; }
-    .good { color:var(--green)!important; background:var(--green-soft)!important; border-color:#285d43!important; }
-    .bad { color:var(--red)!important; background:var(--red-soft)!important; border-color:#71323d!important; }
-    .wait { color:var(--amber)!important; background:var(--amber-soft)!important; border-color:#6d542b!important; }
-    .blue { color:var(--blue)!important; background:var(--blue-soft)!important; border-color:#2f4c77!important; }
-    .hero { border-width:2px; }
-    .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; }
-    .hero-status { display:flex; align-items:center; gap:8px; font-size:clamp(23px,3.8vw,31px); font-weight:850; letter-spacing:-.025em; margin:14px 0 8px; }
-    .hero-copy { max-width:800px; font-size:16px; }
-    .small-line { color:var(--muted); font-size:13px; margin-top:11px; }
-    .alert-direction { font-size:30px; font-weight:850; line-height:1.1; letter-spacing:-.03em; }
-    .alert-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:17px; }
-    .current-summary { margin-top:17px; }
-    .current-summary .detail-box .value { font-size:17px; }
-    .detail-box { border:1px solid rgba(167,205,235,.32); border-radius:11px; padding:11px 12px; background:rgba(13,39,67,.28); min-width:0; }
-    .detail-box .label { font-size:12px; text-transform:uppercase; letter-spacing:.045em; color:var(--muted); font-weight:700; }
-    .detail-box .value { font-size:18px; font-weight:760; margin-top:4px; overflow-wrap:anywhere; }
-    .detail-box .help { color:var(--muted); font-size:12px; margin-top:3px; }
-    .plain-list { margin:0; padding-left:22px; }
-    .plain-list li { margin:6px 0; }
-    .explain-box { padding:13px 14px; border-radius:12px; background:rgba(14,45,76,.42); border:1px solid #6ba6d1; margin-top:12px; }
-    .explain-box strong { display:block; margin-bottom:3px; }
-    .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; }
-    table { border-collapse:collapse; width:100%; min-width:650px; background:rgba(21,61,96,.94); font-size:14px; }
-    th,td { text-align:left; vertical-align:top; padding:12px 11px; border-bottom:1px solid var(--line); }
-    th { background:#19466c; color:#edf6ff; font-size:12px; text-transform:uppercase; letter-spacing:.045em; font-weight:750; }
-    tr:last-child td { border-bottom:0; }
-    td { overflow-wrap:anywhere; }
-    .empty { color:var(--muted); padding:18px; }
-    .green-text { color:var(--green); } .red-text { color:var(--red); } .amber-text { color:var(--amber); } .blue-text { color:var(--blue); }
-    .inline-note { color:var(--muted); font-size:13px; margin-top:10px; }
-    .kv { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-    .kv .detail-box .value { font-size:16px; }
-    details { border:1px solid var(--line); border-radius:12px; background:var(--surface-soft); padding:13px 15px; }
-    details + details { margin-top:10px; }
-    summary { cursor:pointer; font-weight:750; }
-    summary:focus-visible, a:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
-    .glossary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; margin-top:12px; }
-    .glossary-item { background:rgba(22,61,96,.92); border:1px solid var(--line); border-radius:11px; padding:12px; }
-    .glossary-item strong { display:block; margin-bottom:4px; }
-    .glossary-item p { color:var(--muted); font-size:14px; }
-    pre { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-size:12px; }
-    footer { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; color:var(--muted); font-size:13px; }
-    .refresh { font-size:13px; color:var(--muted); }
-    @media (max-width:900px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .two-col { grid-template-columns:1fr; } }
-    @media (max-width:560px) { body { font-size:15px; } header { padding:18px 14px; } main { padding:14px 10px 28px; } .card { padding:14px; border-radius:13px; } .grid { gap:9px; } .metric-value { font-size:25px; } .alert-summary,.glossary { grid-template-columns:1fr; } .alert-direction { font-size:26px; } .kv { grid-template-columns:1fr 1fr; } .badge { white-space:normal; text-align:center; } }
-    .section-head h2 { margin-bottom:5px; }
-    .section-head .section-desc { max-width:78ch; }
-    .card { box-shadow:var(--shadow); }
-    .hero { background:linear-gradient(120deg,#204f86 0%,#1a5576 58%,#17485d 100%); }
-    .metric-value, .detail-box .value { font-variant-numeric:tabular-nums; }
-    .metric-card-accent { border-top:3px solid #354a69; }
-    .metric-card-accent.pnl { border-top-color:#6fe0a4; }
-    .metric-card-accent.rate { border-top-color:#9bbcff; }
-    .metric-card-accent.open { border-top-color:#ffd27d; }
-    .metric-card-accent.worker { border-top-color:#6fe0a4; }
-    a { color:var(--blue); }
-    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior:auto!important; animation-duration:.01ms!important; transition-duration:.01ms!important; } }
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{margin:0;background:radial-gradient(ellipse at 10% 0%,#1b3554 0%,var(--bg) 56%);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    header{background:linear-gradient(115deg,#164c87 0%,#175477 57%,#174555 100%);border-bottom:1px solid var(--line);padding:18px clamp(14px,4vw,38px)}
+    .wrap{max-width:1260px;margin:0 auto}
+    .brandline{display:flex;gap:12px;align-items:center;min-width:0}
+    .brandmark{width:38px;height:38px;display:grid;place-items:center;border-radius:12px;background:linear-gradient(145deg,#78c4ff,#5d9de5);color:#102b48;font-size:21px;font-weight:900;box-shadow:inset 0 1px 0 #d3ecff}
+    .brandname{font-weight:850;letter-spacing:.035em;font-size:17px;line-height:1.1}
+    .brandtag{font-size:12px;color:#d5e9f9;margin-top:4px}
+    .header-row{display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}
+    .header-badges{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+    .top-pill,.badge{display:inline-flex;align-items:center;gap:7px;border:1px solid #5a8db3;border-radius:999px;padding:6px 10px;background:rgba(10,37,63,.28);font-size:11px;font-weight:800;letter-spacing:.035em;white-space:normal}
+    .top-pill::before,.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+    .green{color:var(--green)!important;background:var(--green-bg)!important;border-color:#36765c!important}
+    .red{color:var(--red)!important;background:var(--red-bg)!important;border-color:#8a4555!important}
+    .amber{color:var(--amber)!important;background:var(--amber-bg)!important;border-color:#816538!important}
+    .blue{color:var(--blue)!important;background:#204f79!important;border-color:#3e7099!important}
+    main{max-width:1260px;margin:0 auto;padding:22px clamp(12px,2.8vw,28px) 40px}
+    .intro{margin:14px 0 18px}
+    .eyebrow{font-size:11px;font-weight:850;letter-spacing:.17em;text-transform:uppercase;color:#9acbfa}
+    h1{font-size:clamp(27px,4vw,39px);letter-spacing:-.045em;line-height:1.1;margin:7px 0 8px}
+    h2{font-size:20px;line-height:1.25;letter-spacing:-.025em;margin:0 0 8px}
+    h3{font-size:15px;line-height:1.3;margin:0 0 8px}
+    p{margin:0}
+    .subtitle{color:var(--muted);max-width:80ch}
+    .section{margin-top:17px}
+    .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:11px}
+    .section-desc{font-size:13px;color:var(--muted);margin-top:3px;max-width:85ch}
+    .card{min-width:0;background:linear-gradient(145deg,rgba(37,91,137,.98),rgba(25,64,99,.98));border:1px solid var(--line);border-radius:15px;padding:17px;box-shadow:var(--shadow)}
+    .grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px}
+    .grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+    .grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}
+    .card-titleline{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:13px}
+    .card-kicker{color:#d5e6f6;font-size:11px;font-weight:850;letter-spacing:.06em;text-transform:uppercase}
+    .big-line{font-size:clamp(22px,2.7vw,31px);font-weight:850;letter-spacing:-.035em;line-height:1.15;margin:7px 0 5px;overflow-wrap:anywhere}
+    .metric{font-size:clamp(25px,3.2vw,34px);font-weight:850;letter-spacing:-.04em;line-height:1.1;font-variant-numeric:tabular-nums}
+    .muted{color:var(--muted)}.small{font-size:12px;color:var(--muted)}
+    .rule{height:1px;background:rgba(185,220,255,.22);margin:12px 0}
+    .rowline{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid rgba(185,220,255,.12)}
+    .rowline:last-child{border-bottom:0}
+    .rowline .label{font-size:12px;color:var(--muted)}.rowline .value{text-align:right;font-size:12px;font-weight:750;overflow-wrap:anywhere;max-width:65%}
+    .mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}
+    .mini{min-width:0;border:1px solid rgba(183,214,241,.28);background:rgba(13,40,66,.24);border-radius:10px;padding:10px 11px}
+    .mini .label{font-size:10px;color:var(--muted);font-weight:850;text-transform:uppercase;letter-spacing:.06em}
+    .mini .value{font-size:16px;font-weight:800;line-height:1.25;margin-top:4px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+    .mini .help{font-size:11px;color:var(--muted);margin-top:4px}
+    .accent-green{border-top:3px solid #59df9a}.accent-blue{border-top:3px solid #95baf9}.accent-amber{border-top:3px solid #ffd27e}.accent-red{border-top:3px solid #ff8b9b}
+    .hero{background:linear-gradient(118deg,#20548d 0%,#1e5a7c 56%,#16485f 100%);border-width:2px;padding:19px}
+    .hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+    .hero-title{font-size:clamp(27px,4vw,38px);font-weight:900;letter-spacing:-.045em;line-height:1.1;margin:11px 0 7px}
+    .hero-copy{max-width:90ch;color:#e0eefb}
+    .progress{height:8px;border-radius:999px;background:rgba(8,28,50,.65);overflow:hidden;margin-top:10px;border:1px solid rgba(194,220,244,.15)}
+    .progress>span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#73e6a5,#8dd0ff);width:0;transition:width .25s ease}
+    .reason-list{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+    .reason-list li{padding:8px 10px;border-radius:9px;background:rgba(13,39,65,.22);border:1px solid rgba(178,215,244,.17);font-size:12px;color:#e4effa;overflow-wrap:anywhere}
+    .reason-list li::before{content:"•";color:#9ad1ff;font-weight:900;margin-right:8px}
+    .two-col{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:13px}
+    .strategy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .strategy{min-width:0;border:1px solid rgba(183,214,241,.3);border-radius:11px;padding:12px;background:rgba(13,40,66,.24)}
+    .strategy-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:7px}
+    .strategy-head strong{font-size:13px}
+    .strategy p{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+    .strategy .tag{border-radius:999px;padding:3px 7px;background:#1d5a74;color:#d3edff;font-size:10px;font-weight:800;white-space:nowrap}
+    .notice{background:rgba(18,64,94,.6);border:1px solid #4a92bf;border-radius:10px;padding:11px 12px;color:#e0effc;font-size:12px;margin-top:12px}
+    .notice strong{color:white}
+    .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:11px;background:rgba(18,51,80,.65)}
+    table{border-collapse:collapse;width:100%;min-width:760px;font-size:12px}
+    th,td{text-align:left;vertical-align:top;padding:10px 10px;border-bottom:1px solid rgba(119,165,201,.23)}
+    th{position:sticky;top:0;background:#18486f;color:#ecf6ff;text-transform:uppercase;font-size:10px;letter-spacing:.06em;font-weight:850;white-space:nowrap}
+    tbody tr:hover{background:rgba(122,181,224,.07)}tbody tr:last-child td{border-bottom:0}
+    td{overflow-wrap:anywhere;color:#e7f1fb}.positive{color:var(--green)!important}.negative{color:var(--red)!important}.warning-text{color:var(--amber)!important}
+    .empty{padding:15px;color:var(--muted);text-align:center}
+    details{border:1px solid var(--line);border-radius:12px;background:rgba(28,72,110,.78);padding:14px 15px}
+    details+details{margin-top:10px}summary{cursor:pointer;font-weight:800;font-size:14px}summary:focus-visible,button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}
+    .settings-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:13px}
+    .footer{color:var(--muted);border-top:1px solid var(--line);padding-top:15px;margin-top:22px;font-size:12px}
+    .refresh-btn{cursor:pointer;border:1px solid #6093bb;background:#1c4d73;color:#f2f8ff;font:inherit;font-size:12px;font-weight:800;padding:7px 11px;border-radius:9px}
+    .refresh-btn:hover{background:#285d87}
+    .statusline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .nowrap{white-space:nowrap}.right{text-align:right}
+    @media(max-width:950px){.grid-3{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-3>.card:last-child{grid-column:1/-1}.grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}.two-col{grid-template-columns:1fr}}
+    @media(max-width:620px){body{font-size:14px}.brandmark{width:34px;height:34px}.header-badges{justify-content:flex-start}.grid-3,.grid-2,.grid-4,.strategy-grid{grid-template-columns:1fr}.grid-3>.card:last-child{grid-column:auto}.card{padding:13px;border-radius:12px}.hero{padding:14px}.mini-grid,.settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}main{padding:15px 10px 28px}.metric{font-size:28px}.big-line{font-size:25px}.mini .value{font-size:15px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{transition:none!important}}
   </style>
 </head>
 <body>
 <header>
-  <div class="header-inner">
-    <div>
-      <h1>BTC Practice Bot</h1>
-      <p class="subtitle">A simple guide to what the bot is seeing and doing. This is simulated trading — no real orders are placed.</p>
+  <div class="wrap header-row">
+    <div class="brandline">
+      <div class="brandmark" aria-hidden="true">B</div>
+      <div><div class="brandname">BTC ENGINE</div><div class="brandtag">Kalshi 15-minute · paper execution</div></div>
     </div>
-    <div id="connection-badge" class="badge wait" role="status" aria-live="polite">Connecting to dashboard…</div>
+    <div class="header-badges">
+      <span class="top-pill green" id="paper-badge">PAPER MODE ONLY</span>
+      <span class="top-pill" id="updated-pill">Updating…</span>
+      <span class="badge wait" id="connection-badge" role="status" aria-live="polite">Connecting…</span>
+    </div>
   </div>
 </header>
 <main>
-  <section class="card hero section" aria-live="polite">
+  <section class="intro">
+    <div class="eyebrow">Engine overview / trading journal</div>
+    <h1>Your engine. One clear view.</h1>
+    <p class="subtitle">Signals, simulated positions, realized results, market-data health, and safety limits — all in one readable dashboard.</p>
+  </section>
+
+  <section class="grid-3" aria-label="Engine overview">
+    <article class="card accent-green">
+      <div class="card-titleline"><h2>Engine connection</h2><span class="badge wait" id="engine-badge">Checking</span></div>
+      <div class="big-line" id="engine-status">Connecting…</div>
+      <p class="small" id="engine-updated">Checking API and worker heartbeat.</p>
+      <div class="rule"></div>
+      <div class="rowline"><span class="label">Paper worker</span><span class="value" id="worker-enabled">Checking</span></div>
+      <div class="rowline"><span class="label">Last heartbeat</span><span class="value" id="worker-heartbeat">—</span></div>
+      <div class="rowline"><span class="label">Last action</span><span class="value" id="worker-action">—</span></div>
+      <div class="rowline"><span class="label">Kalshi API</span><span class="value" id="kalshi-status">Checking</span></div>
+      <div class="rowline"><span class="label">Real orders</span><span class="value positive" id="real-orders">Disabled</span></div>
+    </article>
+
+    <article class="card accent-green">
+      <div class="card-titleline"><h2>Realized P&amp;L</h2><span class="badge blue">After recorded fees</span></div>
+      <div class="metric" id="pnl">—</div>
+      <p class="small">Cumulative result from settled paper trades.</p>
+      <div class="rule"></div>
+      <div class="rowline"><span class="label">Win rate</span><span class="value" id="win-rate">—</span></div>
+      <div class="rowline"><span class="label">Settled trades</span><span class="value" id="settled-trades">—</span></div>
+      <div class="rowline"><span class="label">Wins / losses</span><span class="value" id="wins-losses">—</span></div>
+      <div class="rowline"><span class="label">All trades recorded</span><span class="value" id="total-trades">—</span></div>
+      <p class="small" style="margin-top:10px">Historical performance describes the sample so far; it is not a forecast for the next signal.</p>
+    </article>
+
+    <article class="card accent-amber">
+      <div class="card-titleline"><h2>Risk limits</h2><span class="badge green">Guardrails</span></div>
+      <div class="rowline"><span class="label">Max cost / trade</span><span class="value" id="max-trade">—</span></div>
+      <div class="rowline"><span class="label">Daily loss limit</span><span class="value" id="daily-loss-limit">—</span></div>
+      <div class="rowline"><span class="label">Open exposure</span><span class="value" id="exposure">—</span></div>
+      <div class="rowline"><span class="label">Open positions</span><span class="value" id="open-positions">—</span></div>
+      <div class="notice"><strong>Safety lock:</strong> This dashboard is read-only. It cannot place, close, or enable real orders.</div>
+    </article>
+  </section>
+
+  <section class="section card hero" aria-label="Latest evaluated signal">
     <div class="hero-top">
+      <div><div class="eyebrow">Latest evaluated signal</div><h2 id="signal-market" style="margin-top:7px">Waiting for signal data</h2><p class="small" id="signal-meta">The latest saved signal will appear here.</p></div>
+      <div class="statusline"><span class="badge wait" id="signal-age-badge">Checking freshness</span><span class="badge blue" id="signal-direction-badge">No direction yet</span></div>
+    </div>
+    <div class="grid-2" style="margin-top:15px">
       <div>
-        <h2>Current signal</h2>
-        <p class="muted" id="current-time-line">Checking the active 15-minute window…</p>
+        <div class="card-kicker">Current decision</div>
+        <div class="hero-title" id="signal-direction">WAITING FOR SIGNAL</div>
+        <p class="hero-copy" id="signal-summary">The dashboard is checking the saved signal and current window.</p>
+        <div class="mini-grid">
+          <div class="mini"><div class="label">BTC price</div><div class="value" id="btc-price">—</div></div>
+          <div class="mini"><div class="label">Strike price</div><div class="value" id="strike-price">—</div></div>
+          <div class="mini"><div class="label">Distance from strike</div><div class="value" id="distance-strike">—</div></div>
+          <div class="mini"><div class="label">Time remaining at signal</div><div class="value" id="seconds-remaining">—</div></div>
+          <div class="mini"><div class="label">Entry ask</div><div class="value" id="entry-ask">—</div></div>
+          <div class="mini"><div class="label">Max entry limit</div><div class="value" id="max-entry-cents">—</div></div>
+        </div>
       </div>
-      <span id="current-status-badge" class="badge wait">WAIT THIS WINDOW</span>
-    </div>
-    <div id="current-status-title" class="hero-status amber-text">WAIT THIS WINDOW</div>
-    <p id="current-status-explanation" class="hero-copy">No fresh UP or DOWN alert is available yet. Older signals are never reused as the current signal.</p>
-    <div class="alert-summary current-summary">
-      <div class="detail-box"><div class="label">Current 15-minute window</div><div class="value" id="current-window-value">Checking…</div><div class="help">Times shown in your local timezone</div></div>
-      <div class="detail-box"><div class="label">Indicator response</div><div class="value" id="indicator-response-value">Allowing up to 3 minutes</div><div class="help" id="indicator-response-help">Waiting for the indicator's current decision</div></div>
-      <div class="detail-box"><div class="label">Current alert</div><div class="value" id="current-alert-value">No fresh alert yet</div><div class="help" id="current-alert-help">Old alerts are history only</div></div>
-    </div>
-    <p id="current-status-next" class="small-line">The dashboard refreshes every five seconds and will show a new direction when a fresh alert arrives.</p>
-  </section>
-
-  <section class="section" aria-label="Practice results">
-    <div class="section-head"><h2>Your practice results</h2><p class="section-desc">These numbers summarize paper trades recorded in the journal. They are not a prediction of future results.</p></div>
-    <div class="grid">
-      <div class="card metric-card-accent pnl"><div class="metric-label">Net practice profit / loss</div><div class="metric-value" id="pnl">—</div><div class="metric-note">Combined result of settled practice trades, after recorded fees.</div></div>
-      <div class="card metric-card-accent rate"><div class="metric-label">Win rate</div><div class="metric-value" id="win-rate">—</div><div class="metric-note" id="settled-count">No completed practice trades yet.</div></div>
-      <div class="card metric-card-accent open"><div class="metric-label">Trades still open</div><div class="metric-value" id="open-count">—</div><div class="metric-note" id="exposure">Amount spent on open practice positions: —</div></div>
-      <div class="card metric-card-accent worker"><div class="metric-label">Is the bot running?</div><div class="metric-value" id="worker">Checking…</div><div class="metric-note" id="worker-detail">Checking the latest worker heartbeat.</div></div>
+      <div>
+        <div class="mini-grid" style="margin-top:0">
+          <div class="mini"><div class="label">Evidence score</div><div class="value" id="evidence-score">—</div><div class="progress"><span id="score-bar"></span></div><div class="help" id="score-note">Rule-based score, not probability</div></div>
+          <div class="mini"><div class="label">Bot win probability</div><div class="value" id="model-probability">Not calibrated</div><div class="help">No calibrated per-signal probability is currently supplied by the model.</div></div>
+          <div class="mini"><div class="label">Market-implied estimate</div><div class="value" id="market-probability">—</div><div class="help" id="market-probability-help">Approximation from the buy price, not a bot forecast.</div></div>
+          <div class="mini"><div class="label">Historical win rate</div><div class="value" id="historical-probability">—</div><div class="help" id="historical-probability-help">Based on all settled trades, not this signal.</div></div>
+        </div>
+        <div class="notice" id="score-probability-note">Score and probability are different measures. A 60/100 evidence score does not mean a 60% chance of winning.</div>
+      </div>
     </div>
   </section>
 
+  <section class="grid-2 section" aria-label="Decision and worker status">
+    <article class="card">
+      <div class="card-titleline"><h2>Why the engine chose this</h2><span class="badge wait" id="decision-badge">Loading</span></div>
+      <div class="rowline"><span class="label">Current decision</span><span class="value" id="decision-current">—</span></div>
+      <div class="rowline"><span class="label">Signal age</span><span class="value" id="decision-age">—</span></div>
+      <div class="rowline"><span class="label">Evidence score</span><span class="value" id="decision-score">—</span></div>
+      <div class="notice" id="decision-summary">Decision summary will appear once the latest signal is loaded.</div>
+      <h3 style="margin-top:13px">Signal reasons</h3><ul class="reason-list" id="signal-reasons"><li>Waiting for the latest signal details.</li></ul>
+      <h3 style="margin-top:13px">Warnings to note</h3><ul class="reason-list" id="signal-warnings"><li>No warnings are available yet.</li></ul>
+    </article>
+    <article class="card">
+      <div class="card-titleline"><h2>What happens next</h2><span class="badge green" id="worker-state-badge">Monitoring</span></div>
+      <div class="rowline"><span class="label">Worker status</span><span class="value" id="next-worker-status">—</span></div>
+      <div class="rowline"><span class="label">Current 15-minute window</span><span class="value" id="current-window-status">—</span></div>
+      <div class="rowline"><span class="label">Last signal</span><span class="value" id="next-last-signal">—</span></div>
+      <div class="rowline"><span class="label">Dashboard API</span><span class="value positive" id="api-status">Healthy</span></div>
+      <div class="rowline"><span class="label">Signal source</span><span class="value" id="signal-source">—</span></div>
+      <div class="rowline"><span class="label">Trend stop</span><span class="value" id="trend-stop">—</span></div>
+      <div class="rowline"><span class="label">Worker's latest action</span><span class="value" id="worker-last-action">—</span></div>
+      <div class="rowline"><span class="label">Worker's latest reason</span><span class="value" id="worker-last-reason">—</span></div>
+      <p class="notice">If the alert, price, or risk checks cannot be verified, the safe behavior is to wait rather than force a trade. Signal scores are not win probabilities.</p>
+    </article>
+  </section>
+
+  <section class="card section" aria-label="Market data health">
+    <div class="section-head"><div><h2>Market-data health</h2><p class="section-desc">Live diagnostic for closed BTC candles and the current Kalshi order book. Healthy data is required for evaluation but does not prove a signal is profitable.</p></div><span class="badge wait" id="market-ready-badge">Checking sources…</span></div>
+    <div class="grid-3">
+      <div class="mini"><div class="label">1-minute BTC candle</div><div class="value" id="candle-1m">—</div><div class="help" id="candle-1m-help">Waiting for diagnostics</div></div>
+      <div class="mini"><div class="label">5-minute BTC candle</div><div class="value" id="candle-5m">—</div><div class="help" id="candle-5m-help">Waiting for diagnostics</div></div>
+      <div class="mini"><div class="label">15-minute BTC candle</div><div class="value" id="candle-15m">—</div><div class="help" id="candle-15m-help">Waiting for diagnostics</div></div>
+    </div>
+    <div class="mini-grid">
+      <div class="mini"><div class="label">Kalshi market</div><div class="value" id="market-ticker">—</div><div class="help" id="market-title">Waiting for current contract</div></div>
+      <div class="mini"><div class="label">Order-book quotes</div><div class="value" id="market-quotes">—</div><div class="help" id="market-quote-source">Quotes source not checked yet.</div></div>
+      <div class="mini"><div class="label">Market closes in</div><div class="value" id="market-close-countdown">—</div><div class="help" id="market-close-time">—</div></div>
+      <div class="mini"><div class="label">Diagnostic check</div><div class="value" id="market-checked-at">—</div><div class="help" id="market-diagnostic-cache">—</div></div>
+    </div>
+  </section>
+
+  <section class="card section" aria-label="Strategy checks">
+    <div class="section-head"><div><h2>Strategy checks</h2><p class="section-desc">These describe what the internal rule set detected, not a guaranteed future direction.</p></div><span class="badge blue" id="strategy-score-badge">Evidence details</span></div>
+    <div class="strategy-grid">
+      <div class="strategy"><div class="strategy-head"><strong>Trend across timeframes</strong><span class="tag" id="trend-tag">—</span></div><p id="trend-detail">Waiting for strategy details.</p></div>
+      <div class="strategy"><div class="strategy-head"><strong>Momentum</strong><span class="tag" id="momentum-tag">—</span></div><p id="momentum-detail">Waiting for strategy details.</p></div>
+      <div class="strategy"><div class="strategy-head"><strong>Volume confirmation</strong><span class="tag" id="volume-tag">—</span></div><p id="volume-detail">Waiting for strategy details.</p></div>
+      <div class="strategy"><div class="strategy-head"><strong>Box theory</strong><span class="tag" id="box-tag">—</span></div><p id="box-detail">Waiting for strategy details.</p></div>
+      <div class="strategy"><div class="strategy-head"><strong>Market structure</strong><span class="tag" id="structure-tag">—</span></div><p id="structure-detail">Waiting for strategy details.</p></div>
+      <div class="strategy"><div class="strategy-head"><strong>Volatility check</strong><span class="tag" id="volatility-tag">—</span></div><p id="volatility-detail">Waiting for strategy details.</p></div>
+    </div>
+    <div class="mini-grid" style="margin-top:11px">
+      <div class="mini"><div class="label">Up-side points</div><div class="value" id="up-points">—</div></div>
+      <div class="mini"><div class="label">Down-side points</div><div class="value" id="down-points">—</div></div>
+      <div class="mini"><div class="label">Net internal points</div><div class="value" id="net-points">—</div></div>
+      <div class="mini"><div class="label">Maximum directional points</div><div class="value" id="max-points">—</div></div>
+    </div>
+    <details style="margin-top:13px"><summary>Advanced diagnostics (technical details)</summary><pre id="advanced-json" style="margin-bottom:0">Waiting for data…</pre></details>
+  </section>
+
+  <section class="card section" aria-label="Paper trade activity">
+    <div class="section-head"><div><h2>Paper trade activity</h2><p class="section-desc">The journal records simulated entries, outcomes, and net profit/loss. Open positions are not counted as settled results.</p></div><span class="badge blue" id="trade-count-badge">Most recent trades</span></div>
+    <div class="table-wrap"><table aria-label="Paper trade activity"><thead><tr><th>Opened</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Net P&amp;L</th></tr></thead><tbody id="trades"><tr><td colspan="8" class="empty">Waiting for trades…</td></tr></tbody></table></div>
+  </section>
 
   <section class="card section">
-    <div class="section-head"><h2>Recent practice trades</h2><p class="section-desc">A trade appears here only when it has been saved in the paper-trading journal.</p></div>
-    <div class="table-wrap"><table aria-label="Recent simulated trades"><thead><tr><th>Placed (local time)</th><th>Chart timeframe</th><th>Direction</th><th>Buy price</th><th>Result</th><th>Profit / loss</th><th>Status</th></tr></thead><tbody id="trades"><tr><td colspan="7" class="empty">No paper trades recorded yet.</td></tr></tbody></table></div>
-    <p class="inline-note">The contract is a 15-minute market. The chart timeframe is shown separately when it was recorded; older trades may not have that information.</p>
-  </section>
-
-  <section class="card section">
-    <details>
-      <summary>Past alert history (for reference only)</summary>
-      <p class="section-desc" style="margin-bottom:12px">These are older messages, not the current signal. Previous UP/DOWN alerts are never carried into a new window.</p>
-      <div class="table-wrap"><table aria-label="Historical received alerts"><thead><tr><th>Received (local time)</th><th>Alert</th><th>Symbol</th><th>Chart timeframe</th><th>What happened</th></tr></thead><tbody id="external-alerts"><tr><td colspan="5" class="empty">No alerts recorded in history yet.</td></tr></tbody></table></div>
-      <p class="inline-note" id="alert-count">0 alerts recorded in history</p>
+    <details><summary>Recent external alerts</summary><p class="section-desc" style="margin-bottom:11px">Received alerts are separate from executed paper trades. An alert can be accepted, skipped, ignored, or rejected without opening a position.</p>
+      <div class="table-wrap"><table aria-label="Recent external alerts"><thead><tr><th>Received</th><th>Direction</th><th>Symbol</th><th>Timeframe</th><th>Processing status</th><th>Processing note</th></tr></thead><tbody id="alerts"><tr><td colspan="6" class="empty">No alerts recorded.</td></tr></tbody></table></div>
+      <p class="small" style="margin-top:9px" id="alert-count">—</p>
+    </details>
+    <details style="margin-top:10px"><summary>Safety settings and definitions</summary>
+      <div class="settings-grid">
+        <div class="mini"><div class="label">Run mode</div><div class="value" id="mode">—</div></div>
+        <div class="mini"><div class="label">Real orders enabled</div><div class="value" id="real-orders-details">—</div></div>
+        <div class="mini"><div class="label">Database</div><div class="value" id="database-backend">—</div></div>
+        <div class="mini"><div class="label">Max cost per trade</div><div class="value" id="settings-max-trade">—</div></div>
+        <div class="mini"><div class="label">Daily loss limit</div><div class="value" id="settings-max-loss">—</div></div>
+        <div class="mini"><div class="label">Updated from server</div><div class="value" id="server-updated">—</div></div>
+      </div>
+      <div class="strategy-grid" style="margin-top:12px">
+        <div class="strategy"><strong>Evidence score</strong><p>A rule-based evidence score from 0 to 100. It is not a percent chance of winning.</p></div>
+        <div class="strategy"><strong>Bot win probability</strong><p>Not calculated until the strategy has a calibrated model that has been tested against enough historical outcomes.</p></div>
+        <div class="strategy"><strong>Market-implied estimate</strong><p>A rough price-based indication from the contract ask. It includes market pricing and can differ from the true outcome probability.</p></div>
+        <div class="strategy"><strong>Historical win rate</strong><p>The proportion of all settled journal trades recorded as wins. It is not a probability forecast for one particular signal.</p></div>
+      </div>
     </details>
   </section>
 
-  <section class="section">
-    <div class="section-head"><h2>Learn the terms</h2><p class="section-desc">Plain-English definitions for the numbers on this page.</p></div>
-    <div class="glossary">
-      <div class="glossary-item"><strong>TradingView alert</strong><p>A message from your chart indicator. It tells the bot what the indicator noticed, but it does not automatically mean a trade is made.</p></div>
-      <div class="glossary-item"><strong>UP / DOWN</strong><p>The alert’s suggested direction. It describes which outcome the signal points toward; it is not a guarantee.</p></div>
-      <div class="glossary-item"><strong>Timeframe</strong><p>How much time each candle on the indicator chart represents. A 1-minute chart and a 15-minute contract are different things.</p></div>
-      <div class="glossary-item"><strong>Strike price</strong><p>The reference BTC price used to determine the market’s final UP/DOWN outcome according to the market’s rules.</p></div>
-      <div class="glossary-item"><strong>Evidence score</strong><p>A score from the bot’s programmed rules. A score of 60/100 does not mean a 60% chance to win.</p></div>
-      <div class="glossary-item"><strong>Ask price</strong><p>The displayed price to buy one contract, usually shown in cents. Fees may make the total cost higher.</p></div>
-      <div class="glossary-item"><strong>Win rate</strong><p>The share of completed trades that were winners. It does not show how large the wins or losses were, so read it with net profit/loss.</p></div>
-      <div class="glossary-item"><strong>Net profit / loss</strong><p>The combined result of settled practice trades after the fees recorded by the bot. It is only as accurate as the trade and fee records.</p></div>
-    </div>
-  </section>
-
-  <section class="card section">
-    <details>
-      <summary>Safety and bot settings</summary>
-      <div class="kv section" style="margin-top:12px">
-        <div class="detail-box"><div class="label">Run mode</div><div class="value" id="mode">—</div><div class="help">Should say simulation only</div></div>
-        <div class="detail-box"><div class="label">Real orders</div><div class="value" id="real-orders">—</div><div class="help">Should be disabled</div></div>
-        <div class="detail-box"><div class="label">Signal source</div><div class="value" id="signal-source">—</div><div class="help">Which signals the worker uses</div></div>
-        <div class="detail-box"><div class="label">Maximum per trade</div><div class="value" id="max-trade">—</div><div class="help">Configured cost limit for one paper trade</div></div>
-        <div class="detail-box"><div class="label">Daily loss limit</div><div class="value" id="daily-loss-limit">—</div><div class="help">Configured safety limit</div></div>
-        <div class="detail-box"><div class="label">Trend stop</div><div class="value" id="trend-stop">—</div><div class="help">A programmed condition for detecting a possible exit</div></div>
-      </div>
-      <p class="inline-note" id="updated-at">Last dashboard update: —</p>
-    </details>
-  </section>
-  <footer>
-    <strong>Practice mode only.</strong> This dashboard reports what the application has recorded; it cannot guarantee that a displayed price would be filled. Simulated results do not prove a future strategy will be profitable. <span id="last-refresh">Last refreshed: —</span>
-  </footer>
+  <footer class="footer"><strong>Paper mode only.</strong> This dashboard is read-only and cannot place or enable real orders. Market-implied pricing, evidence scores, and historical win rates are different measures. Simulated results do not guarantee future performance. <span id="last-refresh">Last refreshed: —</span></footer>
 </main>
 <script>
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const safeNum = value => value !== null && value !== '' && value !== undefined && Number.isFinite(Number(value));
-  const money = value => safeNum(value) ? (Number(value) < 0 ? '-$' + Math.abs(Number(value)).toFixed(2) : '$' + Number(value).toFixed(2)) : '—';
-  const cents = value => safeNum(value) ? Number(value).toFixed(1) + '¢' : '—';
-  const number = (value, digits=2) => safeNum(value) ? Number(value).toLocaleString(undefined, {maximumFractionDigits:digits}) : '—';
-  const dateTime = value => { const t = value ? Date.parse(value) : NaN; return Number.isFinite(t) ? new Date(t).toLocaleString() : 'Time unavailable'; };
-  const ageText = seconds => !safeNum(seconds) ? 'age unknown' : Number(seconds) < 60 ? `${Math.floor(Number(seconds))} seconds ago` : Number(seconds) < 3600 ? `${Math.floor(Number(seconds)/60)} minutes ago` : `${Math.floor(Number(seconds)/3600)} hours ago`;
-  const write = (id, value) => { if ($(id)) $(id).textContent = value === undefined || value === null || value === '' ? '—' : String(value); };
-  const setBadge = (id, text, style='wait') => { write(id, text); $(id).className = 'badge ' + style; };
-  function fillList(id, values, emptyText) {
-    const list = $(id); list.replaceChildren();
-    const clean = Array.isArray(values) ? values : [];
-    if (!clean.length) { const li=document.createElement('li'); li.className='muted'; li.textContent=emptyText; list.appendChild(li); return; }
-    clean.forEach(value => { const li=document.createElement('li'); li.textContent=String(value); list.appendChild(li); });
-  }
-  function workerCopy(health) {
-    if (health.worker_status === 'running') return ['Running', `Last check-in ${ageText(health.worker_last_seen_age_seconds)}.`];
-    if (health.worker_status === 'stale') return ['Needs checking', `No recent check-in. Last seen ${ageText(health.worker_last_seen_age_seconds)}.`];
-    if (health.worker_enabled) return ['Not confirmed', 'The worker is enabled, but this dashboard cannot see a recent check-in.'];
-    return ['Not confirmed', 'The dashboard has not observed a running worker. Check the worker service.'];
-  }
-  function directionFriendly(direction) {
-    const d = String(direction || '').toUpperCase();
-    if (d === 'BUY_UP' || d === 'UP' || d === 'BUY' || d === 'LONG') return 'UP signal';
-    if (d === 'BUY_DOWN' || d === 'DOWN' || d === 'SELL' || d === 'SHORT') return 'DOWN signal';
-    if (d === 'WAIT') return 'WAIT — no trade suggested';
-    return d || 'No signal';
-  }
-  function statusFriendly(status) {
-    const s = String(status || 'queued').toLowerCase();
-    const labels = {queued:'Waiting to be checked', processed:'Paper trade opened', wait:'WAIT recorded — no trade', skipped:'Not used', vetoed:'Blocked by a safety check', ignored:'Ignored', accepted:'Received', rejected:'Rejected', error:'Processing error'};
-    return labels[s] || s.replaceAll('_',' ');
-  }
-  function cssToneForDirection(direction) {
-    const d=String(direction||'').toUpperCase();
-    return ['BUY_UP','UP','BUY','LONG'].includes(d) ? 'green-text' : ['BUY_DOWN','DOWN','SELL','SHORT'].includes(d) ? 'red-text' : 'amber-text';
-  }
-  function renderAlertHistory(data) {
-    write('alert-count', `${Number(data.external_alert_count||0).toLocaleString()} total alerts recorded in history.`);
-    const tbody=$('external-alerts'); tbody.replaceChildren();
-    const rows=Array.isArray(data.recent_external_alerts)?data.recent_external_alerts:[];
-    if (!rows.length) {
-      const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=5; td.className='empty'; td.textContent='No alerts recorded in history yet.'; tr.appendChild(td); tbody.appendChild(tr); return;
-    }
-    rows.forEach(item=>{
-      const tr=document.createElement('tr');
-      const status=statusFriendly(item.processing_status);
-      const detail=item.processing_note || (item.processing_status === 'processed' ? 'Paper-trade entry recorded.' : 'No extra explanation recorded.');
-      [dateTime(item.received_at),directionFriendly(item.direction),item.symbol||'—',item.timeframe||'Not provided',`${status}${detail ? ' — '+detail : ''}`].forEach((v,i)=>{const td=document.createElement('td');td.textContent=String(v);if(i===1)td.className=cssToneForDirection(item.direction);tr.appendChild(td);});
-      tbody.appendChild(tr);
-    });
-  }
-  function renderCurrentStatus(data) {
-    const decision=data.current_window_decision||{};
-    const trades=Array.isArray(data.trades)?data.trades:[];
-    const timeOf=v=>v?Date.parse(v):NaN;
-    const windowStartT=timeOf(decision.window_start), windowEndT=timeOf(decision.window_end);
-    const windowLine=Number.isFinite(windowStartT)&&Number.isFinite(windowEndT)
-      ? `${new Date(windowStartT).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}–${new Date(windowEndT).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}`
-      : 'Being calculated';
-    const currentAlerts=Array.isArray(data.recent_external_alerts)?data.recent_external_alerts:[];
-    const currentAlert=decision.alert_received_at
-      ? currentAlerts.find(a=>String(a.received_at||'')===String(decision.alert_received_at))
-      : null;
-    const phase=String(decision.phase||'').toLowerCase();
-    let status='WAIT THIS WINDOW', tone='wait';
-    let explanation=decision.reason||'No fresh UP/DOWN signal is available for the current 15-minute window. Older signals are not reused.';
-    let next='The bot will keep waiting. A fresh signal still must pass its market and risk checks; this status never forces a trade.';
-    let alertValue='No fresh alert yet';
-    let alertHelp='Old alerts are history only';
-    let responseValue='3-minute response allowance';
-    let responseHelp='Waiting for the indicator’s current decision';
+  const hasNum = v => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  const asNum = (v, fallback=0) => hasNum(v) ? Number(v) : fallback;
+  const money = v => hasNum(v) ? `${Number(v)<0?'-':''}$${Math.abs(Number(v)).toFixed(2)}` : '—';
+  const cents = v => hasNum(v) ? `${Number(v).toFixed(1).replace(/\.0$/,'')}¢` : '—';
+  const usd = v => hasNum(v) ? `$${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
+  const nfmt = (v,d=2) => hasNum(v) ? Number(v).toLocaleString(undefined,{maximumFractionDigits:d}) : '—';
+  const time = v => { const t=v?Date.parse(v):NaN; return Number.isFinite(t)?new Date(t).toLocaleString(): 'Time unavailable'; };
+  const clock = v => { const t=v?Date.parse(v):NaN; return Number.isFinite(t)?new Date(t).toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'}):'—'; };
+  const age = v => !hasNum(v)?'age unknown':Number(v)<60?`${Math.floor(Number(v))}s ago`:Number(v)<3600?`${Math.floor(Number(v)/60)}m ago`:`${Math.floor(Number(v)/3600)}h ago`;
+  const write = (id,v) => { if ($(id)) $(id).textContent = v===null || v===undefined || v==='' ? '—' : String(v); };
+  const tone = (id,style) => { if ($(id)) $(id).className = ($(id).className.split(/\s+/).filter(c=>!['green','red','amber','blue','wait','positive','negative'].includes(c)).join(' ')+' '+style).trim(); };
+  const setBadge = (id, label, style='wait') => { write(id,label); if($(id)) $(id).className='badge '+style; };
+  const direction = v => { const d=String(v||'').toUpperCase(); if(['BUY_UP','UP','LONG','BUY'].includes(d)) return 'BUY UP'; if(['BUY_DOWN','DOWN','SHORT','SELL'].includes(d)) return 'BUY DOWN'; return d||'—'; };
+  const dirTone = v => /DOWN|SHORT|SELL/i.test(String(v||'')) ? 'negative' : /UP|LONG|BUY/i.test(String(v||'')) ? 'positive' : '';
+  const statusTone = v => { const s=String(v||'').toLowerCase(); if(['processed','accepted','running','settled'].includes(s)) return 'positive'; if(['ignored','rejected','error','stale'].includes(s)) return 'negative'; return 'warning-text'; };
+  const safeText = v => v===null||v===undefined||v===''?'Not reported':String(v);
+  function setList(id,values,empty){const ul=$(id);ul.replaceChildren();const arr=Array.isArray(values)?values:[];if(!arr.length){const li=document.createElement('li');li.textContent=empty;ul.appendChild(li);return;}for(const item of arr){const li=document.createElement('li');li.textContent=String(item);ul.appendChild(li);}}
+  function addCell(tr,value,className=''){const td=document.createElement('td');td.textContent=value===null||value===undefined||value===''?'—':String(value);if(className)td.className=className;tr.appendChild(td);}
+  function formatReason(s){return String(s||'').replace(/^Internal diagnostics:\s*/,'').replace(/^TradingView\/GainzAlgo proposes /,'External alert proposes ').replace(/^Evidence score /,'Evidence score ');}
 
-    if (phase==='signal_received' && ['UP','DOWN'].includes(String(decision.direction||'').toUpperCase())) {
-      status=`${String(decision.direction).toUpperCase()} SIGNAL RECEIVED`;
-      tone='blue';
-      alertValue=`${String(decision.direction).toUpperCase()} signal`;
-      alertHelp=currentAlert && currentAlert.timeframe ? `Chart timeframe: ${currentAlert.timeframe}` : 'Fresh alert in this window';
-      responseValue='Signal received';
-      responseHelp=`Received ${ageText(decision.alert_age_seconds)}.`;
-      explanation=decision.reason||`A fresh ${decision.direction} signal arrived for this current window. It is not proof that a trade was placed.`;
-      next='The worker must still check freshness, market availability, entry price, spread, time remaining, and risk limits. A signal is not a trade.';
-    } else if (phase==='indicator_wait') {
-      status='WAIT THIS WINDOW'; tone='wait';
-      alertValue='Indicator says WAIT';
-      alertHelp=`Received ${dateTime(decision.alert_received_at)}${decision.timeframe?` · ${decision.timeframe}`:''}`;
-      responseValue='Response received';
-      responseHelp='The indicator explicitly selected WAIT';
-      explanation=decision.reason||'The indicator explicitly reported WAIT. No paper trade is created from this status.';
-      next='Keep waiting for a fresh eligible direction. A WAIT status never opens or closes a paper position.';
-    } else if (phase==='awaiting_indicator') {
-      status='WAIT THIS WINDOW'; tone='wait';
-      const remaining=Math.max(0,Number(decision.indicator_grace_remaining_seconds)||0);
-      alertValue='No fresh signal yet';
-      alertHelp='No previous direction carried forward';
-      responseValue=`Waiting · ${number(remaining,0)}s left`;
-      responseHelp='Indicator typically takes about 3 minutes';
-      explanation=`The indicator usually takes about 3 minutes to respond. We are allowing it time to produce the current decision; until a fresh UP/DOWN alert arrives, the current signal is WAIT THIS WINDOW. An older signal will not be shown as current.`;
-      next='This is only a dashboard status. It does not create a TradingView alert or a paper trade.';
-    } else if (phase==='no_fresh_signal') {
-      status='WAIT THIS WINDOW'; tone='wait';
-      alertValue='No current signal';
-      alertHelp='The 3-minute response allowance has passed';
-      responseValue='Response period passed';
-      responseHelp='Still waiting for a fresh current-window alert';
-      explanation=decision.reason||'No fresh UP/DOWN signal arrived during the expected response period. The old signal has been cleared from the current view.';
-      next='If a fresh directional alert arrives later in this same window, the current signal will update. Otherwise, continue to wait; the bot will not reuse an old direction.';
-    } else if (phase==='internal_mode') {
-      status='NO EXTERNAL SIGNAL REQUIRED'; tone='blue';
-      alertValue='External signal not required';
-      alertHelp='The current source is not hybrid/GainzAlgo';
-      responseValue='Internal mode'; responseHelp='See source setting in Safety and bot settings';
-      explanation=decision.reason||explanation;
+  function renderSignal(data, stats){
+    const s=data.latest_signal||{};
+    const score=hasNum(s.score)?Math.max(0,Math.min(100,Number(s.score))):null;
+    const ageSeconds=s.age_seconds;
+    const stale=Boolean(s.is_stale);
+    const side=direction(s.direction);
+    write('signal-market',s.market_ticker||'No saved signal yet');
+    write('signal-meta',s.created_at?`Evaluated ${time(s.created_at)} · signal age ${age(ageSeconds)}`:'No evaluated signal has been saved yet.');
+    setBadge('signal-age-badge',s.created_at?(stale?'Signal may be stale':`Signal fresh · ${age(ageSeconds)}`):'No signal saved',s.created_at?(stale?'amber':'green'):'wait');
+    setBadge('signal-direction-badge',side,side.includes('DOWN')?'red':side.includes('UP')?'green':'wait');
+    write('signal-direction',s.created_at?side:'WAITING FOR SIGNAL');
+    if($('signal-direction')) $('signal-direction').style.color=side.includes('DOWN')?'var(--red)':side.includes('UP')?'var(--green)':'var(--amber)';
+    const thresholdMatch=(Array.isArray(s.reasons)?s.reasons.join(' '):'').match(/configured\s+(\d+(?:\.\d+)?)\/100\s+threshold/i);
+    const threshold=thresholdMatch?Number(thresholdMatch[1]):65;
+    let summary=s.disclaimer||'The score is rule-based, not a measured probability of winning.';
+    if(s.direction){
+      const low=score!==null&&score<threshold;
+      const source=String(data.health?.signal_source||'unknown').toLowerCase();
+      const lowScoreNote=low&&source==='hybrid'
+        ? `The internal evidence score (${score}/100) is below the ${threshold}/100 threshold, but hybrid mode may still allow a fresh external alert when no major-flaw veto is triggered.`
+        : low ? `The internal evidence score (${score}/100) is below the ${threshold}/100 threshold.`
+        : 'Review market-data and risk checks before interpreting this as actionable.';
+      summary=`${side} recorded from the configured ${source.toUpperCase()} signal path. ${lowScoreNote} This is paper-only and is not a measured probability of winning.`;
     }
-
-    // A trade in this 15-minute window is a separate outcome, not an old signal.
-    const tradeInWindow=Number.isFinite(windowStartT)&&Number.isFinite(windowEndT)
-      ? trades.find(t=>Number.isFinite(timeOf(t.created_at))&&timeOf(t.created_at)>=windowStartT&&timeOf(t.created_at)<windowEndT)
-      : null;
-    if (tradeInWindow && phase==='signal_received') {
-      next=`A simulated ${tradeInWindow.direction} trade was recorded at ${dateTime(tradeInWindow.created_at)}. Review it in Recent practice trades below.`;
+    write('signal-summary',summary);
+    write('btc-price',hasNum(s.btc_price)?usd(s.btc_price):'—');
+    write('strike-price',hasNum(s.strike_price)?usd(s.strike_price):'—');
+    write('distance-strike',hasNum(s.distance_from_strike)?`${Number(s.distance_from_strike)>0?'+':Number(s.distance_from_strike)<0?'−':''}$${Math.abs(Number(s.distance_from_strike)).toFixed(2)}`:'—');
+    write('seconds-remaining',hasNum(s.seconds_remaining)?`${Math.round(Number(s.seconds_remaining))} sec`:'—');
+    write('entry-ask',cents(s.entry_ask_cents));
+    write('max-entry-cents',cents(s.max_entry_cents));
+    write('evidence-score',score===null?'Not available':`${nfmt(score,0)} / 100`);
+    if($('score-bar')) $('score-bar').style.width=`${score===null?0:score}%`;
+    write('score-note',score===null?'No score in latest signal':`Rule score; configured internal threshold ${threshold}/100`);
+    // The source currently supplies a heuristic score, not a calibrated win probability.
+    const modelProbability = s.win_probability_percent ?? s.win_probability ?? s.estimated_probability_percent ?? null;
+    write('model-probability',hasNum(modelProbability)?`${nfmt(modelProbability,1)}%`:'Not calibrated');
+    const marketP=hasNum(s.entry_ask_cents)?Math.max(0,Math.min(100,Number(s.entry_ask_cents))):null;
+    write('market-probability',marketP===null?'Not available':`~${nfmt(marketP,0)}%`);
+    write('market-probability-help',marketP===null?'No entry ask is saved for this signal.':'Price approximation from the entry ask ('+cents(s.entry_ask_cents)+'); not the bot’s forecast and before fee effects.');
+    write('historical-probability',hasNum(stats.win_rate_percent)?`${nfmt(stats.win_rate_percent,1)}%`:'Not enough data');
+    write('historical-probability-help',`${stats.wins||0} wins from ${stats.settled_trades||0} settled trades; all signals mixed together.`);
+    write('score-probability-note',hasNum(modelProbability)?'Model probability is displayed as provided by the signal record. Compare it with the historical sample and market price; none is a guarantee.':'The bot does not currently produce a calibrated per-signal win probability. The entry price gives a rough market-implied estimate, while historical win rate summarizes all settled trades. Neither is the bot’s own forecast.');
+    write('decision-current',s.created_at?side:'No saved signal');
+    write('decision-age',age(ageSeconds));
+    write('decision-score',score===null?'—':`${nfmt(score,0)}/100`);
+    setBadge('decision-badge',stale?'Signal may be stale':(s.created_at?'Signal analyzed':'No signal'),stale?'amber':(s.created_at?'blue':'wait'));
+    setList('signal-reasons',(s.reasons||[]).map(formatReason),'No signal reasons recorded.');
+    setList('signal-warnings',s.warnings||[],'No warnings recorded with the latest signal.');
+    write('decision-summary',s.disclaimer||'This is a rule-based signal assessment, not a guarantee or measured probability of winning.');
+    renderStrategies(s.strategies||{});
+    write('advanced-json',JSON.stringify({signal:{direction:s.direction,score:s.score,age_seconds:s.age_seconds,is_stale:s.is_stale,entry_ask_cents:s.entry_ask_cents,max_entry_cents:s.max_entry_cents,btc_price:s.btc_price,strike_price:s.strike_price,distance_from_strike:s.distance_from_strike},strategies:s.strategies||{},warnings:s.warnings||[]},null,2));
+  }
+  function renderStrategies(st){
+    const tf=st.multi_timeframe_trend||{},tfs=tf.timeframes||{};
+    const tfVals=Object.entries(tfs).map(([k,v])=>`${k}: ${Number(v)>0?'Bullish':Number(v)<0?'Bearish':'Mixed / neutral'}`).join('; ');
+    write('trend-tag',Number(tf.direction)>0?'Bullish':Number(tf.direction)<0?'Bearish':'Mixed / neutral');
+    write('trend-detail',tfVals||'No timeframe scores recorded.');
+    const m=st.momentum||{};write('momentum-tag',hasNum(m.rsi_1m)?`RSI ${nfmt(m.rsi_1m,1)}`:'Not available');
+    write('momentum-detail',`${Number(m.direction)>0?'Momentum favors UP.':Number(m.direction)<0?'Momentum favors DOWN.':'Momentum is neutral or mixed.'} ${hasNum(m.vwap_1m)?`1m VWAP: ${usd(m.vwap_1m)}.`:''}`);
+    const v=st.volume_confirmation||{};write('volume-tag',v.confirmed===true?'Confirmed':'Not confirmed');
+    write('volume-detail',`Recent 3-candle mean: ${nfmt(v.recent_3_mean,3)}; baseline 20-candle mean: ${nfmt(v.baseline_20_mean,3)}. Volume ${v.confirmed===true?'supports':'does not clearly confirm'} the move.`);
+    const b=st.box_theory||{};write('box-tag',String(b.state||'Not reported').replaceAll('_',' '));
+    write('box-detail',`${hasNum(b.bottom)?`Range bottom ${usd(b.bottom)}`:'Range bottom unavailable'}; ${hasNum(b.top)?`range top ${usd(b.top)}`:''}${hasNum(b.width)?`; width ${usd(b.width)}`:''}. ${Number(b.direction)>0?'UP breakout detected.':Number(b.direction)<0?'DOWN breakout detected.':'Price remains in the box or breakout is unconfirmed.'}`);
+    const ms=st.market_structure||{};write('structure-tag',ms.label||'Not reported');
+    write('structure-detail',`${hasNum(ms.older_high)?`Earlier high ${usd(ms.older_high)}; `:''}${hasNum(ms.older_low)?`earlier low ${usd(ms.older_low)}; `:''}${hasNum(ms.recent_high)?`recent high ${usd(ms.recent_high)}; `:''}${hasNum(ms.recent_low)?`recent low ${usd(ms.recent_low)}.`:''}`||'No market structure details recorded.');
+    const vol=st.volatility||{};write('volatility-tag',vol.chase_warning?'Chase warning':'No chase warning');
+    write('volatility-detail',`${hasNum(vol.three_candle_abs_move_pct)?`Absolute move over 3 candles: ${nfmt(vol.three_candle_abs_move_pct,3)}%. `:''}${hasNum(vol.recent_return_std)?`Recent return standard deviation: ${nfmt(vol.recent_return_std,6)}. `:''}${vol.chase_warning?'Large move may increase chase risk.':'No oversized-move chase warning was recorded.'}`);
+    const e=st.evidence_totals||{};write('up-points',hasNum(e.up_points)?e.up_points:'—');write('down-points',hasNum(e.down_points)?e.down_points:'—');write('net-points',hasNum(e.net_points)?e.net_points:'—');write('max-points',hasNum(e.maximum_theoretical_directional_points)?e.maximum_theoretical_directional_points:'—');
+    write('strategy-score-badge',hasNum(e.net_points)?`Internal net ${e.net_points} points`:'Evidence details');
+  }
+  function renderTrades(d){
+    const tbody=$('trades');tbody.replaceChildren();const trades=Array.isArray(d.trades)?d.trades:[];
+    write('trade-count-badge',`Most recent ${trades.length} trades`);
+    if(!trades.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=8;td.className='empty';td.textContent='No paper trades recorded yet.';tr.appendChild(td);tbody.appendChild(tr);return;}
+    for(const t of trades){const tr=document.createElement('tr');addCell(tr,time(t.created_at));addCell(tr,t.market_ticker||'—');addCell(tr,direction(t.direction),dirTone(t.direction));addCell(tr,t.contracts??'—');addCell(tr,cents(t.entry_cents));addCell(tr,t.settled_at?'Settled':'Open',t.settled_at?'positive':'warning-text');addCell(tr,t.outcome?String(t.outcome).replaceAll('_',' '):'Pending');addCell(tr,t.pnl_dollars===null||t.pnl_dollars===undefined?'Not settled':money(t.pnl_dollars),hasNum(t.pnl_dollars)?(Number(t.pnl_dollars)>0?'positive':Number(t.pnl_dollars)<0?'negative':''):'');tbody.appendChild(tr);}
+  }
+  function renderAlerts(d){
+    const tbody=$('alerts');tbody.replaceChildren();const rows=Array.isArray(d.recent_external_alerts)?d.recent_external_alerts:[];
+    if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent='No alerts recorded.';tr.appendChild(td);tbody.appendChild(tr);}else{
+      for(const a of rows){const tr=document.createElement('tr');addCell(tr,time(a.received_at));addCell(tr,direction(a.direction),dirTone(a.direction));addCell(tr,a.symbol||'—');addCell(tr,a.timeframe||'—');addCell(tr,String(a.processing_status||'queued').replaceAll('_',' '),statusTone(a.processing_status));addCell(tr,a.processing_note||'No processing note');tbody.appendChild(tr);}
     }
-
-    write('current-time-line',`Current 15-minute window: ${windowLine} (local time)`);
-    setBadge('current-status-badge',status,tone);
-    write('current-status-title',status);
-    $('current-status-title').className='hero-status '+(tone==='good'?'green-text':tone==='bad'?'red-text':tone==='blue'?'blue-text':'amber-text');
-    write('current-status-explanation',explanation);
-    write('current-status-next',next);
-    write('current-window-value',windowLine);
-    write('indicator-response-value',responseValue);
-    write('indicator-response-help',responseHelp);
-    write('current-alert-value',alertValue);
-    write('current-alert-help',alertHelp);
+    write('alert-count',`${d.external_alert_count??rows.length} external alerts recorded in total`);
   }
-  function renderTrades(data) {
-    const tbody=$('trades'); tbody.replaceChildren();
-    const rows=Array.isArray(data.trades)?data.trades:[];
-    if (!rows.length) { const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No paper trades recorded yet. Alerts alone do not appear here as trades.';tr.appendChild(td);tbody.appendChild(tr);return; }
-    rows.forEach(t=>{
-      const tr=document.createElement('tr');
-      const status=t.settled_at?'Completed':'Open';
-      const tf=t.timeframe || (/15M/i.test(String(t.market_ticker||''))?'15-minute contract; chart timeframe not saved':'Not recorded');
-      const pnl=t.pnl_dollars==null?'Not settled':money(t.pnl_dollars);
-      const result=t.outcome?String(t.outcome).replaceAll('_',' '):'Pending';
-      [dateTime(t.created_at),tf,String(t.direction||'—'),cents(t.entry_cents),result,pnl,status].forEach((v,i)=>{const td=document.createElement('td');td.textContent=String(v);if(i===2)td.className=cssToneForDirection(t.direction);if(i===5&&t.pnl_dollars!=null)td.className=Number(t.pnl_dollars)>0?'green-text':Number(t.pnl_dollars)<0?'red-text':'';tr.appendChild(td);});
-      tbody.appendChild(tr);
-    });
+  function renderHealth(d){
+    const h=d.health||{},r=d.risk||{},s=d.stats||{};
+    const worker=h.worker_status||'not_observed';
+    setBadge('engine-badge',worker==='running'?'Connected':worker==='stale'?'Heartbeat stale':'Not confirmed',worker==='running'?'green':worker==='stale'?'red':'amber');
+    write('engine-status',h.api_ok?'API online':'API status unknown');
+    write('engine-updated',`Last check ${time(h.checked_at)} · database: ${h.database_backend||'unknown'}`);
+    write('worker-enabled',h.worker_enabled?'Enabled':'Not confirmed');
+    write('worker-heartbeat',hasNum(h.worker_last_seen_age_seconds)?age(h.worker_last_seen_age_seconds):'Not visible');
+    write('worker-action',h.worker_last_action||'No recent action reported');
+    write('kalshi-status',h.kalshi_api||'Status not reported');
+    write('real-orders',d.real_orders_enabled?'ENABLED — CHECK CONFIG':'Disabled');
+    if($('real-orders')) $('real-orders').className='value '+(d.real_orders_enabled?'negative':'positive');
+    write('pnl',money(s.net_pnl_dollars||0));if($('pnl'))$('pnl').className='metric '+(Number(s.net_pnl_dollars)>0?'positive':Number(s.net_pnl_dollars)<0?'negative':'');
+    write('win-rate',hasNum(s.win_rate_percent)?`${nfmt(s.win_rate_percent,1)}%`:'Not enough data');
+    write('settled-trades',s.settled_trades??0);write('wins-losses',`${s.wins??0} / ${s.losses??0}`);write('total-trades',s.total_trades??0);
+    write('max-trade',money(r.max_trade_dollars));write('daily-loss-limit',money(r.max_daily_loss_dollars));write('exposure',money(r.open_exposure_dollars));write('open-positions',s.open_positions??0);
+    write('next-worker-status',worker==='running'?'Worker running':worker==='stale'?'Heartbeat stale':'Worker not confirmed');
+    write('next-last-signal',d.latest_signal?.created_at?time(d.latest_signal.created_at):'No saved signal');
+    write('api-status',h.api_ok?'Healthy':'Check API');if($('api-status'))$('api-status').className='value '+(h.api_ok?'positive':'negative');
+    write('signal-source',({'hybrid':'TradingView primary + internal veto checks','gainzalgo':'TradingView / GainzAlgo','internal':'Internal rules only'})[String(h.signal_source||'').toLowerCase()]||h.signal_source||'Not reported');
+    write('trend-stop',h.trend_stop_enabled?(h.trend_stop_shadow_mode?'Enabled · shadow mode':'Enabled · simulated exits'):'Disabled');
+    write('worker-last-action',h.worker_last_action||'—');write('worker-last-reason',h.worker_last_reason||'—');
+    write('mode',d.mode==='SIMULATION_ONLY'?'SIMULATION ONLY':d.mode||'Unknown');write('real-orders-details',d.real_orders_enabled?'Enabled — investigate':'Disabled');write('database-backend',h.database_backend||'Unknown');
+    write('settings-max-trade',money(r.max_trade_dollars));write('settings-max-loss',money(r.max_daily_loss_dollars));write('server-updated',time(h.checked_at));
+    const updated=new Date();write('updated-pill',`Updated ${updated.toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'})}`);
+    if(d.mode!=='SIMULATION_ONLY'||d.real_orders_enabled){write('paper-badge','CHECK TRADING MODE');if($('paper-badge'))$('paper-badge').className='top-pill red';}else{write('paper-badge','PAPER MODE ONLY');if($('paper-badge'))$('paper-badge').className='top-pill green';}
   }
-  function render(data) {
-    const stats=data.stats||{}, risk=data.risk||{}, health=data.health||{};
-    const worker=workerCopy(health);
-    write('pnl',money(stats.net_pnl_dollars||0)); $('pnl').className='metric-value '+(Number(stats.net_pnl_dollars)>0?'green-text':Number(stats.net_pnl_dollars)<0?'red-text':'');
-    write('win-rate',stats.win_rate_percent==null?'Not enough data':number(stats.win_rate_percent,1)+'%');
-    write('settled-count',`${stats.settled_trades||0} completed · ${stats.wins||0} wins · ${stats.losses||0} losses`);
-    write('open-count',stats.open_positions||0); write('exposure','Cost of open positions: '+money(risk.open_exposure_dollars||0));
-    write('worker',worker[0]); write('worker-detail',worker[1]);
-    if (health.worker_status==='running') $('worker').className='metric-value green-text'; else if (health.worker_status==='stale') $('worker').className='metric-value red-text';
-    renderAlertHistory(data); renderCurrentStatus(data); renderTrades(data);
-    write('mode',data.mode==='SIMULATION_ONLY'?'Practice / simulation only':data.mode||'Unknown');
-    write('real-orders',data.real_orders_enabled?'Enabled — investigate':'Disabled');
-    write('signal-source',({'hybrid':'TradingView + internal safety checks','gainzalgo':'TradingView / GainzAlgo alerts','internal':'Internal rules only'})[String(health.signal_source||'').toLowerCase()]||health.signal_source||'Not reported');
-    write('max-trade',money(risk.max_trade_dollars)); write('daily-loss-limit',money(risk.max_daily_loss_dollars));
-    write('trend-stop',health.trend_stop_enabled?(health.trend_stop_shadow_mode?'Monitoring only (shadow mode)':'Enabled'):'Disabled');
-    const workerAge=safeNum(health.worker_last_seen_age_seconds)?`Worker last checked in ${ageText(health.worker_last_seen_age_seconds)}${health.worker_last_reason?' · '+health.worker_last_reason:''}`:'Worker heartbeat not visible in this database.';
-    write('updated-at',`Data source: ${health.database_backend||'database status not reported'}. ${workerAge}`);
-  }
-  async function refresh() {
-    try {
-      const response=await fetch('/api/dashboard',{cache:'no-store',headers:{'Accept':'application/json'}});
-      if (!response.ok) throw new Error(`Dashboard request failed (${response.status})`);
-      const data=await response.json(); render(data);
-      setBadge('connection-badge','Dashboard updated','good');
-      write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Refreshes automatically every 5 seconds.`);
-    } catch (error) {
-      setBadge('connection-badge','Can’t load latest data','bad');
-      write('last-refresh',`Refresh failed: ${error&&error.message?error.message:'unknown error'}. Try reloading or check the web service.`);
+  function renderMarketDiagnostics(diag){
+    if(!diag){setBadge('market-ready-badge','Diagnostics unavailable','amber');return;}
+    const sources=diag.sources||{},candles=(sources.btc_candles||{}).intervals||{},market=sources.kalshi_market||{};
+    for(const tf of ['1m','5m','15m']){
+      const c=candles[tf]||{};const val=c.status==='ok'&&hasNum(c.close_price)?usd(c.close_price):c.status==='ok'?'Available':'Unavailable';
+      write(`candle-${tf}`,val);write(`candle-${tf}-help`,c.status==='ok'?`Closed-candle age ${nfmt(c.age_seconds,0)}s · max ${nfmt(c.max_age_seconds,0)}s · ${c.latest_closed_candle_at||c.latest_candle_open_at||'time not reported'}`:`Status: ${c.status||'not reported'}`);
     }
+    setBadge('market-ready-badge',diag.ready_for_evaluation?'Ready for evaluation':'Waiting on data checks',diag.ready_for_evaluation?'green':'amber');
+    write('market-ticker',market.ticker||'No market candidate');write('market-title',market.title||'Market title not reported');
+    const q=market.quotes||{};
+    write('market-quotes',`YES ${cents(q.yes_bid_cents)} / ${cents(q.yes_ask_cents)} · NO ${cents(q.no_bid_cents)} / ${cents(q.no_ask_cents)}`);
+    write('market-quote-source',`${market.quotes_valid?'Quotes valid':'Quotes not valid'} · ${market.quote_source||'source not reported'}${market.reason?` · ${market.reason}`:''}`);
+    const remaining=asNum(market.seconds_remaining,-1);write('market-close-countdown',remaining>=0?`${Math.floor(remaining/60)}m ${Math.floor(remaining%60)}s`:'—');write('market-close-time',market.close_time?`Closes ${time(market.close_time)}`:'Close time not available');
+    write('market-checked-at',clock(diag.checked_at_utc));write('market-diagnostic-cache',`Cache ${diag.cache||'unknown'}${hasNum(diag.cache_age_seconds)?` · ${nfmt(diag.cache_age_seconds,1)}s old`:''} · ${diag.mode||'mode unreported'}`);
   }
-  refresh(); window.setInterval(refresh,5000);
+  function renderCurrentWindow(d){
+    const cw=d.current_window_decision||{};
+    const label=String(cw.status||'NO CURRENT WINDOW STATUS').replaceAll('_',' ');
+    write('current-window-status',`${label}${cw.window_start&&cw.window_end?` · ${clock(cw.window_start)}–${clock(cw.window_end)}`:''}`);
+    const badge=cw.phase==='signal_received'?'Fresh directional alert':cw.phase==='no_fresh_signal'?'Waiting for current alert':cw.phase==='indicator_wait'?'Indicator WAIT':cw.phase==='awaiting_indicator'?'Awaiting indicator':'Monitoring';
+    setBadge('worker-state-badge',badge,cw.phase==='signal_received'?'green':cw.phase==='internal_mode'?'blue':'amber');
+  }
+  async function getJSON(url){const response=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'}});if(!response.ok)throw new Error(`${url} returned ${response.status}`);return response.json();}
+  async function refresh(){
+    try{
+      const [dashboardResult,diagResult]=await Promise.allSettled([getJSON('/api/dashboard'),getJSON('/diagnostics/market-data')]);
+      if(dashboardResult.status!=='fulfilled')throw dashboardResult.reason;
+      const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderTrades(data);renderAlerts(data);
+      if(diagResult.status==='fulfilled')renderMarketDiagnostics(diagResult.value);else{setBadge('market-ready-badge','Diagnostics unavailable','amber');write('market-diagnostic-cache',diagResult.reason?.message||'Could not load diagnostic endpoint.');}
+      setBadge('connection-badge','Dashboard connected','green');write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);
+    }catch(err){setBadge('connection-badge','Dashboard connection issue','red');write('last-refresh',`Refresh failed: ${err?.message||'unknown error'}. Reload the page or check the web service.`);}
+  }
+  refresh();window.setInterval(refresh,5000);
 })();
 </script>
 </body>
