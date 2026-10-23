@@ -269,6 +269,18 @@ def ensure_schema(conn: DatabaseConnection) -> None:
         )""")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_learning_trade_id ON trade_learning(trade_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_settled ON trade_learning(settled_at, trade_id)")
+        # Append-only record of adaptive target changes. The current-state table
+        # remains compact, while this history permits transparent review/reversal.
+        policy_history_id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        policy_history_number_type = "DOUBLE PRECISION" if backend == "postgresql" else "REAL"
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS adaptive_policy_history (
+            id {policy_history_id_type}, policy_key TEXT NOT NULL, changed_at TEXT NOT NULL,
+            event_type TEXT NOT NULL, previous_target_cents {policy_history_number_type},
+            new_target_cents {policy_history_number_type}, reviewed_trade_count INTEGER NOT NULL DEFAULT 0,
+            latest_trade_id INTEGER NOT NULL DEFAULT 0, sample_count INTEGER NOT NULL DEFAULT 0,
+            sample_net_pnl_cents {policy_history_number_type}, reason TEXT NOT NULL, details_json TEXT NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_adaptive_policy_history_recent ON adaptive_policy_history(policy_key, id)")
         # Bounded adaptive entry-target state. It can only tighten the preferred
         # paper entry target; the configured 92c hard cap and dollar risk limits
         # are never modified by this policy.

@@ -35,6 +35,13 @@ class ContinuousTrendMonitorTests(unittest.TestCase):
         self.assertNotIn("approved", snapshot)
         self.assertNotIn("trade_placed", snapshot)
         self.assertIn("evidence_points", snapshot)
+        self.assertEqual(snapshot["calendar_context"]["day_type_utc"], "weekday")
+        self.assertEqual(snapshot["calendar_context"]["utc_time_bucket"], "00:00–05:59 UTC")
+        self.assertIn(snapshot["market_regime"]["trend_regime"], {
+            "breakout_trend", "aligned_trend", "directional_trend", "conflicted",
+            "range_or_consolidation", "mixed_or_unclear", "unknown",
+        })
+        self.assertIn(snapshot["market_regime"]["volatility_regime"], {"elevated_warning", "not_flagged", "unknown"})
 
     def test_missing_timeframe_fails_closed(self):
         bundle = {"candles_1m": candles(100, 1, 1.0), "candles_5m": candles(30, 5, 1.0)}

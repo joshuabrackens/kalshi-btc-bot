@@ -1,6 +1,6 @@
 # Master bot package manifest
 
-This is the complete repository based on the user-uploaded `main` branch ZIP, reconciled with reliability, audit, analytics, per-trade feedback, category-readiness, test, and dashboard changes in this package. The master patch ZIP contains **41 files: 28 replacements and 13 additions** relative to that uploaded source ZIP. It preserves repository-relative paths.
+This is the complete repository based on the user-uploaded `main` branch ZIP, reconciled with reliability, audit, analytics, per-trade feedback, category-readiness, test, and dashboard changes in this package. The prior master patch contained 41 files relative to the uploaded source snapshot. The current Phases 1–3 bundle adds a UTC market-context classifier, market-context and walk-forward tests, append-only adaptive-target change history, dashboard context rows, and an updated workflow while preserving repository-relative paths. See `BTC_BOT_PHASE123_VALIDATION.md` for the current local validation summary; the older generic validation filename is synchronized to it.
 
 ## Modified existing files
 - `.github/workflows/python-app.yml` — active GitHub Actions workflow; isolated full test matrix and offline smoke test.
@@ -15,7 +15,7 @@ This is the complete repository based on the user-uploaded `main` branch ZIP, re
 - `paper_worker.py` — enriched WAIT reasons/audits, robust retry statuses, idempotent post-settlement learning sync, and explicit soft-preference/hard-cap entry semantics: the preferred target is advisory, while the hard cap and other safeguards gate entry.
 - `signal_engine.py` — preserve calculated evidence score on a WAIT/below-threshold result.
 - `smoke_shared_alert_flow.py` — offline webhook → shared queue → hybrid decision → paper-trade smoke test.
-- `dashboard.html` — final dashboard with Realized P&L, Engine connection, and Risk limits at the top, followed by Active paper position; current WAIT state, historical direction, and active-position entry rationale remain separate.
+- `dashboard.html` — final dashboard with Realized P&L, Engine connection, and Risk limits at the top, followed by Active paper position; current WAIT state, historical direction, and active-position entry rationale remain separate. It also displays the monitor session/regime labels and recorded adaptive-target changes.
 - `test_hybrid_take_profit.py` — align tests with current DB interface and order-book-derived executable quotes; keep behavior checks intact.
 - `test_paper_bot_fixes.py` — regression test for WAIT-score preservation.
 - `test_paper_worker.py` — test isolation, current worker interface, and network-free expectations.
@@ -28,8 +28,10 @@ This is the complete repository based on the user-uploaded `main` branch ZIP, re
 - `.gitignore` — ignores local database, bytecode, caches, virtual environments, and `.env` files.
 - `payload_safety.py` — dependency-free recursive sensitive-key redaction.
 - `market_category_registry.py` — read-only category readiness scaffold; only the existing BTC 15-minute flow is paper-enabled.
-- `trade_learning.py` — per-settled-trade feature snapshots, realized outcome labels, cohort analysis, and the bounded one-way adaptive entry-target policy.
-- `test_trade_learning.py` — idempotency, settlement gating, realized-vs-exit-reason correctness, and cohort-report tests.
+- `trade_learning.py` — per-settled-trade feature snapshots, realized outcome labels, weekday/weekend/time/regime cohort analysis, a chronological holdout review, and the bounded one-way adaptive entry-target policy.
+- `market_context.py` — conservative UTC calendar buckets and descriptive trend/range/volatility-warning labels; no trading authority.
+- `test_market_context.py` — calendar bucket, missing-data, range/breakout/conflict classification tests.
+- `test_trade_learning.py` — idempotency, settlement gating, cohort-reporting, holdout-validation, and append-only policy-history tests.
 - `test_app_http_surface.py` — HTTP-level safety/auth/analytics/category API integration tests including read-only learning endpoint and post-settlement capture.
 - `test_dashboard_context.py` — API and HTML regression coverage for historical directional context and open-position rationale while the current window shows WAIT.
 - `test_category_registry.py` — category classification and fail-closed tests.
@@ -37,7 +39,7 @@ This is the complete repository based on the user-uploaded `main` branch ZIP, re
 - `test_payload_safety.py` — payload redaction, nesting, and request-size tests.
 - `test_webhook_idempotency.py` — duplicate fingerprint migration and unique-index tests.
 - `BTC_BOT_MASTER_CHANGELOG.md` — change summary, validation scope, and deployment checklist.
-- `BTC_BOT_VALIDATION_RESULTS.md` — local test and smoke-test results.
+- `BTC_BOT_VALIDATION_RESULTS.md` and `BTC_BOT_PHASE123_VALIDATION.md` — synchronized local test and smoke-test results (28 modules / 124 cases reported passing).
 
 ## Per-trade feedback / learning system
 `trade_learning.py` writes one idempotent feature snapshot and realized P&L review for each settled paper trade. Worker cycles backfill older settled trades in bounded batches; `/api/learning` is read-only. Legacy trades can fall back to matching an external alert ID when direct signal-log linkage is absent. A persistent, one-way adaptive policy may tighten the preferred entry target after at least 20 settled hybrid trades when at least 8 trades in the active high-price zone have at least 8¢ net loss and losses are at least as numerous as wins. It changes by 1¢ per qualifying review and evaluates after each 10 additional newer hybrid trade IDs; a watermark prevents old backfill from repeating the same adjustment. Tightening is capped at 5¢ below the original target, and the hard cap/dollar limits/live permissions never change.
@@ -64,3 +66,7 @@ After a paper position has reached and armed its fee-adjusted take-profit target
 ### Entry-price semantics update
 
 `PAPER_ENTRY_TARGET_MAX_CENTS` (default 80¢) is a soft preferred price, not a trade blocker. A directional signal that passes freshness, major-flaw, quote, spread, risk, and budget checks may enter above that preference up to `PAPER_MAX_ENTRY_CENTS` (default hard cap 92¢). Quotes above the hard cap wait and are not opened. Higher entry prices leave less maximum upside; a direction/evidence score is not a calibrated win probability.
+
+## Phase 1–3 completion update
+
+See `README_PHASES_1_TO_3_COMPLETION.md` for the reconciled behavior and safety boundaries. Added `adaptive_policy_history` as an append-only record for preferred-target reductions; it is created by the existing `ensure_schema()` migration path and requires no new environment variable. Historical feature snapshots are not fabricated for legacy trades: missing data remains unknown.

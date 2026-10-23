@@ -123,6 +123,7 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
         "signal-eyebrow", "active-position-summary", "strategy-checks-title",
         "next-signal-countdown", "next-signal-reasons", "hard-entry-cap", "learning-reviewed", "learning-latest-observations",
         "learning-cohorts", "learning-recent-reviews", "adaptive-entry-target", "adaptive-entry-note",
+        "trend-monitor-calendar", "trend-monitor-regime",
         "learning-effective-target", "learning-adjustment-count", "learning-policy-sample",
     ):
         assert element_id in parser.ids, f"Missing dashboard element {element_id}"
@@ -131,6 +132,8 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
     assert "HISTORICAL CONTEXT" in html
     assert "Waiting For Next Available Signal" in html
     assert "renderLearning(report)" in html
+    assert "policy_change_history" in html, "Dashboard should make saved adaptive-target changes reviewable"
+    assert "trend-monitor-calendar" in html and "trend-monitor-regime" in html
     assert "getJSON('/api/learning')" in html
     assert "Automatic tightenings" in html and "preferred entry target may tighten" in html
     assert "Preferred entry target (soft)" in html

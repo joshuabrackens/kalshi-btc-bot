@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import db_store
-from trade_learning import build_learning_report, sync_settled_trade_learning
+from trade_learning import build_learning_report, sync_settled_trade_learning, _walk_forward_context_validation
 
 
 def _new_db(tmp: str):
@@ -79,6 +79,11 @@ def test_settled_trade_learning_captures_features_and_is_idempotent():
                 review = json.loads(row[6])
                 assert features["volume_confirmation"] == "yes"
                 assert features["momentum_alignment"] == "aligned"
+                assert features["day_type_utc"] == "weekday"
+                assert features["weekday_utc"] == "Friday"
+                assert features["utc_time_bucket"] == "00:00–05:59 UTC"
+                assert features["trend_regime"] == "breakout_trend"
+                assert features["volatility_regime"] == "not_flagged"
                 assert review["result"] == "profit"
                 assert review["directional_settlement_hit"] is True
                 assert "never changes strategy rules" in review["interpretation_note"]
@@ -145,9 +150,18 @@ def test_learning_report_exposes_cohorts_and_bounded_adaptive_policy():
                 assert report["summary"]["profitable"] == 1
                 assert report["summary"]["unprofitable"] == 1
                 assert report["cohorts"]["trend_alignment"]
+                assert report["cohorts"]["day_type_utc"]
+                assert report["cohorts"]["weekday_utc"]
+                assert report["cohorts"]["utc_time_bucket"]
+                assert report["cohorts"]["trend_regime"]
+                assert report["cohorts"]["volatility_regime"]
+                assert report["signal_weight_adjustment_enabled"] is False
+                assert "out-of-sample validation" in report["phase1_context_policy"]
                 assert report["research_notes"]
                 assert "preferred entry target" in report["policy"]
                 assert "never loosens" in report["policy"]
+                assert isinstance(report["policy_change_history"], list)
+                assert report["walk_forward_validation"]["status"] == "insufficient_sample"
             finally:
                 conn.close()
 
@@ -236,6 +250,14 @@ def test_adaptive_policy_tightens_only_after_minimum_negative_price_cohort_and_n
                 next_review = update_adaptive_entry_policy(conn, configured_target_cents=80, hard_cap_cents=92)
                 assert next_review["effective_target_cents"] == 78.0
                 assert next_review["adjustment_count"] == 2
+                history = conn.execute(
+                    "SELECT previous_target_cents,new_target_cents,event_type FROM adaptive_policy_history ORDER BY id"
+                ).fetchall()
+                assert history == [(80.0, 79.0, "automatic_tightening"), (79.0, 78.0, "automatic_tightening")]
+                # Current state is compact; append-only history makes each change auditable.
+                report = build_learning_report(conn)
+                assert len(report["policy_change_history"]) == 2
+                assert report["policy_change_history"][0]["new_target_cents"] == 78.0
             finally:
                 conn.close()
 
@@ -297,3 +319,26 @@ def test_historical_backfill_does_not_repeat_adaptive_adjustments_on_same_latest
                 assert "No new adaptive review due" in after_backfill["reason"]
             finally:
                 conn.close()
+
+
+def test_walk_forward_context_validation_requires_sample_and_keeps_weights_unchanged():
+    small = _walk_forward_context_validation([
+        {"pnl_cents": 1.0, "day_type_utc": "weekday", "utc_time_bucket": "12:00–17:59 UTC",
+         "trend_regime": "aligned_trend", "volatility_regime": "not_flagged"}
+        for _ in range(12)
+    ])
+    assert small["status"] == "insufficient_sample"
+    assert small["weight_change_authorized"] is False
+
+    rows = [
+        {"pnl_cents": 2.0, "day_type_utc": "weekday", "utc_time_bucket": "12:00–17:59 UTC",
+         "trend_regime": "aligned_trend", "volatility_regime": "not_flagged"}
+        for _ in range(40)
+    ]
+    review = _walk_forward_context_validation(rows)
+    assert review["status"] == "review_only"
+    assert review["training_trade_count"] == 28
+    assert review["holdout_trade_count"] == 12
+    assert review["tested_cohorts"] >= 1
+    assert review["consistent_cohorts"] == review["tested_cohorts"]
+    assert review["weight_change_authorized"] is False

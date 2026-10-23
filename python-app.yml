@@ -48,6 +48,9 @@ jobs:
       - name: Run trend fusion gate tests
         run: python -m unittest -v test_signal_fusion_trend_gate.py
 
+      - name: Run UTC session and market-regime context tests
+        run: python -m pytest -q test_market_context.py
+
       - name: Run BTC trend monitor tests
         run: python -m unittest -v test_btc_trend_monitor.py
 

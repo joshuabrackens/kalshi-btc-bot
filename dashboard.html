@@ -279,6 +279,8 @@
     <div class="rowline"><span class="label">Volume confirmation</span><span class="value" id="trend-monitor-volume">—</span></div>
     <div class="rowline"><span class="label">Market structure</span><span class="value" id="trend-monitor-structure">—</span></div>
     <div class="rowline"><span class="label">Consolidation / box</span><span class="value" id="trend-monitor-box">—</span></div>
+    <div class="rowline"><span class="label">Session context (UTC)</span><span class="value" id="trend-monitor-calendar">—</span></div>
+    <div class="rowline"><span class="label">Trend / volatility regime</span><span class="value" id="trend-monitor-regime">—</span></div>
     <div class="notice" id="trend-monitor-note">Waiting for a fresh chart snapshot. A fresh TradingView alert and all existing market, entry-price, spread, and risk checks are still required before a paper trade.</div>
     <ul class="reason-list" id="trend-monitor-warnings"><li>No trend warnings available yet.</li></ul>
   </section>
@@ -940,10 +942,13 @@
       }
     }
     const recent=Array.isArray(report.recent_reviews)?report.recent_reviews:[];
-    setList('learning-recent-reviews',recent.map(r=>{
+    const recentTradeNotes=recent.map(r=>{
       const review=r.review||{};const notes=[...(review.positive_observations||[]),...(review.review_flags||[])];
       return `Trade #${r.trade_id} · ${String(r.pnl_result||'reviewed').toUpperCase()} · ${direction(r.direction)} · ${signedMoneyCents(r.pnl_cents)} — ${notes[0]||'Outcome recorded; no causal claim made.'}`;
-    }),'No completed post-trade reviews yet.');
+    });
+    const policyHistory=Array.isArray(report.policy_change_history)?report.policy_change_history:[];
+    const policyChangeNotes=policyHistory.slice(0,5).map(event=>`Policy history · ${event.event_type||'target change'} · ${cents(event.previous_target_cents)} → ${cents(event.new_target_cents)} · ${time(event.changed_at)} — ${String(event.reason||'Recorded for review.').slice(0,180)}`);
+    setList('learning-recent-reviews',[...policyChangeNotes,...recentTradeNotes],'No completed post-trade reviews or adaptive-target changes yet.');
     const research=Array.isArray(report.research_notes)?report.research_notes:[];
     write('learning-caution',`${research.join(' ')} ${report.important||''}`.trim());
   }
@@ -1053,6 +1058,15 @@
     write('trend-monitor-volume',t.volume_confirmation?.confirmed?'Confirmed':'Not confirmed');
     write('trend-monitor-structure',t.market_structure?.label||'Unknown');
     write('trend-monitor-box',t.box_theory?.state||'Unknown');
+    const calendar=t.calendar_context||{};
+    const dayType=calendar.day_type_utc||'unknown';
+    const weekday=calendar.weekday_utc||'unknown';
+    const timeBucket=calendar.utc_time_bucket||'unknown';
+    write('trend-monitor-calendar',`${dayType} · ${weekday} · ${timeBucket}`);
+    const regime=t.market_regime||{};
+    const trendRegime=String(regime.trend_regime||'unknown').replaceAll('_',' ');
+    const volatilityRegime=String(regime.volatility_regime||'unknown').replaceAll('_',' ');
+    write('trend-monitor-regime',`${trendRegime} · ${volatilityRegime}`);
     const note=t.error?`Trend monitor issue: ${t.error}`:stale?'The last snapshot is old. The worker must refresh chart data before relying on it for pre-analysis.':(t.disclaimer||'Chart-only pre-analysis. A fresh indicator and all execution checks are still required.');
     write('trend-monitor-note',note);
     const ul=$('trend-monitor-warnings');if(ul){ul.replaceChildren();const warns=Array.isArray(t.warnings)?t.warnings:[];if(!warns.length){const li=document.createElement('li');li.textContent='No additional trend warnings reported.';ul.appendChild(li);}else warns.forEach(msg=>{const li=document.createElement('li');li.textContent=String(msg);ul.appendChild(li);});}

@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
+from market_context import classify_market_regime, utc_calendar_context
+
 
 def _number(value: Any) -> float | None:
     try:
@@ -112,11 +114,23 @@ def _build_feature_snapshot(trade: Mapping[str, Any], signal: Mapping[str, Any] 
         chart = fusion["chart_trend_at_decision"]
     trends = strategies.get("multi_timeframe_trend") if isinstance(strategies.get("multi_timeframe_trend"), dict) else {}
     timeframe_values = trends.get("timeframes") if isinstance(trends.get("timeframes"), dict) else {}
+    if not timeframe_values and isinstance(chart.get("timeframes"), dict):
+        timeframe_values = chart["timeframes"]
     momentum = strategies.get("momentum") if isinstance(strategies.get("momentum"), dict) else {}
+    if not momentum and isinstance(chart.get("momentum"), dict):
+        momentum = chart["momentum"]
     volume = strategies.get("volume_confirmation") if isinstance(strategies.get("volume_confirmation"), dict) else {}
+    if not volume and isinstance(chart.get("volume_confirmation"), dict):
+        volume = chart["volume_confirmation"]
     structure = strategies.get("market_structure") if isinstance(strategies.get("market_structure"), dict) else {}
+    if not structure and isinstance(chart.get("market_structure"), dict):
+        structure = chart["market_structure"]
     box = strategies.get("box_theory") if isinstance(strategies.get("box_theory"), dict) else {}
+    if not box and isinstance(chart.get("box_theory"), dict):
+        box = chart["box_theory"]
     volatility = strategies.get("volatility") if isinstance(strategies.get("volatility"), dict) else {}
+    if not volatility and isinstance(chart.get("volatility"), dict):
+        volatility = chart["volatility"]
     ext = payload.get("external_signal") if isinstance(payload.get("external_signal"), dict) else {}
 
     direction = _side(trade.get("direction")) or str(trade.get("direction") or "UNKNOWN").upper()
@@ -170,6 +184,12 @@ def _build_feature_snapshot(trade: Mapping[str, Any], signal: Mapping[str, Any] 
         "absolute_distance_from_strike": dist_from_strike,
         "alert_age_seconds": _number(ext.get("age_seconds")),
         "decision_status_at_entry": str(signal.get("decision_status") or "unknown"),
+        **utc_calendar_context(trade.get("created_at")),
+        **classify_market_regime(
+            timeframe_values, structure, box,
+            chase_warning=volatility.get("chase_warning"),
+            three_candle_abs_move_pct=volatility.get("three_candle_abs_move_pct"),
+        ),
         "entry_reasons": reasons,
         "entry_warnings": warnings,
     }
@@ -350,6 +370,8 @@ def update_adaptive_entry_policy(
            FROM adaptive_policy_state WHERE policy_key=? LIMIT 1""", (_ADAPTIVE_POLICY_KEY,)
     ).fetchone()
     if state:
+        previous_persisted_target = _number(state[1]) or configured
+        previous_adjustment_count = int(state[4] or 0)
         original_base = min(float(state[0]), configured)
         effective = min(configured, float(state[1]), original_base)
         last_evaluated_count = int(state[2] or 0)
@@ -359,6 +381,8 @@ def update_adaptive_entry_policy(
         last_sample_net = _number(state[6])
         reason = str(state[7] or "No adaptive review has run yet.")
     else:
+        previous_persisted_target = configured
+        previous_adjustment_count = 0
         original_base = configured
         effective = configured
         last_evaluated_count = 0
@@ -433,6 +457,29 @@ def update_adaptive_entry_policy(
                   f"Current preferred entry target remains {effective:.0f}¢.")
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if effective < previous_persisted_target - 0.000001:
+        automatic_change = adjustments > previous_adjustment_count
+        change_type = "automatic_tightening" if automatic_change else "configured_target_lowering"
+        history_reason = reason if automatic_change else (
+            f"Configured preferred entry target was lowered from {previous_persisted_target:.2f}¢ to {effective:.2f}¢. {reason}"
+        )
+        details = {
+            "automatic": automatic_change,
+            "hard_cap_cents": round(float(hard_cap_cents), 2),
+            "last_sample_count": last_sample_count,
+            "last_sample_net_pnl_cents": last_sample_net,
+            "adjustment_count": adjustments,
+            "policy_scope": "preferred entry target only; no signal weights, hard cap, dollar budget, daily loss limit, or live-trading permission changed",
+        }
+        conn.execute(
+            """INSERT INTO adaptive_policy_history
+               (policy_key,changed_at,event_type,previous_target_cents,new_target_cents,reviewed_trade_count,
+                latest_trade_id,sample_count,sample_net_pnl_cents,reason,details_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (_ADAPTIVE_POLICY_KEY, now, change_type, previous_persisted_target, effective,
+             total, latest_trade_id, last_sample_count, last_sample_net, history_reason,
+             json.dumps(details, ensure_ascii=False, separators=(",", ":"), allow_nan=False)),
+        )
     conn.execute(
         """INSERT INTO adaptive_policy_state
            (policy_key,base_target_cents,effective_target_cents,last_evaluated_trade_count,
@@ -529,6 +576,98 @@ def _research_notes(cohorts: Mapping[str, Sequence[Mapping[str, Any]]], *, min_g
     return notes[:8]
 
 
+def _walk_forward_context_validation(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Evaluate whether descriptive context differences persist in a later holdout.
+
+    Rows are expected newest-first. The newer 30% are held out from context
+    discovery; the older 70% are the historical training slice. This is a simple
+    sanity check on observed cohort stability, not a backtest of trading rules.
+    """
+    total = len(rows)
+    holdout_count = max(1, int(total * 0.30 + 0.999999)) if total else 0
+    training_rows = list(rows[holdout_count:])
+    holdout_rows = list(rows[:holdout_count])
+    base = {
+        "method": "chronological 70/30 split; older settlements discover cohorts, newer settlements are held out",
+        "historical_trade_count": total,
+        "training_trade_count": len(training_rows),
+        "holdout_trade_count": len(holdout_rows),
+        "minimum_training_examples_per_cohort": 8,
+        "minimum_holdout_examples_per_cohort": 5,
+        "tested_cohorts": 0,
+        "consistent_cohorts": 0,
+        "cohorts": [],
+        "weight_change_authorized": False,
+    }
+    if total < 30:
+        return {
+            **base,
+            "status": "insufficient_sample",
+            "note": "At least 30 settled trades are required even to run this basic holdout check; no signal weights are changed.",
+        }
+
+    dimensions = {
+        "day_type_utc": "Weekday vs weekend (UTC)",
+        "utc_time_bucket": "Time of day (UTC)",
+        "trend_regime": "Trend/range regime",
+        "volatility_regime": "Volatility warning state",
+    }
+    results: list[dict[str, Any]] = []
+    for key, label in dimensions.items():
+        training_groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        holdout_groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for row in training_rows:
+            segment = str(row.get(key) or "unknown")
+            if segment not in {"unknown", "None", ""}:
+                training_groups[segment].append(row)
+        for row in holdout_rows:
+            segment = str(row.get(key) or "unknown")
+            if segment not in {"unknown", "None", ""}:
+                holdout_groups[segment].append(row)
+        for segment in sorted(set(training_groups) & set(holdout_groups)):
+            train_group = training_groups[segment]
+            test_group = holdout_groups[segment]
+            if len(train_group) < 8 or len(test_group) < 5:
+                continue
+            train_values = [(_number(x.get("pnl_cents")) or 0.0) for x in train_group]
+            test_values = [(_number(x.get("pnl_cents")) or 0.0) for x in test_group]
+            train_avg = sum(train_values) / len(train_values)
+            test_avg = sum(test_values) / len(test_values)
+            consistent = (train_avg > 0 and test_avg > 0) or (train_avg < 0 and test_avg < 0)
+            if abs(train_avg) <= 0.005 or abs(test_avg) <= 0.005:
+                consistent = False
+                status = "not_reproduced_or_flat"
+            elif consistent:
+                status = "directionally_consistent"
+            else:
+                status = "not_reproduced"
+            results.append({
+                "feature": label,
+                "segment": segment,
+                "training_trades": len(train_group),
+                "holdout_trades": len(test_group),
+                "training_average_net_pnl_cents": round(train_avg, 4),
+                "holdout_average_net_pnl_cents": round(test_avg, 4),
+                "status": status,
+            })
+    consistent_count = sum(1 for item in results if item["status"] == "directionally_consistent")
+    if results:
+        status = "review_only"
+        note = "Eligible context cohorts were compared against a later holdout. Consistency is a research lead, not permission to change weights."
+    else:
+        status = "insufficient_cohort_sample"
+        note = "The total sample passed the minimum, but no shared context cohort met both per-split sample thresholds; keep collecting data."
+    return {
+        **base,
+        "status": status,
+        "tested_cohorts": len(results),
+        "consistent_cohorts": consistent_count,
+        "consistency_rate_percent": round(100 * consistent_count / len(results), 2) if results else None,
+        "cohorts": results[:40],
+        "note": note,
+    }
+
+
 def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
     """Read the persistent per-trade feedback journal and summarize candidate patterns."""
     limit = max(1, min(10000, int(limit)))
@@ -553,8 +692,26 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         review = _parse_json_dict(item.pop("review_json", "{}"))
         item["features"] = features
         item["review"] = review
+        # Flatten only explicit, saved labels for descriptive cohort aggregation.
+        # Legacy rows without timestamps/context remain unknown rather than inferred.
+        for context_key in ("day_type_utc", "weekday_utc", "utc_time_bucket", "trend_regime", "volatility_regime"):
+            item[context_key] = features.get(context_key, "unknown")
         rows.append(item)
     summary = _summary(rows)
+
+    policy_history_raw = conn.execute(
+        """SELECT id,changed_at,event_type,previous_target_cents,new_target_cents,reviewed_trade_count,
+                  latest_trade_id,sample_count,sample_net_pnl_cents,reason,details_json
+           FROM adaptive_policy_history WHERE policy_key=? ORDER BY id DESC LIMIT 10""",
+        (_ADAPTIVE_POLICY_KEY,),
+    ).fetchall()
+    policy_history_keys = ["id", "changed_at", "event_type", "previous_target_cents", "new_target_cents",
+                           "reviewed_trade_count", "latest_trade_id", "sample_count", "sample_net_pnl_cents", "reason", "details_json"]
+    policy_change_history: list[dict[str, Any]] = []
+    for raw in policy_history_raw:
+        event = dict(zip(policy_history_keys, raw))
+        event["details"] = _parse_json_dict(event.pop("details_json", "{}"))
+        policy_change_history.append(event)
 
     cohort_defs = {
         "trend_alignment": ("trend_alignment", "Chart trend alignment"),
@@ -562,6 +719,11 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         "evidence_bucket": ("evidence_bucket", "Trend evidence score"),
         "volume_confirmation": ("volume_confirmation", "Volume confirmation"),
         "momentum_alignment": ("momentum_alignment", "Momentum alignment"),
+        "day_type_utc": ("day_type_utc", "Weekday vs weekend (UTC)"),
+        "weekday_utc": ("weekday_utc", "Weekday (UTC)"),
+        "utc_time_bucket": ("utc_time_bucket", "Time of day (UTC)"),
+        "trend_regime": ("trend_regime", "Trend/range regime"),
+        "volatility_regime": ("volatility_regime", "Volatility warning state"),
     }
     cohorts: dict[str, list[dict[str, Any]]] = {}
     flat_cohorts: list[dict[str, Any]] = []
@@ -607,8 +769,15 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         "system": "post_trade_feedback_v2",
         "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "automatic_strategy_changes_enabled": adaptive_enabled,
+        "signal_weight_adjustment_enabled": False,
+        "phase1_context_policy": (
+            "Weekday/weekend, UTC time-of-day, trend/range regime, and existing volatility-warning cohorts are descriptive only. "
+            "Signal weights are not automatically changed; any future change requires enough settled observations and out-of-sample validation."
+        ),
+        "walk_forward_validation": _walk_forward_context_validation(rows),
         "adaptive_policy": adaptive_policy,
-        "policy": "Every settled paper trade is stored once with its entry-time feature snapshot and net outcome. The bounded paper-only adaptation can only tighten the preferred entry target after a minimum sample and repeated negative fee-inclusive outcomes in the high-price cohort. It never loosens the target or changes the hard entry cap, trade budget, daily loss limit, or live-trading permissions.",
+        "policy_change_history": policy_change_history,
+        "policy": "Every settled paper trade is stored once with its entry-time feature snapshot and net outcome. The bounded paper-only adaptation can only tighten the preferred entry target after a minimum sample and repeated negative fee-inclusive outcomes in the high-price cohort. It never loosens the target or changes the hard entry cap, trade budget, daily loss limit, or live-trading permissions. Every target reduction is retained in an append-only history for review and manual reversal if needed.",
         "summary": summary,
         "cohorts": cohorts,
         "cohort_rows": flat_cohorts,

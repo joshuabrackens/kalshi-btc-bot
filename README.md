@@ -101,3 +101,8 @@ After a paper position has reached and armed its fee-adjusted take-profit target
 ### Entry-price semantics update
 
 `PAPER_ENTRY_TARGET_MAX_CENTS` (default 80¢) is a soft preferred price, not a trade blocker. A directional signal that passes freshness, major-flaw, quote, spread, risk, and budget checks may enter above that preference up to `PAPER_MAX_ENTRY_CENTS` (default hard cap 92¢). Quotes above the hard cap wait and are not opened. Higher entry prices leave less maximum upside; a direction/evidence score is not a calibrated win probability.
+
+
+## Phases 1–3 context upgrade
+
+See `README_PHASES_1_TO_3_COMPLETION.md` for the latest reconciled work: UTC weekday/weekend and time-of-day cohorts, descriptive trend/range and existing volatility-warning cohorts, chronological holdout review, append-only adaptive-target change history, and current-alert dashboard stabilization. Signal weights remain fixed pending sufficient out-of-sample evidence. The bot remains paper-only.

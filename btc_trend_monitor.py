@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from signal_engine import MarketContext, evaluate_signal
+from market_context import classify_market_regime, utc_calendar_context
 
 
 def _candle_asof(df: Any) -> str | None:
@@ -83,6 +84,12 @@ def build_trend_snapshot(bundle: dict[str, Any], *, now: datetime | None = None)
         "status": "ok",
         "monitor_only": True,
         "updated_at": now.isoformat(),
+        "calendar_context": utc_calendar_context(now),
+        "market_regime": classify_market_regime(
+            timeframe_values, structure, box,
+            chase_warning=volatility.get("chase_warning"),
+            three_candle_abs_move_pct=volatility.get("three_candle_abs_move_pct"),
+        ),
         "provider": "Binance public REST",
         "symbol": "BTCUSDT",
         "btc_price": round(btc_price, 2),

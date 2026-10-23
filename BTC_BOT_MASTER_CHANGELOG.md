@@ -70,3 +70,11 @@ After a paper position has reached and armed its fee-adjusted take-profit target
 - The 80¢ preferred entry target is advisory, not a price gate. With the default 92¢ hard cap, a signal that otherwise passes freshness, hybrid major-flaw, executable quote/spread, window and risk/budget checks can enter from above 80¢ through 92¢. Above 92¢ it waits. This does not imply a positive expected value; expensive contracts leave little upside.
 - Dashboard now distinguishes the soft preferred target from the hard cap and falls back to saved chart evidence when a WAIT row stores a zero action score, preventing contradictory “0/100” display next to a nonzero threshold reason.
 - Premium-entry explanation/warning is persisted with the signal payload so the dashboard can show why the entry was allowed above the preference.
+
+
+## Phase 1–3 context, validation, and history update
+- The continuous BTC trend monitor labels UTC weekday/weekend, six-hour UTC time block, descriptive trend/range state, and the signal engine's existing volatility chase-warning status. These labels are descriptive only and do not change signal weights or approve entries.
+- The per-trade journal now persists matching calendar and regime labels and groups outcomes by these contexts. Missing context remains `unknown`, and the raw three-candle move is not treated as a calibrated volatility regime.
+- Added a chronological 70/30 context holdout review. It requires at least 30 settled trades and minimum cohort samples in both slices; output is review-only and cannot authorize automatic signal-weight changes.
+- Added append-only `adaptive_policy_history` records for preferred-entry-target reductions and surfaced them in the read-only learning API/dashboard. The policy still cannot increase its target or change the hard cap, dollar budget, daily loss limit, or live-trading permissions.
+- Latest dashboard hotfix remains applied on top of the master patch; the current-window, alert-ID linkage, display-warning, and Web Service/worker signal-source diagnostics are preserved.
