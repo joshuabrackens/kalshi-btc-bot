@@ -11,6 +11,7 @@ import hashlib
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from signal_engine import MarketContext, evaluate_signal
+from candle_feed import fetch_signal_candles, CandleFeedError
 from db_store import connect_database, ensure_schema, backend_name, database_location
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
@@ -546,6 +548,220 @@ def recent_external_alerts(limit: int = 25) -> dict[str, Any]:
             "note": "These are received webhook alerts, not evaluated trade signals or placed orders."}
 
 
+_MARKET_DATA_DIAGNOSTIC_LOCK = threading.Lock()
+_MARKET_DATA_DIAGNOSTIC_CACHE: dict[str, Any] | None = None
+_MARKET_DATA_DIAGNOSTIC_CACHE_AT = 0.0
+_MARKET_DATA_DIAGNOSTIC_TTL_SECONDS = 60.0
+
+
+def _diagnostic_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _diagnostic_price_cents(market: dict[str, Any], side: str, kind: str) -> float | None:
+    dollars = market.get(f"{side}_{kind}_dollars")
+    cents = market.get(f"{side}_{kind}")
+    try:
+        if dollars is not None:
+            value = float(dollars) * 100.0
+        elif cents is not None:
+            value = float(cents)
+        else:
+            return None
+        return value if pd.notna(value) and 0 <= value <= 100 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _diagnostic_top_bid(book: dict[str, Any], side: str) -> float | None:
+    if not isinstance(book, dict):
+        return None
+    orderbook = book.get("orderbook_fp", book.get("orderbook", book))
+    if not isinstance(orderbook, dict):
+        return None
+    bids: list[float] = []
+    for key in (side, f"{side}_dollars"):
+        levels = orderbook.get(key)
+        if not isinstance(levels, list):
+            continue
+        for level in levels:
+            try:
+                price = float(level[0])
+                if key.endswith("_dollars"):
+                    price *= 100.0
+                if pd.notna(price) and 0 <= price <= 100:
+                    bids.append(price)
+            except (TypeError, ValueError, IndexError, OverflowError):
+                continue
+    return max(bids) if bids else None
+
+
+def _diagnostic_parse_candidate(candidate: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+    market = candidate.get("raw", candidate)
+    if not isinstance(market, dict):
+        return None
+    ticker = str(market.get("ticker") or candidate.get("ticker") or "")
+    if not ticker.upper().startswith("KXBTC15M-"):
+        return None
+    title = " ".join(str(market.get(key, "")) for key in ("title", "subtitle", "event_ticker")).lower()
+    if "up" not in title or ("btc" not in title and "bitcoin" not in title):
+        return None
+    if str(market.get("status", candidate.get("status", ""))).lower() in {"settled", "finalized", "closed", "inactive"}:
+        return None
+    strike = None
+    for key in ("floor_strike", "strike_price", "custom_strike", "strike"):
+        try:
+            if market.get(key) is not None:
+                strike = float(market[key])
+                break
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if strike is None or not pd.notna(strike) or strike <= 0:
+        return None
+    close_at = _diagnostic_timestamp(market.get("close_time") or market.get("expiration_time")
+                                     or candidate.get("close_time") or candidate.get("expiration_time"))
+    if close_at is None:
+        return None
+    seconds_remaining = int((close_at - now).total_seconds())
+    if not 0 < seconds_remaining <= 900:
+        return None
+    return {"ticker": ticker, "title": title, "strike_price": strike,
+            "close_time": close_at.isoformat(), "seconds_remaining": seconds_remaining}
+
+
+def _probe_market_data() -> dict[str, Any]:
+    """Manually probe the same public data sources used by the paper worker.
+
+    This endpoint never trades. The 60-second cache prevents repeated clicks from
+    creating a burst of public API requests or worsening HTTP 429 rate limits.
+    """
+    checked_at = datetime.now(timezone.utc).isoformat()
+    result: dict[str, Any] = {
+        "checked_at_utc": checked_at,
+        "mode": "SIMULATION_ONLY",
+        "trade_placed": False,
+        "cache_ttl_seconds": int(_MARKET_DATA_DIAGNOSTIC_TTL_SECONDS),
+        "sources": {},
+    }
+
+    # BTC candle source used by signal_engine during hybrid evaluation.
+    candles_source: dict[str, Any] = {"provider": "Binance public REST", "status": "error"}
+    try:
+        bundle = fetch_signal_candles()
+        interval_by_key = {"candles_1m": "1m", "candles_5m": "5m", "candles_15m": "15m"}
+        intervals: dict[str, Any] = {}
+        for key, interval in interval_by_key.items():
+            frame = bundle.get(key)
+            if frame is None or getattr(frame, "empty", True) or "timestamp" not in frame.columns or "close" not in frame.columns:
+                intervals[interval] = {"status": "error", "reason": "missing candles or required columns"}
+                continue
+            latest_at = _diagnostic_timestamp(frame["timestamp"].iloc[-1])
+            if latest_at is None:
+                intervals[interval] = {"status": "error", "reason": "latest candle timestamp is invalid or lacks timezone"}
+                continue
+            age = max(0.0, (datetime.now(timezone.utc) - latest_at).total_seconds())
+            try:
+                close_price = float(frame["close"].iloc[-1])
+            except (TypeError, ValueError, OverflowError):
+                close_price = None
+            if close_price is None or not pd.notna(close_price) or close_price <= 0:
+                intervals[interval] = {"status": "error", "reason": "latest candle close is invalid"}
+                continue
+            # The feed returns completed candles, so age up to ~2 intervals can be normal.
+            max_age = {"1m": 130.0, "5m": 610.0, "15m": 1810.0}[interval]
+            intervals[interval] = {
+                "status": "ok" if age <= max_age else "stale",
+                "latest_closed_candle_at": latest_at.isoformat(),
+                "age_seconds": round(age, 2),
+                "close_price": round(close_price, 4),
+            }
+        candles_ok = bool(intervals) and all(item.get("status") == "ok" for item in intervals.values())
+        candles_source = {"provider": "Binance public REST", "status": "ok" if candles_ok else "degraded",
+                          "symbol": "BTCUSDT", "intervals": intervals}
+    except Exception as exc:
+        candles_source["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+    result["sources"]["btc_candles"] = candles_source
+
+    # Kalshi market metadata and order book, using the same discovery/client modules as the worker.
+    kalshi_source: dict[str, Any] = {"provider": "Kalshi public REST", "status": "error"}
+    try:
+        found = discover()
+        candidates = found.get("candidates", []) if isinstance(found, dict) else []
+        now = datetime.now(timezone.utc)
+        valid = [_diagnostic_parse_candidate(c, now) for c in candidates if isinstance(c, dict)]
+        valid = [item for item in valid if item is not None]
+        valid.sort(key=lambda item: item["seconds_remaining"])
+        kalshi_source["candidate_count"] = int(found.get("candidate_count", len(candidates)) or 0) if isinstance(found, dict) else len(candidates)
+        if not valid:
+            kalshi_source.update({"status": "not_ready", "reason": "No open KXBTC15M market passed ticker, title, strike, and current-window expiry checks."})
+        else:
+            selected = valid[0]
+            details_payload = get_market(selected["ticker"])
+            market = details_payload.get("market", details_payload) if isinstance(details_payload, dict) else {}
+            # Re-validate the fetched detail response rather than trusting only discovery data.
+            detail_candidate = _diagnostic_parse_candidate({"raw": market}, datetime.now(timezone.utc))
+            if detail_candidate is None or detail_candidate["ticker"] != selected["ticker"]:
+                kalshi_source.update({"status": "not_ready", "reason": "Detailed market response did not pass the same current-window checks."})
+            else:
+                book = get_orderbook(selected["ticker"])
+                yes_ask = _diagnostic_price_cents(market, "yes", "ask")
+                no_ask = _diagnostic_price_cents(market, "no", "ask")
+                yes_bid = _diagnostic_top_bid(book, "yes")
+                no_bid = _diagnostic_top_bid(book, "no")
+                quotes = {"yes_bid_cents": yes_bid, "yes_ask_cents": yes_ask,
+                          "no_bid_cents": no_bid, "no_ask_cents": no_ask}
+                quotes_complete = all(value is not None for value in quotes.values())
+                quotes_valid = quotes_complete and yes_bid <= yes_ask and no_bid <= no_ask and 0 < yes_ask < 100 and 0 < no_ask < 100
+                kalshi_source.update({
+                    "status": "ok" if quotes_valid else "degraded",
+                    "ticker": selected["ticker"], "title": detail_candidate["title"],
+                    "strike_price": detail_candidate["strike_price"],
+                    "close_time": detail_candidate["close_time"],
+                    "seconds_remaining": detail_candidate["seconds_remaining"],
+                    "quotes": quotes,
+                    "quotes_valid": bool(quotes_valid),
+                    "reason": None if quotes_valid else "At least one quote is missing, invalid, or crossed.",
+                })
+    except Exception as exc:
+        kalshi_source["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+    result["sources"]["kalshi_market"] = kalshi_source
+    result["ready_for_evaluation"] = candles_source.get("status") == "ok" and kalshi_source.get("status") == "ok"
+    result["note"] = "Diagnostic only: checks public market data and closed BTC candles. It never opens, closes, or modifies a paper trade. A healthy feed does not guarantee a profitable signal."
+    return result
+
+
+@app.get("/diagnostics/market-data")
+def market_data_diagnostics() -> dict[str, Any]:
+    """Manually check fresh Binance candle and Kalshi market/order-book data.
+
+    Results are cached for 60 seconds to limit external API traffic. This route is
+    observational only and cannot open/close a position.
+    """
+    global _MARKET_DATA_DIAGNOSTIC_CACHE, _MARKET_DATA_DIAGNOSTIC_CACHE_AT
+    with _MARKET_DATA_DIAGNOSTIC_LOCK:
+        now = time.monotonic()
+        if (_MARKET_DATA_DIAGNOSTIC_CACHE is not None
+                and now - _MARKET_DATA_DIAGNOSTIC_CACHE_AT < _MARKET_DATA_DIAGNOSTIC_TTL_SECONDS):
+            cached = dict(_MARKET_DATA_DIAGNOSTIC_CACHE)
+            cached["cache"] = "cached"
+            cached["cache_age_seconds"] = round(now - _MARKET_DATA_DIAGNOSTIC_CACHE_AT, 2)
+            return cached
+        report = _probe_market_data()
+        _MARKET_DATA_DIAGNOSTIC_CACHE = dict(report)
+        _MARKET_DATA_DIAGNOSTIC_CACHE_AT = time.monotonic()
+        report["cache"] = "fresh"
+        report["cache_age_seconds"] = 0.0
+        return report
+
+
 @app.get("/status")
 def status() -> dict[str, Any]:
     with db_connect() as conn:
@@ -556,7 +772,8 @@ def status() -> dict[str, Any]:
     return {
         "status": "starter-ready", "signals_logged": count, "database_backend": backend_name(), "database_path": database_location(),
         "worker_heartbeat": ({"last_seen_at": heartbeat[0], "last_action": heartbeat[1], "last_reason": heartbeat[2]} if heartbeat else None),
-        "live_market_data": "not automatically connected to the signal engine",
+        "live_market_data": "on-demand during signal evaluation: Binance closed 1m/5m/15m BTC candles plus Kalshi market/order-book quotes; idle wait cycles do not continuously poll feeds.",
+        "market_data_diagnostics": "/diagnostics/market-data (manual public-feed check; cached for 60 seconds)",
         "telegram_alerts": "not connected",
         "paper_trading": "automatic paper worker enabled" if enabled else "manual ledger; automatic worker disabled",
         "paper_worker_enabled": enabled,
