@@ -124,6 +124,13 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("created_at", "TEXT"), ("market_ticker", "TEXT"), ("direction", "TEXT"),
         ("score", "INTEGER"), ("btc_price", "REAL"), ("strike_price", "REAL"),
         ("seconds_remaining", "INTEGER"), ("max_entry_cents", "REAL"), ("payload_json", "TEXT"),
+        # Explicit evaluation metadata; old rows remain null and are not guessed.
+        ("external_signal_id", "INTEGER"), ("decision_status", "TEXT"), ("proposed_direction", "TEXT"),
+        ("entry_ask_cents", "REAL"), ("spread_cents", "REAL"), ("trend_bias", "TEXT"),
+        ("trend_evidence_score", "INTEGER"), ("trend_snapshot_age_seconds", "REAL"),
+        ("counterfactual_outcome", "TEXT"), ("counterfactual_pnl_cents", "REAL"),
+        ("counterfactual_settled_at", "TEXT"), ("counterfactual_last_checked_at", "TEXT"),
+        ("counterfactual_check_note", "TEXT"),
     ],
     "paper_trades": [
         ("created_at", "TEXT"), ("settled_at", "TEXT"), ("market_ticker", "TEXT"),
@@ -207,6 +214,20 @@ def ensure_schema(conn: DatabaseConnection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_gainzalgo_queue ON gainzalgo_signals(processed_at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_open ON paper_trades(settled_at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_log_recent ON signal_log(id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_counterfactual ON signal_log(counterfactual_settled_at, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_counterfactual_lookup ON signal_log(decision_status, proposed_direction, counterfactual_settled_at, id)")
+        # Append-only audit stream for alert status transitions, evaluations,
+        # paper entries/exits, and rejected-signal counterfactual outcomes.
+        audit_id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS decision_audit (
+            id {audit_id_type}, created_at TEXT NOT NULL, event_type TEXT NOT NULL,
+            alert_id INTEGER, signal_log_id INTEGER, trade_id INTEGER, market_ticker TEXT,
+            direction TEXT, decision TEXT, reason TEXT, entry_ask_cents REAL, spread_cents REAL,
+            trend_bias TEXT, trend_evidence_score INTEGER, trend_snapshot_age_seconds REAL,
+            internal_score INTEGER, payload_json TEXT NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_decision_audit_recent ON decision_audit(id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_decision_audit_decision ON decision_audit(decision, id)")
         if backend == "postgresql":
             conn.execute("""CREATE TABLE IF NOT EXISTS worker_heartbeat (
                 worker_name TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, signal_source TEXT,
@@ -227,3 +248,32 @@ def ensure_schema(conn: DatabaseConnection) -> None:
         )
         conn.commit()
         _INITIALIZED.add(schema_key)
+
+
+def record_decision_audit(
+    conn: DatabaseConnection, *, event_type: str, decision: str | None = None, reason: str | None = None,
+    alert_id: int | None = None, signal_log_id: int | None = None, trade_id: int | None = None,
+    market_ticker: str | None = None, direction: str | None = None,
+    entry_ask_cents: float | None = None, spread_cents: float | None = None,
+    trend_bias: str | None = None, trend_evidence_score: int | None = None,
+    trend_snapshot_age_seconds: float | None = None, internal_score: int | None = None,
+    payload: dict[str, Any] | None = None, created_at: str | None = None,
+) -> int | None:
+    """Append a best-effort, paper-only decision audit event. Never place orders."""
+    import json
+    from datetime import datetime, timezone
+
+    stamp = created_at or datetime.now(timezone.utc).isoformat()
+    safe_payload = payload if isinstance(payload, dict) else {}
+    encoded = json.dumps(safe_payload, ensure_ascii=False, default=str, allow_nan=False)
+    cur = conn.execute(
+        """INSERT INTO decision_audit (created_at,event_type,alert_id,signal_log_id,trade_id,market_ticker,
+             direction,decision,reason,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,
+             trend_snapshot_age_seconds,internal_score,payload_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (stamp, str(event_type)[:80], alert_id, signal_log_id, trade_id, market_ticker, direction,
+         str(decision)[:80] if decision is not None else None, str(reason)[:800] if reason is not None else None,
+         entry_ask_cents, spread_cents, trend_bias, trend_evidence_score, trend_snapshot_age_seconds,
+         internal_score, encoded),
+    )
+    return cur.lastrowid

@@ -21,7 +21,7 @@ from signal_fusion import evaluate_fusion
 from btc_trend_monitor import build_trend_snapshot
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
-from db_store import connect_database, ensure_schema, backend_name
+from db_store import connect_database, ensure_schema, backend_name, record_decision_audit
 
 log = logging.getLogger("paper_worker")
 
@@ -314,23 +314,19 @@ def _next_gainzalgo_signal(conn):
         if parsed_source_ts is not None:
             source_age = (now - parsed_source_ts).total_seconds()
             if source_age < -10 or source_age > max_age:
-                conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note=? WHERE id=?",
-                             (now.isoformat(), f"source alert timestamp is stale/invalid; age_seconds={source_age:.1f}", signal_id))
-                conn.commit()
+                _mark_gainzalgo(conn, signal_id, "ignored", f"source alert timestamp is stale/invalid; age_seconds={source_age:.1f}")
                 continue
         if age < 0 or age > max_age:
-            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note=? WHERE id=?",
-                         (now.isoformat(), f"received alert is stale/invalid; age_seconds={age:.1f}", signal_id))
-            conn.commit()
+            _mark_gainzalgo(conn, signal_id, "ignored", f"received alert is stale/invalid; age_seconds={age:.1f}")
             continue
         symbol_text = str(symbol or "").upper()
         if not symbol_text or ("BTC" not in symbol_text and "BITCOIN" not in symbol_text):
-            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='symbol missing or not BTC' WHERE id=?",
-                         (now.isoformat(), signal_id)); conn.commit(); continue
+            _mark_gainzalgo(conn, signal_id, "ignored", "symbol missing or not BTC")
+            continue
         timeframe_text = str(timeframe or "").lower().replace(" ", "")
         if timeframe_text and timeframe_text not in {"1", "1m", "1min", "1minute", "1minutes", "15", "15m", "15min", "15minute", "15minutes"}:
-            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note=? WHERE id=?",
-                         (now.isoformat(), "unsupported timeframe; expected 1m or 15m", signal_id)); conn.commit(); continue
+            _mark_gainzalgo(conn, signal_id, "ignored", "unsupported timeframe; expected 1m or 15m")
+            continue
         d = str(raw_direction or "").strip().upper().replace("-", "_")
         if d in {"WAIT", "WAIT_THIS_WINDOW", "WAIT_WINDOW", "NO_TRADE", "NO_ENTRY", "STAND_ASIDE"}:
             direction = "WAIT"
@@ -344,8 +340,8 @@ def _next_gainzalgo_signal(conn):
         elif d in {"SELL", "SHORT"}:
             direction = "DOWN"
         else:
-            conn.execute("UPDATE gainzalgo_signals SET processed_at=?,processing_status='ignored',processing_note='unrecognized direction' WHERE id=?",
-                         (now.isoformat(), signal_id)); conn.commit(); continue
+            _mark_gainzalgo(conn, signal_id, "ignored", "unrecognized direction")
+            continue
         if not timeframe_text:
             log.warning("Alert %s did not include timeframe; verify chart/alert configuration", signal_id)
         return {"id": signal_id, "created_at": created_at, "direction": direction,
@@ -354,26 +350,147 @@ def _next_gainzalgo_signal(conn):
     return None, None
 
 
+def _audit_alert_transition(conn, signal_id: int, status: str, note: str) -> None:
+    """Persist every accepted/skipped/ignored/pending alert status transition."""
+    try:
+        row = conn.execute(
+            "SELECT created_at,direction,symbol,timeframe,payload_json FROM gainzalgo_signals WHERE id=? LIMIT 1",
+            (signal_id,),
+        ).fetchone()
+        if not row:
+            return
+        created_at, direction, symbol, timeframe, raw_payload = row
+        safe_payload = _safe_external_payload(raw_payload or "{}")
+        record_decision_audit(
+            conn, event_type="alert_status", alert_id=int(signal_id), direction=str(direction or "").upper() or None,
+            decision=status, reason=note, created_at=_utcnow().isoformat(),
+            payload={"alert_created_at": created_at, "symbol": symbol, "timeframe": timeframe,
+                     "payload_keys": sorted(safe_payload.keys())},
+        )
+        conn.commit()
+    except Exception as exc:
+        log.warning("Could not write alert audit event for %s: %s", signal_id, exc)
+
+
 def _mark_gainzalgo(conn, signal_id: int, status: str, note: str) -> None:
-    conn.execute(
+    cur = conn.execute(
         "UPDATE gainzalgo_signals SET processed_at=?,processing_status=?,processing_note=? WHERE id=? AND processed_at IS NULL",
         (_utcnow().isoformat(), status, str(note)[:500], signal_id),
     )
     conn.commit()
+    if getattr(cur, "rowcount", 0):
+        _audit_alert_transition(conn, signal_id, status, note)
+
+
+def _decision_fields_from_payload(direction: str, payload: dict[str, Any], decision_time: str | None = None) -> dict[str, Any]:
+    external = payload.get("external_signal") if isinstance(payload.get("external_signal"), dict) else {}
+    fusion = payload.get("fusion") if isinstance(payload.get("fusion"), dict) else {}
+    trend = payload.get("chart_trend_at_decision") if isinstance(payload.get("chart_trend_at_decision"), dict) else {}
+    proposed = str(external.get("direction") or payload.get("proposed_direction") or direction or "").strip().upper()
+    if proposed in {"BUY_UP", "LONG_UP", "BULLISH"}: proposed = "UP"
+    elif proposed in {"BUY_DOWN", "SHORT_DOWN", "BEARISH"}: proposed = "DOWN"
+    if proposed not in {"UP", "DOWN"}:
+        proposed = None
+    entry_ask = fusion.get("entry_ask_cents", payload.get("entry_ask_cents"))
+    spread = fusion.get("spread_cents", payload.get("spread_cents"))
+    bias = trend.get("candidate_bias") or trend.get("trend_bias")
+    evidence = trend.get("evidence_score")
+    try: entry_ask = float(entry_ask) if entry_ask is not None and math.isfinite(float(entry_ask)) else None
+    except (ValueError, TypeError, OverflowError): entry_ask = None
+    try: spread = float(spread) if spread is not None and math.isfinite(float(spread)) else None
+    except (ValueError, TypeError, OverflowError): spread = None
+    try: evidence = int(float(evidence)) if evidence is not None and math.isfinite(float(evidence)) else None
+    except (ValueError, TypeError, OverflowError): evidence = None
+    try:
+        trend_age = trend.get("age_seconds", trend.get("trend_snapshot_age_seconds"))
+        trend_age = float(trend_age) if trend_age is not None and math.isfinite(float(trend_age)) else None
+    except (ValueError, TypeError, OverflowError): trend_age = None
+    if trend_age is None:
+        snapshot_at = _parse_time(trend.get("updated_at"))
+        decision_at = _parse_time(decision_time)
+        if snapshot_at is not None and decision_at is not None:
+            trend_age = max(0.0, (decision_at - snapshot_at).total_seconds())
+    if payload.get("decision_status"):
+        decision = str(payload["decision_status"])
+    elif fusion:
+        if bool(fusion.get("approved")): decision = "approved"
+        elif bool(fusion.get("vetoed_by_internal")): decision = "vetoed"
+        else: decision = "skipped"
+    elif str(direction).upper() == "WAIT":
+        decision = str(payload.get("entry_price_gate", {}).get("decision") or "wait")
+    else:
+        decision = "candidate"
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+    fusion_reasons = fusion.get("reasons") if isinstance(fusion.get("reasons"), list) else []
+    reason = str(payload.get("final_decision_reason") or "; ".join(fusion_reasons) or "; ".join(str(x) for x in reasons[:8]))
+    alert_id = external.get("id")
+    try: alert_id = int(alert_id) if alert_id is not None else None
+    except (ValueError, TypeError, OverflowError): alert_id = None
+    return {"external_signal_id": alert_id, "decision_status": decision, "proposed_direction": proposed,
+            "entry_ask_cents": entry_ask, "spread_cents": spread, "trend_bias": str(bias).upper() if bias else None,
+            "trend_evidence_score": evidence, "trend_snapshot_age_seconds": trend_age, "decision_reason": reason}
 
 
 def _record_signal_log(conn, *, created_at: str, ticker: str | None, direction: str, score: int,
                        btc_price: float, strike: float, seconds_remaining: int,
                        max_entry_cents: float | None, payload: dict[str, Any]) -> int | None:
-    """Persist one evaluation and return its ID so an opened trade can reference it."""
+    """Persist an evaluation, normalized decision fields, and an audit event."""
+    fields = _decision_fields_from_payload(direction, payload, created_at)
+    encoded = json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)
     cur = conn.execute(
         """INSERT INTO signal_log (created_at,market_ticker,direction,score,btc_price,strike_price,
-           seconds_remaining,max_entry_cents,payload_json) VALUES (?,?,?,?,?,?,?,?,?)""",
+           seconds_remaining,max_entry_cents,payload_json,external_signal_id,decision_status,proposed_direction,
+           entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,trend_snapshot_age_seconds)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (created_at, ticker, direction, int(score), float(btc_price), float(strike), int(seconds_remaining),
-         max_entry_cents, json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)),
+         max_entry_cents, encoded, fields["external_signal_id"], fields["decision_status"], fields["proposed_direction"],
+         fields["entry_ask_cents"], fields["spread_cents"], fields["trend_bias"], fields["trend_evidence_score"],
+         fields["trend_snapshot_age_seconds"]),
     )
     conn.commit()
-    return cur.lastrowid
+    signal_log_id = cur.lastrowid
+    try:
+        record_decision_audit(
+            conn, event_type="signal_evaluation", alert_id=fields["external_signal_id"],
+            signal_log_id=signal_log_id, market_ticker=ticker, direction=fields["proposed_direction"] or direction,
+            decision=fields["decision_status"], reason=fields["decision_reason"],
+            entry_ask_cents=fields["entry_ask_cents"], spread_cents=fields["spread_cents"],
+            trend_bias=fields["trend_bias"], trend_evidence_score=fields["trend_evidence_score"],
+            trend_snapshot_age_seconds=fields["trend_snapshot_age_seconds"], internal_score=int(score),
+            created_at=created_at,
+            payload={"logged_direction": direction, "external_signal_id": fields["external_signal_id"],
+                     "decision_status": fields["decision_status"], "reasons": payload.get("reasons", [])[:10],
+                     "fusion": payload.get("fusion", {}), "chart_trend_at_decision": payload.get("chart_trend_at_decision", {})},
+        )
+        conn.commit()
+    except Exception as exc:
+        log.warning("Could not write signal audit event: %s", exc)
+    return signal_log_id
+
+
+def _update_signal_decision_status(conn, signal_log_id: int | None, status: str, reason: str) -> None:
+    """Update an evaluation when a later risk check changes the final action."""
+    if signal_log_id is None:
+        return
+    try:
+        row = conn.execute(
+            "SELECT market_ticker,proposed_direction,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,trend_snapshot_age_seconds,score,external_signal_id FROM signal_log WHERE id=? LIMIT 1",
+            (signal_log_id,),
+        ).fetchone()
+        if not row:
+            return
+        ticker, direction, ask, spread, bias, trend_score, trend_age, internal_score, alert_id = row
+        conn.execute("UPDATE signal_log SET decision_status=? WHERE id=?", (status, signal_log_id))
+        record_decision_audit(
+            conn, event_type="decision_status_update", alert_id=alert_id, signal_log_id=signal_log_id,
+            market_ticker=ticker, direction=direction, decision=status, reason=reason,
+            entry_ask_cents=ask, spread_cents=spread, trend_bias=bias, trend_evidence_score=trend_score,
+            trend_snapshot_age_seconds=trend_age, internal_score=internal_score,
+            payload={"updated_from_later_guard": True},
+        )
+        conn.commit()
+    except Exception as exc:
+        log.warning("Could not update decision audit status for signal %s: %s", signal_log_id, exc)
 
 
 def _log_wait(conn, reason: str, *, ticker: str | None = None, external: dict | None = None,
@@ -445,11 +562,93 @@ def _entry_price_gate(current_ask_cents: float, hard_cap_cents: float, target_ca
 
 def _set_gainzalgo_pending(conn, signal_id: int, status: str, note: str) -> None:
     """Record a pending status without setting processed_at, so a fresh alert can retry."""
-    conn.execute(
+    cur = conn.execute(
         "UPDATE gainzalgo_signals SET processing_status=?,processing_note=? WHERE id=? AND processed_at IS NULL",
         (str(status)[:80], str(note)[:500], signal_id),
     )
     conn.commit()
+    if getattr(cur, "rowcount", 0):
+        _audit_alert_transition(conn, signal_id, status, note)
+
+
+def _resolve_counterfactual_signal_outcomes(conn, *, max_checks: int = 5) -> int:
+    """Settle one-contract, hold-to-settlement counterfactuals for rejected decisions.
+
+    This is evaluation-only: it never creates, closes, or modifies paper positions.
+    Results include entry fee and explicitly omit stop/exit behavior so they remain
+    labeled counterfactual rather than actual strategy P&L.
+    """
+    now = _utcnow()
+    older_than = (now - timedelta(seconds=120)).isoformat()
+    candidates = conn.execute(
+        """SELECT id,created_at,market_ticker,proposed_direction,entry_ask_cents,seconds_remaining,
+                  decision_status,counterfactual_last_checked_at,external_signal_id,trend_bias,trend_evidence_score
+           FROM signal_log
+           WHERE counterfactual_settled_at IS NULL
+             AND proposed_direction IN ('UP','DOWN')
+             AND entry_ask_cents > 0 AND entry_ask_cents < 100
+             AND decision_status IN ('vetoed','skipped','wait_for_better_price','wait','blocked','ignored')
+             AND NOT EXISTS (SELECT 1 FROM paper_trades p WHERE p.entry_signal_log_id=signal_log.id)
+           ORDER BY CASE WHEN counterfactual_last_checked_at IS NULL THEN 0 ELSE 1 END,
+                    counterfactual_last_checked_at ASC, id ASC LIMIT 100"""
+    ).fetchall()
+    checked = 0
+    fee = max(0.0, _safe_float(os.getenv("PAPER_FEE_CENTS_PER_CONTRACT", "2.0"), 2.0))
+    for row in candidates:
+        if checked >= max(0, min(20, int(max_checks))):
+            break
+        (signal_id, created_at, ticker, side, ask, seconds_remaining, decision_status,
+         last_checked, alert_id, trend_bias, trend_score) = row
+        created = _parse_time(created_at)
+        if created is None or not ticker or seconds_remaining is None:
+            continue
+        # Wait until this contract should have closed plus a short result-publication buffer.
+        if (now - created).total_seconds() < max(0, float(seconds_remaining)) + 45:
+            continue
+        if last_checked:
+            last = _parse_time(last_checked)
+            if last is not None and (now - last).total_seconds() < 120:
+                continue
+        checked += 1
+        note = "Market is not finally settled yet; will retry later."
+        try:
+            market_payload = get_market(str(ticker))
+            market = market_payload.get("market", market_payload) if isinstance(market_payload, dict) else {}
+            market_status = str(market.get("status", "")).lower() if isinstance(market, dict) else ""
+            result = str(market.get("result", "")).lower() if isinstance(market, dict) else ""
+            if market_status in {"settled", "finalized"} and result in {"yes", "no"}:
+                outcome = "UP" if result == "yes" else "DOWN"
+                pnl = (100.0 if str(side).upper() == outcome else 0.0) - float(ask) - fee
+                settled_at = now.isoformat()
+                conn.execute(
+                    """UPDATE signal_log SET counterfactual_outcome=?,counterfactual_pnl_cents=?,
+                       counterfactual_settled_at=?,counterfactual_last_checked_at=?,counterfactual_check_note=? WHERE id=?""",
+                    (outcome, pnl, settled_at, settled_at,
+                     "Hypothetical 1-contract hold-to-settlement; entry ask and entry fee included; excludes exits/stops.", signal_id),
+                )
+                record_decision_audit(
+                    conn, event_type="counterfactual_settled", alert_id=alert_id, signal_log_id=signal_id,
+                    market_ticker=str(ticker), direction=str(side), decision="counterfactual_win" if pnl > 0 else "counterfactual_loss" if pnl < 0 else "counterfactual_break_even",
+                    reason="Rejected/no-entry signal evaluated against official settlement; not an actual trade.",
+                    entry_ask_cents=float(ask), trend_bias=trend_bias, trend_evidence_score=trend_score,
+                    created_at=settled_at, payload={"official_outcome": outcome, "hypothetical_pnl_cents": round(pnl, 4),
+                                                    "decision_status": decision_status, "method": "one contract held to official settlement, entry fee included; no exit/stop fees"},
+                )
+                conn.commit()
+                log.info("Counterfactual for signal_log_id=%s settled outcome=%s hypothetical_pnl=%.2fc; no trade modified", signal_id, outcome, pnl)
+                continue
+            note = f"Official result not available yet (status={market_status or 'unknown'}; result={result or 'unknown'})."
+        except Exception as exc:
+            note = f"Counterfactual lookup failed: {type(exc).__name__}: {str(exc)[:180]}"
+        try:
+            conn.execute(
+                "UPDATE signal_log SET counterfactual_last_checked_at=?,counterfactual_check_note=? WHERE id=?",
+                (now.isoformat(), note, signal_id),
+            )
+            conn.commit()
+        except Exception as store_exc:
+            log.warning("Could not persist counterfactual check status for %s: %s", signal_id, store_exc)
+    return checked
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -506,6 +705,16 @@ def _manage_open(conn) -> None:
                     (_utcnow().isoformat(), outcome, pnl, " | auto-settled from official Kalshi result; paper only", trade_id),
                 )
                 conn.commit()
+                try:
+                    record_decision_audit(
+                        conn, event_type="paper_trade_settled", trade_id=int(trade_id), market_ticker=str(ticker),
+                        direction=str(direction), decision="settled", reason="Settled from official Kalshi market result.",
+                        entry_ask_cents=float(entry), internal_score=None, created_at=_utcnow().isoformat(),
+                        payload={"official_result": result, "outcome": outcome, "net_pnl_cents": round(pnl, 4), "contracts": int(contracts)},
+                    )
+                    conn.commit()
+                except Exception as audit_exc:
+                    log.warning("Could not audit settlement of trade %s: %s", trade_id, audit_exc)
                 log.info("Paper trade %s settled from official result=%s outcome=%s PnL=%.2fc", trade_id, result, outcome, pnl)
                 continue
 
@@ -639,6 +848,17 @@ def _manage_open(conn) -> None:
                 conn.execute("UPDATE paper_trades SET settled_at=?,outcome=?,pnl_cents=?,notes=COALESCE(notes,'') || ? WHERE id=?",
                              (_utcnow().isoformat(), outcome, pnl, note, trade_id))
                 conn.commit()
+                try:
+                    record_decision_audit(
+                        conn, event_type="paper_trade_exited", trade_id=int(trade_id), market_ticker=str(ticker),
+                        direction=str(direction), decision=outcome.lower(), reason=note.strip(),
+                        entry_ask_cents=float(entry), created_at=_utcnow().isoformat(),
+                        payload={"simulated_exit_bid_cents": float(bid), "net_pnl_cents": round(pnl, 4),
+                                 "exit_reason": outcome, "paper_only": True},
+                    )
+                    conn.commit()
+                except Exception as audit_exc:
+                    log.warning("Could not audit exit of trade %s: %s", trade_id, audit_exc)
                 log.warning("Paper trade %s simulated close=%s bid=%.2fc net PnL=%.2fc; no real order placed", trade_id, outcome, bid, pnl)
         except Exception as exc:
             log.exception("Failed to monitor paper trade %s; keeping it open: %s", trade_id, exc)
@@ -723,11 +943,17 @@ def run_once() -> dict[str, Any]:
 
         realized, open_cost, daily_count, halted = _limits(conn, max_trade, max_loss)
         if halted:
-            return {"action": "blocked", "reason": "daily loss budget reached including open-position risk",
+            reason = "daily loss budget reached including open-position risk"
+            if queued:
+                _mark_gainzalgo(conn, queued["id"], "skipped", reason)
+            return {"action": "blocked", "reason": reason,
                     "realized_pnl_cents": round(realized, 2), "open_risk_cents": round(open_cost, 2)}
         daily_cap = max(1, min(96, int(_safe_float(os.getenv("PAPER_MAX_TRADES_PER_DAY", "96"), 96))))
         if daily_count >= daily_cap:
-            return {"action": "wait", "reason": "paper daily trade cap reached"}
+            reason = "paper daily trade cap reached"
+            if queued:
+                _mark_gainzalgo(conn, queued["id"], "skipped", reason)
+            return {"action": "wait", "reason": reason}
 
         if conn.execute("SELECT 1 FROM paper_trades WHERE settled_at IS NULL LIMIT 1").fetchone():
             if queued:
@@ -809,7 +1035,14 @@ def run_once() -> dict[str, Any]:
             if spread > max_spread:
                 note = f"spread {spread:.2f}c exceeds max spread {max_spread:.2f}c"
                 _mark_gainzalgo(conn, queued["id"], "skipped", note)
-                _log_wait(conn, note, ticker=market["ticker"], external=queued)
+                _log_wait(conn, note, ticker=market["ticker"], external=queued,
+                          internal_payload={"entry_ask_cents": entry, "spread_cents": spread,
+                                            "decision_status": "skipped", "chart_trend_at_decision": {
+                                                "status": (trend_snapshot or {}).get("status"),
+                                                "updated_at": (trend_snapshot or {}).get("updated_at"),
+                                                "candidate_bias": (trend_snapshot or {}).get("candidate_bias"),
+                                                "evidence_score": (trend_snapshot or {}).get("evidence_score"),
+                                                "timeframes": (trend_snapshot or {}).get("timeframes")}})
                 return {"action": "wait", "reason": note, "ticker": market["ticker"], "spread_cents": spread}
 
             price_action, price_note = _entry_price_gate(entry, hard_max_entry, max_entry)
@@ -819,6 +1052,31 @@ def run_once() -> dict[str, Any]:
                 max_age_config = os.getenv("TRADINGVIEW_MAX_SIGNAL_AGE_SECONDS", os.getenv("GAINZALGO_MAX_SIGNAL_AGE_SECONDS", "300"))
                 max_age = max(30, min(900, int(_safe_float(max_age_config, 300))))
                 remaining = max(0.0, max_age - float(queued.get("age_seconds", 0) or 0))
+                wait_payload = {
+                    "direction": "WAIT", "decision_status": "wait_for_better_price", "score": 0,
+                    "source": "TradingView-primary hybrid" if source == "hybrid" else "TradingView/GainzAlgo",
+                    "external_signal": {"id": queued["id"], "created_at": queued["created_at"],
+                                         "direction": direction, "symbol": queued.get("symbol"),
+                                         "timeframe": queued.get("timeframe"), "age_seconds": queued.get("age_seconds")},
+                    "entry_ask_cents": entry, "spread_cents": spread,
+                    "fusion": {"approved": False, "vetoed_by_internal": False, "direction": "WAIT",
+                               "entry_ask_cents": entry, "spread_cents": spread, "reasons": [note]},
+                    "chart_trend_at_decision": {
+                        "status": (trend_snapshot or {}).get("status"),
+                        "updated_at": (trend_snapshot or {}).get("updated_at"),
+                        "candidate_bias": (trend_snapshot or {}).get("candidate_bias"),
+                        "evidence_score": (trend_snapshot or {}).get("evidence_score"),
+                        "evidence_points": (trend_snapshot or {}).get("evidence_points"),
+                        "timeframes": (trend_snapshot or {}).get("timeframes"),
+                        "age_seconds": (trend_snapshot or {}).get("age_seconds"),
+                    },
+                    "reasons": [note], "final_decision_reason": note,
+                    "disclaimer": "No paper entry opened at this price; hypothetical outcome is evaluated separately from actual trading.",
+                }
+                _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
+                                   score=0, btc_price=float((trend_snapshot or {}).get("btc_price") or market["strike"]),
+                                   strike=market["strike"], seconds_remaining=market["seconds"],
+                                   max_entry_cents=max_entry, payload=wait_payload)
                 return {"action": "wait_for_better_price", "reason": note, "ticker": market["ticker"],
                         "direction": direction, "entry_ask_cents": entry, "entry_target_max_cents": max_entry,
                         "signal_age_seconds": queued.get("age_seconds"), "signal_freshness_seconds_remaining": round(remaining, 1),
@@ -872,6 +1130,7 @@ def run_once() -> dict[str, Any]:
                         "evidence_score": (trend_snapshot or {}).get("evidence_score"),
                         "evidence_points": (trend_snapshot or {}).get("evidence_points"),
                         "timeframes": (trend_snapshot or {}).get("timeframes"),
+                        "age_seconds": (trend_snapshot or {}).get("age_seconds"),
                     },
                     "reasons": list(fused.get("reasons", [])) + [f"Internal diagnostics: {r}" for r in internal_payload.get("reasons", [])],
                     "warnings": list(internal_payload.get("warnings", [])) + list(fused.get("warnings", [])),
@@ -951,21 +1210,25 @@ def run_once() -> dict[str, Any]:
             wait_payload["entry_price_gate"] = {"decision": "wait_for_better_price", "current_ask_cents": float(entry),
                                                  "target_max_cents": max_entry, "reason": price_note}
             wait_payload["reasons"] = list(wait_payload.get("reasons", [])) + [price_note]
-            _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
+            wait_signal_id = _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
                                score=score, btc_price=entry_btc, strike=market["strike"],
                                seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=wait_payload)
+            if entry_signal_log_id is not None:
+                _update_signal_decision_status(conn, entry_signal_log_id, "wait_for_better_price", price_note)
             return {"action": "wait_for_better_price", "reason": price_note, "ticker": market["ticker"],
                     "entry_ask_cents": float(entry), "entry_target_max_cents": max_entry,
                     "trade_placed": False, "mode": "SIMULATION_ONLY"}
         contracts = max(0, min(10, int((max_trade * 100) // (float(entry) + fee))))
         if contracts < 1:
             reason = "even one contract plus fees exceeds MAX_TRADE_DOLLARS"
+            _update_signal_decision_status(conn, entry_signal_log_id, "blocked", reason)
             if queued:
                 _mark_gainzalgo(conn, queued["id"], "skipped", reason)
             _log_wait(conn, reason, ticker=market["ticker"], external=queued, internal_payload=internal_payload or {})
             return {"action": "blocked", "reason": reason, "entry_cents": entry, "fee_cents": fee}
         if realized - open_cost - contracts * (float(entry) + fee) <= -max_loss * 100:
             reason = "trade would exceed daily loss budget when open risk is reserved"
+            _update_signal_decision_status(conn, entry_signal_log_id, "blocked", reason)
             if queued:
                 _mark_gainzalgo(conn, queued["id"], "skipped", reason)
             return {"action": "blocked", "reason": reason}
@@ -978,7 +1241,7 @@ def run_once() -> dict[str, Any]:
                 f"TradingView/GainzAlgo paper entry; signal_id={external_id}" if use_external else
                 "Internal strategy paper entry; heuristic evidence score is not a win probability")
         timeframe_note = queued.get("timeframe") if queued else None
-        conn.execute(
+        trade_cur = conn.execute(
             """INSERT INTO paper_trades (created_at,market_ticker,direction,contracts,entry_cents,fee_cents_per_contract,
                notes,stop_loss_cents,entry_btc_price,high_water_btc,low_water_btc,last_stop_candle_timestamp,
                take_profit_target_cents,entry_signal_source,external_signal_id,timeframe,
@@ -988,6 +1251,20 @@ def run_once() -> dict[str, Any]:
              note + f" | entry target <= {max_entry:.2f}c (configured hard cap {hard_max_entry:.2f}c)", stop,
              entry_btc, entry_btc, entry_btc, entry_candle_timestamp, tp_target, signal_source, external_id,
              timeframe_note or "15m contract; TV timeframe unknown", entry_signal_log_id, entry_signal_score),
+        )
+        trade_id = trade_cur.lastrowid
+        conn.commit()
+        if entry_signal_log_id is not None:
+            conn.execute("UPDATE signal_log SET decision_status='paper_opened' WHERE id=?", (entry_signal_log_id,))
+        record_decision_audit(
+            conn, event_type="paper_trade_opened", alert_id=external_id, signal_log_id=entry_signal_log_id,
+            trade_id=trade_id, market_ticker=market["ticker"], direction=direction, decision="paper_opened",
+            reason="Paper entry passed the configured freshness, quote, price, fusion, exposure, and risk checks.",
+            entry_ask_cents=float(entry), spread_cents=spread, internal_score=entry_signal_score,
+            created_at=now_text, payload={"contracts": contracts, "fee_cents_per_contract": fee,
+                                         "total_entry_cost_cents": contracts * (float(entry) + fee),
+                                         "hard_entry_cap_cents": hard_max_entry, "target_entry_cents": max_entry,
+                                         "mode": "SIMULATION_ONLY"},
         )
         conn.commit()
         if queued:
@@ -1050,6 +1327,20 @@ def run_forever() -> None:
         try:
             result = run_once()
             _write_heartbeat(result)
+            # Retrospective counterfactual lookups happen only after the current
+            # decision cycle has completed, never before processing a fresh alert.
+            # Limit to one public result lookup per idle/monitoring cycle to keep
+            # signal latency and public API load bounded.
+            if result.get("action") in {"wait", "monitoring", "blocked", "error_wait"}:
+                audit_conn = None
+                try:
+                    audit_conn = _connect()
+                    _resolve_counterfactual_signal_outcomes(audit_conn, max_checks=1)
+                except Exception as audit_exc:
+                    log.warning("Counterfactual review skipped; no trade decision affected: %s", audit_exc)
+                finally:
+                    if audit_conn is not None:
+                        audit_conn.close()
             log.info("Paper worker cycle: %s", result)
         except Exception as exc:
             log.exception("Unexpected worker-loop error; continuing without a trade")

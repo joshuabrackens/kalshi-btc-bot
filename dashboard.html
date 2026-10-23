@@ -273,6 +273,33 @@
     <div class="notice"><strong>How to read this:</strong> old trades may not have an original score linked to them. Their source is classified from the saved source field or trade note when possible; otherwise it remains “legacy unknown.” Do not tune rules from a small sample or one unusually profitable trade.</div>
   </section>
 
+  <section class="card section" aria-label="Decision quality and retrospective analytics">
+    <div class="section-head"><div><h2>Decision quality &amp; retrospective</h2><p class="section-desc">Actual paper results are separated from hypothetical results for signals that did not open a trade. This panel is descriptive, not a win-probability model.</p></div><span class="badge blue" id="analytics-badge">Loading analytics</span></div>
+    <div class="mini-grid">
+      <div class="mini"><div class="label">Settled journal trades</div><div class="value" id="analytics-settled">—</div><div class="help" id="analytics-total">— total including open</div></div>
+      <div class="mini"><div class="label">Actual net P&amp;L</div><div class="value" id="analytics-pnl">—</div><div class="help">Recorded fees included where stored</div></div>
+      <div class="mini"><div class="label">Win rate</div><div class="value" id="analytics-winrate">—</div><div class="help">Among settled journal trades</div></div>
+      <div class="mini"><div class="label">Average net / settled trade</div><div class="value" id="analytics-expectancy">—</div><div class="help">Historical average, not a forecast</div></div>
+      <div class="mini"><div class="label">Profit factor</div><div class="value" id="analytics-profit-factor">—</div><div class="help">Gross profit ÷ absolute gross loss</div></div>
+      <div class="mini"><div class="label">Maximum drawdown</div><div class="value" id="analytics-drawdown">—</div><div class="help">Peak-to-trough cumulative journal P&amp;L</div></div>
+    </div>
+    <div class="mini-grid" style="margin-top:11px">
+      <div class="mini"><div class="label">Last 20 settled trades</div><div class="value" id="analytics-last20-pnl">—</div><div class="help" id="analytics-last20-note">—</div></div>
+      <div class="mini"><div class="label">Last 50 settled trades</div><div class="value" id="analytics-last50-pnl">—</div><div class="help" id="analytics-last50-note">—</div></div>
+      <div class="mini"><div class="label">Rejected-signal counterfactuals settled</div><div class="value" id="analytics-cf-settled">—</div><div class="help" id="analytics-cf-pending">— pending eligible reviews</div></div>
+      <div class="mini"><div class="label">Counterfactual net P&amp;L</div><div class="value" id="analytics-cf-pnl">—</div><div class="help">Hypothetical one-contract hold to settlement</div></div>
+    </div>
+    <div class="strategy-grid" style="margin-top:12px">
+      <div class="strategy"><div class="strategy-head"><strong>Trend-stop shadow comparison</strong><span class="tag" id="analytics-shadow-count">—</span></div><p id="analytics-shadow-note">Waiting for settled positions with shadow-stop data.</p></div>
+      <div class="strategy"><div class="strategy-head"><strong>Measurement guardrail</strong><span class="tag">Paper only</span></div><p id="analytics-caution">Waiting for analytics.</p></div>
+    </div>
+    <div style="margin-top:13px"><h3 style="font-size:15px;margin:0 0 8px">Actual results by entry price</h3><div class="table-wrap"><table style="min-width:700px"><thead><tr><th>Entry price</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Net P&amp;L</th></tr></thead><tbody id="analysis-by-entry-price"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div></div>
+    <div style="margin-top:13px"><h3 style="font-size:15px;margin:0 0 8px">Actual results by chart-trend alignment</h3><div class="table-wrap"><table style="min-width:700px"><thead><tr><th>Alignment at entry</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Net P&amp;L</th></tr></thead><tbody id="analysis-by-trend"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div></div>
+    <div style="margin-top:13px"><h3 style="font-size:15px;margin:0 0 8px">Actual results by chart evidence score</h3><div class="table-wrap"><table style="min-width:700px"><thead><tr><th>Chart evidence score</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Net P&amp;L</th></tr></thead><tbody id="analysis-by-evidence"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div></div>
+    <div style="margin-top:13px"><h3 style="font-size:15px;margin:0 0 8px">Rejected-signal counterfactual review</h3><p class="small">These are not trades. They assume one contract entered at the recorded ask and held to official settlement, including recorded entry fees, with no stops, exit fees, slippage, or market impact.</p><div class="table-wrap"><table style="min-width:900px"><thead><tr><th>Evaluated</th><th>Market</th><th>Proposed side</th><th>Decision</th><th>Entry ask</th><th>Chart bias</th><th>Hypothetical net P&amp;L</th></tr></thead><tbody id="counterfactual-trades"><tr><td colspan="7" class="empty">Waiting for a completed rejected-signal outcome…</td></tr></tbody></table></div></div>
+    <details style="margin-top:13px"><summary>Recent decision audit</summary><p class="section-desc">Alert transitions, evaluations, simulated openings/exits, and counterfactual settlements. This is an audit trail, not an order route.</p><div class="table-wrap"><table style="min-width:1000px"><thead><tr><th>Time</th><th>Event</th><th>Decision</th><th>Market</th><th>Side</th><th>Ask</th><th>Trend</th><th>Reason</th></tr></thead><tbody id="recent-decisions"><tr><td colspan="8" class="empty">Waiting for decision events…</td></tr></tbody></table></div><p class="small" id="decision-count-note">—</p></details>
+  </section>
+
   <section class="card section" aria-label="Paper trade activity">
     <div class="section-head"><div><h2>Paper trade activity</h2><p class="section-desc">The journal records simulated entries, outcomes, and net profit/loss. Open positions are not counted as settled results.</p></div><span class="badge blue" id="trade-count-badge">Most recent trades</span></div>
     <div class="table-wrap"><table style="min-width:1000px" aria-label="Paper trade activity"><thead><tr><th>Opened</th><th>Market</th><th>Side</th><th>Signal source</th><th>Entry score</th><th>Contracts</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Net P&amp;L</th></tr></thead><tbody id="trades"><tr><td colspan="10" class="empty">Waiting for trades…</td></tr></tbody></table></div>
@@ -460,6 +487,34 @@
       tbody.appendChild(tr);
     }
   }
+  function signedMoneyCents(v){ if(!hasNum(v)) return '—'; const n=Number(v)/100; return `${n<0?'-':''}$${Math.abs(n).toFixed(2)}`; }
+  function renderAnalyticsTable(id, rows, emptyText){
+    const tbody=$(id); if(!tbody)return; tbody.replaceChildren();
+    if(!Array.isArray(rows)||!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent=emptyText;tr.appendChild(td);tbody.appendChild(tr);return;}
+    rows.forEach(r=>{const tr=document.createElement('tr');const vals=[r.group,r.settled_trades,r.wins,r.losses,hasNum(r.win_rate_percent)?`${nfmt(r.win_rate_percent,1)}%`:'—',money(r.net_pnl_dollars)];vals.forEach((v,i)=>{const td=document.createElement('td');td.textContent=v===null||v===undefined?'—':String(v);if(i===5)td.className=asNum(r.net_pnl_dollars)>=0?'positive':'negative';tr.appendChild(td);});tbody.appendChild(tr);});
+  }
+  function renderAnalytics(a){
+    if(!a||!a.summary){setBadge('analytics-badge','Analytics unavailable','amber');write('analytics-caution','The analytics endpoint did not return a summary.');return;}
+    const s=a.summary||{},r20=a.rolling?.last_20_settled||{},r50=a.rolling?.last_50_settled||{},cf=a.rejected_signal_counterfactuals||{},cfs=cf.summary||{},shadow=a.trend_stop_shadow_comparison||{};
+    setBadge('analytics-badge',`${s.settled_trades||0} settled trades`,(s.settled_trades||0)>=50?'blue':'amber');
+    write('analytics-settled',s.settled_trades??0);write('analytics-total',`${s.total_trades??0} total · ${s.open_positions??0} open`);
+    write('analytics-pnl',money(s.net_pnl_dollars));write('analytics-winrate',hasNum(s.win_rate_percent)?`${nfmt(s.win_rate_percent,1)}%`:'—');
+    write('analytics-expectancy',hasNum(s.average_net_pnl_cents_per_settled_trade)?signedMoneyCents(s.average_net_pnl_cents_per_settled_trade):'—');
+    write('analytics-profit-factor',typeof s.profit_factor==='number'?nfmt(s.profit_factor,2):s.profit_factor==='no_recorded_losses'?'No losses yet':'—');
+    write('analytics-drawdown',signedMoneyCents(-(asNum(s.max_drawdown_cents))));
+    write('analytics-last20-pnl',money(r20.net_pnl_dollars));write('analytics-last20-note',`${r20.settled_trades||0} settled · ${hasNum(r20.win_rate_percent)?nfmt(r20.win_rate_percent,1)+'% win rate':'no results'}`);
+    write('analytics-last50-pnl',money(r50.net_pnl_dollars));write('analytics-last50-note',`${r50.settled_trades||0} settled · ${hasNum(r50.win_rate_percent)?nfmt(r50.win_rate_percent,1)+'% win rate':'no results'}`);
+    write('analytics-cf-settled',cfs.settled_trades??0);write('analytics-cf-pending',`${a.rejected_signal_counterfactuals_pending??0} pending eligible reviews`);write('analytics-cf-pnl',money(cfs.net_pnl_dollars));
+    write('analytics-shadow-count',`${shadow.triggered_and_settled_count??0} trades`);
+    write('analytics-shadow-note',`Hypothetical shadow exit ${signedMoneyCents(shadow.hypothetical_exit_net_pnl_cents_sum)} vs actual P&L ${signedMoneyCents(shadow.actual_journal_net_pnl_cents_sum_for_same_trades)}; difference ${signedMoneyCents(shadow.hypothetical_minus_actual_cents_sum)}. ${shadow.note||''}`);
+    write('analytics-caution',s.sample_note||a.important||'Descriptive analysis only.');
+    renderAnalyticsTable('analysis-by-entry-price',a.by_entry_price_bucket,'No entry-price cohort data.');
+    renderAnalyticsTable('analysis-by-trend',a.by_chart_trend_alignment,'No linked chart-trend data yet.');
+    renderAnalyticsTable('analysis-by-evidence',a.by_chart_evidence_score,'No linked chart-score data yet.');
+    const cfBody=$('counterfactual-trades');if(cfBody){cfBody.replaceChildren();const rows=Array.isArray(cf.recent)?cf.recent:[];if(!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No rejected-signal counterfactuals have been settled yet.';tr.appendChild(td);cfBody.appendChild(tr);}else rows.slice(0,25).forEach(r=>{const tr=document.createElement('tr');const vals=[time(r.counterfactual_settled_at),r.market_ticker||'—',r.proposed_direction||'—',r.decision_status||'—',cents(r.entry_ask_cents),r.trend_bias||'unknown',signedMoneyCents(r.counterfactual_pnl_cents)];vals.forEach((v,i)=>{const td=document.createElement('td');td.textContent=String(v??'—');if(i===6)td.className=asNum(r.counterfactual_pnl_cents)>=0?'positive':'negative';tr.appendChild(td);});cfBody.appendChild(tr);});}
+    const decBody=$('recent-decisions');if(decBody){decBody.replaceChildren();const rows=Array.isArray(a.recent_decisions)?a.recent_decisions:[];if(!rows.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=8;td.className='empty';td.textContent='No decision audit events recorded by this version yet.';tr.appendChild(td);decBody.appendChild(tr);}else rows.slice(0,50).forEach(r=>{const tr=document.createElement('tr');const vals=[time(r.created_at),r.event_type||'—',r.decision||'—',r.market_ticker||'—',r.direction||'—',cents(r.entry_ask_cents),r.trend_bias||'—',r.reason||'—'];vals.forEach(v=>{const td=document.createElement('td');td.textContent=String(v??'—');tr.appendChild(td);});decBody.appendChild(tr);});}
+    const statuses=a.decision_event_counts?.signal_evaluations_by_status||{};write('decision-count-note',`Logged signal evaluations by status: ${Object.entries(statuses).map(([k,v])=>`${k}: ${v}`).join(' · ')||'none yet'}. ${a.important||''}`);
+  }
   function renderTrades(d){
     const tbody=$('trades');tbody.replaceChildren();const trades=Array.isArray(d.trades)?d.trades:[];
     write('trade-count-badge',`Most recent ${trades.length} trades`);
@@ -604,10 +659,11 @@
   async function getJSON(url){const response=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'}});if(!response.ok)throw new Error(`${url} returned ${response.status}`);return response.json();}
   async function refresh(){
     try{
-      const [dashboardResult,diagResult]=await Promise.allSettled([getJSON('/api/dashboard'),getJSON('/diagnostics/market-data')]);
+      const [dashboardResult,diagResult,analyticsResult]=await Promise.allSettled([getJSON('/api/dashboard'),getJSON('/diagnostics/market-data'),getJSON('/api/analytics')]);
       if(dashboardResult.status!=='fulfilled')throw dashboardResult.reason;
       const data=dashboardResult.value;renderHealth(data);renderSignal(data,data.stats||{});renderCurrentWindow(data);renderTrendMonitor(data);renderStrategyPerformance(data);renderTrades(data);renderAlerts(data);
       if(diagResult.status==='fulfilled')renderMarketDiagnostics(diagResult.value);else{setBadge('market-ready-badge','Diagnostics unavailable','amber');write('market-diagnostic-cache',diagResult.reason?.message||'Could not load diagnostic endpoint.');}
+      if(analyticsResult.status==='fulfilled')renderAnalytics(analyticsResult.value);else{setBadge('analytics-badge','Analytics unavailable','amber');write('analytics-caution',analyticsResult.reason?.message||'Could not load analytics.');}
       setBadge('connection-badge','Dashboard connected','green');write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);
     }catch(err){setBadge('connection-badge','Dashboard connection issue','red');write('last-refresh',`Refresh failed: ${err?.message||'unknown error'}. Reload the page or check the web service.`);}
   }

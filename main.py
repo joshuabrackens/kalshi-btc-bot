@@ -24,7 +24,8 @@ from pydantic import BaseModel, Field
 
 from signal_engine import MarketContext, evaluate_signal
 from candle_feed import fetch_signal_candles, CandleFeedError
-from db_store import connect_database, ensure_schema, backend_name, database_location
+from db_store import connect_database, ensure_schema, backend_name, database_location, record_decision_audit
+from performance_analytics import build_performance_analytics
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 
@@ -956,6 +957,13 @@ def open_paper_trade(request: PaperTradeRequest) -> dict[str, Any]:
              request.timeframe or ("15m contract; TV timeframe unknown" if "15M" in ticker.upper() else None)),
         )
         trade_id = cur.lastrowid
+        record_decision_audit(
+            conn, event_type="paper_trade_opened", trade_id=trade_id, market_ticker=ticker,
+            direction=direction, decision="paper_opened", reason="Manual simulated paper entry recorded through paper-only API.",
+            entry_ask_cents=request.entry_cents, created_at=created_at,
+            payload={"contracts": request.contracts, "fee_cents_per_contract": request.fee_cents_per_contract,
+                     "total_entry_cost_cents": round(total_cost_cents, 4), "origin": "manual_paper_api", "mode": "SIMULATION_ONLY"},
+        )
 
     return {
         "paper_trade_id": trade_id, "mode": "SIMULATION_ONLY", "status": "open",
@@ -994,6 +1002,12 @@ def settle_paper_trade(trade_id: int, request: PaperSettleRequest) -> dict[str, 
             """UPDATE paper_trades SET settled_at = ?, outcome = ?, pnl_cents = ?,
                       notes = COALESCE(?, notes) WHERE id = ?""",
             (settled_at, outcome, pnl, request.notes, trade_id),
+        )
+        record_decision_audit(
+            conn, event_type="paper_trade_settled", trade_id=int(trade_id), market_ticker=ticker,
+            direction=str(direction), decision="settled", reason="Manually settled simulated paper position from supplied UP/DOWN outcome.",
+            entry_ask_cents=float(entry_cents), created_at=settled_at,
+            payload={"outcome": outcome, "net_pnl_cents": round(pnl, 4), "origin": "manual_paper_api", "mode": "SIMULATION_ONLY"},
         )
     return {
         "paper_trade_id": trade_id, "market_ticker": ticker, "outcome": outcome,
@@ -1050,6 +1064,101 @@ def paper_stats() -> dict[str, Any]:
     }
 
 
+@app.get("/api/decision-audit")
+def decision_audit(limit: int = 100) -> dict[str, Any]:
+    """Recent append-only decision history. All content is paper-only and read-only."""
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+    with db_connect() as conn:
+        rows = conn.execute(
+            """SELECT id,created_at,event_type,alert_id,signal_log_id,trade_id,market_ticker,direction,
+                      decision,reason,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,
+                      trend_snapshot_age_seconds,internal_score,payload_json
+               FROM decision_audit ORDER BY id DESC LIMIT ?""", (limit,)
+        ).fetchall()
+    keys = ["id", "created_at", "event_type", "alert_id", "signal_log_id", "trade_id", "market_ticker",
+            "direction", "decision", "reason", "entry_ask_cents", "spread_cents", "trend_bias",
+            "trend_evidence_score", "trend_snapshot_age_seconds", "internal_score", "payload_json"]
+    events = []
+    for row in rows:
+        item = dict(zip(keys, row))
+        try:
+            payload = json.loads(item.pop("payload_json", "{}") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        item["payload"] = payload if isinstance(payload, dict) else {}
+        events.append(item)
+    return {"mode": "SIMULATION_ONLY", "count": len(events), "events": events,
+            "note": "Append-only diagnostics; audit entries do not submit, open, close, or enable real orders."}
+
+
+@app.get("/api/analytics")
+def performance_analytics() -> dict[str, Any]:
+    """Paper-trade cohorts, decision counts, counterfactual rejected-signal outcomes, and exit-shadow review."""
+    with db_connect() as conn:
+        trade_rows = conn.execute(
+            """SELECT id,created_at,settled_at,market_ticker,direction,contracts,entry_cents,
+                      fee_cents_per_contract,outcome,pnl_cents,entry_signal_source,entry_signal_log_id,
+                      entry_signal_score,trend_stop_shadow_triggered_at,trend_stop_shadow_pnl_cents,
+                      external_signal_id,timeframe
+               FROM paper_trades ORDER BY id ASC LIMIT 10000"""
+        ).fetchall()
+        linked_rows = conn.execute("SELECT id,payload_json FROM signal_log ORDER BY id DESC LIMIT 10000").fetchall()
+        audit_rows = conn.execute(
+            """SELECT id,created_at,event_type,alert_id,signal_log_id,trade_id,market_ticker,direction,
+                      decision,reason,entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,
+                      trend_snapshot_age_seconds,internal_score,payload_json
+               FROM decision_audit ORDER BY id DESC LIMIT 250"""
+        ).fetchall()
+        cf_rows = conn.execute(
+            """SELECT id,created_at,market_ticker,proposed_direction,decision_status,entry_ask_cents,
+                      trend_bias,trend_evidence_score,counterfactual_outcome,counterfactual_pnl_cents,
+                      counterfactual_settled_at,counterfactual_check_note
+               FROM signal_log WHERE counterfactual_settled_at IS NOT NULL ORDER BY id DESC LIMIT 5000"""
+        ).fetchall()
+        pending_cf = conn.execute(
+            """SELECT COUNT(*) FROM signal_log WHERE proposed_direction IN ('UP','DOWN')
+                AND entry_ask_cents > 0 AND entry_ask_cents < 100
+                AND decision_status IN ('vetoed','skipped','wait_for_better_price','wait','blocked','ignored')
+                AND counterfactual_settled_at IS NULL"""
+        ).fetchone()[0]
+
+    trade_keys = ["id", "created_at", "settled_at", "market_ticker", "direction", "contracts", "entry_cents",
+                  "fee_cents_per_contract", "outcome", "pnl_cents", "entry_signal_source", "entry_signal_log_id",
+                  "entry_signal_score", "trend_stop_shadow_triggered_at", "trend_stop_shadow_pnl_cents",
+                  "external_signal_id", "timeframe"]
+    trades = [dict(zip(trade_keys, row)) for row in trade_rows]
+    linked_payloads: dict[int, Any] = {}
+    for signal_id, payload_json in linked_rows:
+        try:
+            linked_payloads[int(signal_id)] = json.loads(payload_json or "{}")
+        except (ValueError, TypeError, json.JSONDecodeError):
+            linked_payloads[int(signal_id)] = {}
+
+    event_keys = ["id", "created_at", "event_type", "alert_id", "signal_log_id", "trade_id", "market_ticker",
+                  "direction", "decision", "reason", "entry_ask_cents", "spread_cents", "trend_bias",
+                  "trend_evidence_score", "trend_snapshot_age_seconds", "internal_score", "payload_json"]
+    events = []
+    for row in audit_rows:
+        item = dict(zip(event_keys, row))
+        try: item["payload"] = json.loads(item.pop("payload_json", "{}") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError): item["payload"] = {}
+        if not isinstance(item["payload"], dict): item["payload"] = {}
+        events.append(item)
+    cf_keys = ["id", "created_at", "market_ticker", "proposed_direction", "decision_status", "entry_ask_cents",
+               "trend_bias", "trend_evidence_score", "counterfactual_outcome", "counterfactual_pnl_cents",
+               "counterfactual_settled_at", "counterfactual_check_note"]
+    counterfactuals = [dict(zip(cf_keys, row)) for row in cf_rows]
+    result = build_performance_analytics(trades, linked_payloads, events, counterfactuals)
+    result["rejected_signal_counterfactuals_pending"] = int(pending_cf or 0)
+    result["counterfactual_method"] = (
+        "Only rejected/no-entry decision records with a valid observed ask and a finally settled official market result are included. "
+        "Each uses one hypothetical contract held to settlement and includes the recorded entry fee; exits/stops and market impact are excluded."
+    )
+    result["mode"] = "SIMULATION_ONLY"
+    return result
+
+
 @app.get("/markets/btc-candidates")
 def btc_candidates() -> dict[str, Any]:
     """List candidate open BTC/Bitcoin markets for manual verification."""
@@ -1084,12 +1193,19 @@ def _record_webhook_event(status_code: int, status: str, reason: str, payload: d
     timeframe = str(payload.get("timeframe") or payload.get("interval") or payload.get("resolution") or "")[:40]
     direction = str(payload.get("direction") or payload.get("action") or payload.get("signal") or "")[:40]
     try:
+        stamp = datetime.now(timezone.utc).isoformat()
         with db_connect() as conn:
             conn.execute(
                 """INSERT INTO webhook_events
                    (received_at, status_code, status, reason, symbol, timeframe, direction)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (datetime.now(timezone.utc).isoformat(), status_code, status, reason[:300], symbol, timeframe, direction),
+                (stamp, status_code, status, reason[:300], symbol, timeframe, direction),
+            )
+            record_decision_audit(
+                conn, event_type="webhook_event", direction=direction or None, decision=status,
+                reason=reason[:300], created_at=stamp,
+                payload={"status_code": int(status_code), "symbol": symbol or None, "timeframe": timeframe or None,
+                         "message_body_saved": False, "mode": "SIMULATION_ONLY"},
             )
     except Exception:
         # Never mask the actual webhook response if diagnostics logging fails.
