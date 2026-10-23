@@ -105,11 +105,24 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
         "active-position-details", "active-position-reasons", "active-position-warnings",
         "current-window-status", "current-window-reason", "signal-age-badge", "decision-section-title",
         "signal-eyebrow", "active-position-summary", "strategy-checks-title",
+        "next-signal-countdown", "next-signal-reasons", "learning-reviewed", "learning-latest-observations",
+        "learning-cohorts", "learning-recent-reviews",
     ):
         assert element_id in parser.ids, f"Missing dashboard element {element_id}"
     assert "latest_directional_signal" in html
     assert "renderActivePosition(data)" in html
     assert "HISTORICAL CONTEXT" in html
+    assert "Waiting For Next Available Signal" in html
+    assert "renderLearning(report)" in html
+    assert "getJSON('/api/learning')" in html
+    assert "automatic_strategy_changes_enabled" in html or "No trade result changes rules automatically." in html
+    # Active position is the most operationally important view, so keep it
+    # immediately after the page intro and before overview/signal details.
+    active_pos = html.index('id="active-position-section"')
+    intro_end = html.index('</section>', html.index('<section class="intro">'))
+    engine_overview = html.index('aria-label="Engine overview"')
+    latest_signal = html.index('aria-label="Latest directional signal context"')
+    assert intro_end < active_pos < engine_overview < latest_signal
 
 
 def test_dashboard_connection_badge_distinguishes_api_failure_from_panel_render_error():

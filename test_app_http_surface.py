@@ -38,6 +38,10 @@ def test_read_only_routes_work_and_manual_writes_are_disabled_by_default():
                 assert "active_position" in dashboard_data
                 assert client.get("/api/category-readiness").json()["current_active_strategy"] == "btc_15m"
                 assert client.get("/api/analytics").json()["mode"] == "SIMULATION_ONLY"
+                learning = client.get("/api/learning")
+                assert learning.status_code == 200, learning.text
+                assert learning.json()["mode"] == "SIMULATION_ONLY"
+                assert learning.json()["automatic_strategy_changes_enabled"] is False
                 denied_open = client.post("/paper/open", json={
                     "market_ticker": "KXBTC15M-TEST", "direction": "UP", "contracts": 1,
                     "entry_cents": 50, "fee_cents_per_contract": 2,
@@ -68,3 +72,7 @@ def test_configured_manual_api_secret_allows_simulated_open_and_settlement_only(
                 assert settled.status_code == 200, settled.text
                 assert settled.json()["net_pnl_cents"] == 48
                 assert settled.json()["mode"] == "SIMULATION_ONLY"
+                learning = client.get("/api/learning").json()
+                assert learning["summary"]["trades_reviewed"] == 1
+                assert learning["summary"]["profitable"] == 1
+                assert learning["latest_review"]["trade_outcome"] == "UP"

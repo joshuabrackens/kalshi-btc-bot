@@ -11,6 +11,7 @@ This repository includes the existing BTC-only hybrid paper-trading flow plus re
 
 ### Phase 4 — Historical performance analytics
 - Adds read-only `/api/analytics`: actual net P&L, win rate, average net per settled trade, profit factor, drawdown, rolling last-20/last-50, entry-price cohorts, trend-alignment cohorts, evidence-score cohorts, and decision-status totals.
+- Adds `/api/learning` backed by an idempotent `trade_learning` table, which records one snapshot per settled paper trade and compares outcome cohorts across entry price, chart trend, evidence score, volume, and momentum. The worker updates this after settlement and backfills older settled trades in bounded batches.
 - Pulls the most recent journal rows when applying the 10,000-row analysis limit.
 - The analytics are descriptive. Scores/asks are not calibrated probabilities; small samples are not evidence of edge.
 
@@ -20,7 +21,7 @@ This repository includes the existing BTC-only hybrid paper-trading flow plus re
 - Counterfactual review executes after the worker's trade-decision cycle and is bounded to one public result lookup per idle/monitoring cycle.
 
 ### Phase 6 — Observability, security and operations
-- Adds read-only `/api/decision-audit`, `/api/analytics`, `/api/category-readiness`, market-data diagnostics, and worker-heartbeat status.
+- Adds read-only `/api/decision-audit`, `/api/analytics`, `/api/learning`, `/api/category-readiness`, market-data diagnostics, and worker-heartbeat status.
 - Keeps market summary asks out of executable pricing; asks are derived from the corresponding current opposite-side order-book bid.
 - Fixes WAIT signal score journaling so the actual evidence score is preserved even though the decision remains WAIT.
 - Prevents webhook body-size abuse (16 KiB default, configurable up to 64 KiB) and removes sensitive key/value fields recursively before saving untrusted webhook payloads.
@@ -58,9 +59,13 @@ The current local validation includes paper worker/risk, trend stops, trend fusi
 2. Apply the modified/added files from the master ZIP; never commit `.env` or a local database. `.gitignore` excludes local SQLite journals and Python caches.
 3. Commit to a branch or `main`, then wait for every GitHub Actions step to pass.
 4. Let both Render services deploy the same commit.
-5. Verify `/health`, `/api/dashboard`, `/api/analytics`, `/api/decision-audit`, `/api/category-readiness`, and `/diagnostics/market-data`.
+5. Verify `/health`, `/api/dashboard`, `/api/analytics`, `/api/learning`, `/api/decision-audit`, `/api/category-readiness`, and `/diagnostics/market-data`.
 
 No manual SQL migration is required; `ensure_schema()` applies the schema changes. No new database or API credentials are included.
+
+## Post-trade learning boundary
+
+Every settled paper trade is recorded once with an entry-time feature snapshot and a realized P&L label. The report supplies per-trade observations and sample-gated cohort comparisons; it does not automatically alter strategy parameters after each result. Any proposed rule change must be reviewed, regression-tested, and validated on an out-of-sample paper sample. Counterfactual rejected-signal results and shadow exits remain separate from actual trade outcomes.
 
 ## Interpretation and safety
 

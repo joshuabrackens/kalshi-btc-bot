@@ -253,6 +253,22 @@ def ensure_schema(conn: DatabaseConnection) -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS btc_trend_monitor (
             monitor_key TEXT PRIMARY KEY, updated_at TEXT NOT NULL,
             status TEXT NOT NULL, snapshot_json TEXT NOT NULL)""")
+        # Persistent, idempotent post-trade learning journal. It stores an immutable
+        # entry-feature snapshot plus realized paper P&L classification; it never
+        # modifies entry rules. Historical settled trades are backfilled by the worker.
+        learning_id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        learning_number_type = "DOUBLE PRECISION" if backend == "postgresql" else "REAL"
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS trade_learning (
+            id {learning_id_type}, trade_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL,
+            settled_at TEXT NOT NULL, market_ticker TEXT, direction TEXT, contracts INTEGER,
+            entry_cents {learning_number_type}, fee_cents_per_contract {learning_number_type}, trade_outcome TEXT, pnl_result TEXT NOT NULL,
+            pnl_cents {learning_number_type} NOT NULL, entry_signal_log_id INTEGER, signal_source TEXT, entry_score INTEGER,
+            trend_bias TEXT, trend_evidence_score INTEGER, trend_snapshot_age_seconds {learning_number_type}, trend_alignment TEXT,
+            entry_price_bucket TEXT, evidence_bucket TEXT, volume_confirmation TEXT, momentum_alignment TEXT,
+            chase_warning INTEGER, feature_snapshot_json TEXT NOT NULL, review_json TEXT NOT NULL
+        )""")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_learning_trade_id ON trade_learning(trade_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_settled ON trade_learning(settled_at, trade_id)")
         # Existing records don't identify the TradingView chart timeframe; don't invent it.
         conn.execute(
             "UPDATE paper_trades SET timeframe = '15m contract; TV timeframe unknown' "

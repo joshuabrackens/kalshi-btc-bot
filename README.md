@@ -33,6 +33,7 @@ The 92¢ value is the hard cap; 80¢ is the lower preferred entry target. The wo
 - `kalshi_api.py` / `market_discovery.py`: public Kalshi market discovery, current order-book quotes and market results.
 - `db_store.py`: shared SQLite/PostgreSQL adapter and schema migrations.
 - `performance_analytics.py`: descriptive historical P&L and decision cohort analysis.
+- `trade_learning.py`: idempotent per-settled-trade feature snapshots, outcome reviews, and sample-gated cohort insights; it recovers legacy entries by external alert ID and never automatically changes strategy rules.
 - `market_category_registry.py`: Phase 7 readiness scaffold. BTC 15m is the only paper-enabled profile; all non-BTC categories are research-only.
 - `payload_safety.py`: recursive sensitive-key removal for untrusted webhook payloads.
 - `dashboard.html`: current-window state, preserved latest directional evaluation, active-position entry rationale, trend and decision detail, journal, and analytics UI.
@@ -57,6 +58,7 @@ Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `PO
 - `GET /health`, `GET /status` — health/runtime status.
 - `GET /api/dashboard` — heartbeat, separate current-window status, latest directional evaluation, linked active-position entry context, trend monitor, risk and paper-trade journal.
 - `GET /api/analytics` — actual paper performance cohorts, rolling results, exit-shadow review and separately labeled rejected-signal counterfactuals.
+- `GET /api/learning` — persistent post-trade outcome feedback, entry-feature snapshots, cohort summaries, and research notes. The worker backfills settled journal rows idempotently; the endpoint is read-only and never tunes rules or alters trade permissions.
 - `GET /api/decision-audit` — recent audit events, read-only.
 - `GET /api/category-readiness` — research readiness profiles; this endpoint never enables or routes trades.
 - `GET /diagnostics/market-data` — cached public-market diagnostic; it never places or modifies trades.
@@ -88,6 +90,6 @@ The test workflow in `.github/workflows/python-app.yml` compiles the code, runs 
 3. Deploy the same commit to the Render Web Service and Background Worker.
 4. Verify worker heartbeat, `btc_trend_monitor.status`, separate current-window status, latest directional evaluation, active-position entry rationale, `/api/analytics`, `/api/decision-audit`, and `/api/category-readiness`.
 5. Observe a sufficiently large out-of-sample paper sample before changing strategy thresholds. Review drawdown and fee-adjusted net P&L, not only win rate.
-6. Keep manual write endpoints protected and never expose secrets in GitHub, screenshots, logs or returned payloads.
+6. Confirm `/api/learning` records each newly settled trade once and keeps hypothetical rejected-signal/exit-shadow results separate from actual results. Keep manual write endpoints protected and never expose secrets in GitHub, screenshots, logs or returned payloads.
 
 Do not enable live trading as part of this project. Historical results, simulated exits, market-implied odds, internal scores and rejected-signal counterfactuals are descriptive evidence, not guarantees of future returns or executable prices.

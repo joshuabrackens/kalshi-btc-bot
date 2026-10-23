@@ -87,6 +87,9 @@ jobs:
       - name: Run performance analytics tests
         run: python -m pytest -q test_performance_analytics.py
 
+      - name: Run per-trade learning feedback tests
+        run: python -m pytest -q test_trade_learning.py
+
       - name: Run analytics API integration tests
         run: python -m pytest -q test_analytics_api.py
 

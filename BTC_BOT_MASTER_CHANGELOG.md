@@ -38,7 +38,7 @@ Consolidate reliability fixes and the Phase 3–6 research/analytics work agains
 - Only the existing BTC 15-minute strategy is marked paper-enabled. Non-BTC categories remain research-only and are not connected to the worker's order/entry path. This is an architecture scaffold, not a completed or profitable strategy for those categories.
 
 ## Test/validation status
-The final validation report accompanies this package. All 26 available repository test modules (101 test cases) are run separately to prevent unittest mocks from leaking across modules. Compile, workflow YAML checks, the HTTP integration tests, database migration/idempotency tests, and the offline webhook-to-paper-entry smoke test are included.
+The final validation report accompanies this package. All repository test modules, including the post-trade learning and dashboard-context suites, are run separately to prevent unittest mocks from leaking across modules. Compile, workflow YAML checks, the HTTP integration tests, database migration/idempotency tests, and the offline webhook-to-paper-entry smoke test are included.
 
 ## Deployment checklist
 1. Use a branch or backup of `main` before applying the patch.
@@ -48,3 +48,10 @@ The final validation report accompanies this package. All 26 available repositor
 5. Verify `/health`, `/api/analytics`, `/api/decision-audit`, `/api/category-readiness`, and `/diagnostics/market-data`.
 6. Keep paper mode and risk variables below unchanged throughout validation.
 7. Do not enable live trading based on the small historical sample.
+
+
+## Post-trade learning and current/next-signal dashboard update
+- Added a `trade_learning` table and `trade_learning.py` to create one idempotent post-trade review per settled paper trade, including entry-time feature snapshots and realized P&L labels.
+- Worker syncs and backfills settled trade outcomes in bounded batches each cycle, and can recover linked entry context through the external alert ID for legacy trades without `entry_signal_log_id`; `/api/learning` is read-only and never writes on dashboard polls.
+- Adds cohort comparisons for chart-trend alignment, entry price, evidence score, volume and momentum. Single-trade observations are never treated as causal proof and rule changes are not applied automatically.
+- Dashboard waiting state now explicitly reads “Waiting For Next Available Signal”, maintains a response/window countdown and reasons, and adds a post-trade learning summary and cohort table. Historical-direction placement was not rearranged.

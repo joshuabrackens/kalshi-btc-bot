@@ -8,6 +8,7 @@ from __future__ import annotations
 import hmac
 import json
 import hashlib
+import logging
 import os
 import sqlite3
 import threading
@@ -26,6 +27,7 @@ from signal_engine import MarketContext, evaluate_signal
 from candle_feed import fetch_signal_candles, CandleFeedError
 from db_store import connect_database, ensure_schema, backend_name, database_location, record_decision_audit
 from performance_analytics import build_performance_analytics
+from trade_learning import build_learning_report, sync_settled_trade_learning
 from payload_safety import sanitize_sensitive_payload
 from market_category_registry import category_profiles, classify_market
 from market_discovery import discover
@@ -1176,6 +1178,12 @@ def settle_paper_trade(trade_id: int, request: PaperSettleRequest, http_request:
             entry_ask_cents=float(entry_cents), created_at=settled_at,
             payload={"outcome": outcome, "net_pnl_cents": round(pnl, 4), "origin": "manual_paper_api", "mode": "SIMULATION_ONLY"},
         )
+        try:
+            sync_settled_trade_learning(conn, batch_size=1000)
+        except Exception as learning_exc:
+            # Learning is retrospective only; a journal-learning failure must not
+            # undo or alter the already-recorded simulated settlement.
+            logging.getLogger(__name__).warning("Trade-learning sync after manual paper settlement failed: %s", learning_exc)
     return {
         "paper_trade_id": trade_id, "market_ticker": ticker, "outcome": outcome,
         "gross_payout_cents": gross_payout, "entry_cost_cents": round(cost, 4),
@@ -1324,6 +1332,13 @@ def performance_analytics() -> dict[str, Any]:
     )
     result["mode"] = "SIMULATION_ONLY"
     return result
+
+
+@app.get("/api/learning")
+def trade_learning_report() -> dict[str, Any]:
+    """Post-trade feedback report. It only records outcome snapshots/reads insights; it never tunes live rules."""
+    with db_connect() as conn:
+        return build_learning_report(conn)
 
 
 @app.get("/api/category-readiness")

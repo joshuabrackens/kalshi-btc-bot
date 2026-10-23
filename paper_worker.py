@@ -23,6 +23,7 @@ from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
 from db_store import connect_database, ensure_schema, backend_name, record_decision_audit
 from payload_safety import sanitize_sensitive_payload
+from trade_learning import sync_settled_trade_learning
 
 log = logging.getLogger("paper_worker")
 
@@ -921,6 +922,15 @@ def run_once() -> dict[str, Any]:
     try:
         conn = _connect()
         _manage_open(conn)
+        # Record newly settled trades and backfill older settled journal rows. This
+        # only snapshots features/outcomes for analysis; it cannot modify strategy
+        # parameters or authorize trades. Failures must not change trade decisions.
+        try:
+            learned_count = sync_settled_trade_learning(conn, batch_size=250)
+            if learned_count:
+                log.info("Trade-learning journal recorded %s newly settled outcome(s); paper-only, rules unchanged", learned_count)
+        except Exception as learning_exc:
+            log.warning("Trade-learning journal sync failed; trading rules and decision flow unchanged: %s", learning_exc)
         # Keep chart trends precomputed even when no TradingView alert is waiting.
         # Retain this exact snapshot for the entry decision later in this cycle.
         trend_snapshot = _refresh_btc_trend_monitor(conn)
