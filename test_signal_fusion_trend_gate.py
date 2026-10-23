@@ -85,6 +85,17 @@ class TrendGateTests(unittest.TestCase):
         result = evaluate_fusion(**base_kwargs(trend_snapshot=not_confirmed, require_trend_snapshot=True))
         self.assertTrue(result.approved)
 
+
+    def test_price_above_preferred_target_is_allowed_when_hard_cap_is_92(self):
+        aligned = snapshot(candidate_bias="DOWN", evidence_score=73,
+                           evidence_points={"up": 1, "down": 8, "net": -7},
+                           timeframes={"1m": "bearish", "5m": "bearish", "15m": "mixed"})
+        result = evaluate_fusion(**base_kwargs(down_ask_cents=90, max_entry_cents=92,
+                                               trend_snapshot=aligned, require_trend_snapshot=True))
+        self.assertTrue(result.approved)
+        self.assertEqual(result.direction, "BUY_DOWN")
+        self.assertEqual(result.entry_ask_cents, 90)
+
     def test_missing_monitor_health_fails_closed(self):
         unhealthy = snapshot(status="degraded")
         result = evaluate_fusion(**base_kwargs(trend_snapshot=unhealthy, require_trend_snapshot=True))

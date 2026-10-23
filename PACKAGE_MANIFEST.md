@@ -1,6 +1,6 @@
 # Master bot package manifest
 
-This is the complete repository based on the user-uploaded `main` branch ZIP, reconciled with reliability, audit, analytics, per-trade feedback, category-readiness, test, and dashboard changes in this package. The master patch ZIP contains **39 files: 26 replacements and 13 additions** relative to that uploaded source ZIP. It preserves repository-relative paths.
+This is the complete repository based on the user-uploaded `main` branch ZIP, reconciled with reliability, audit, analytics, per-trade feedback, category-readiness, test, and dashboard changes in this package. The master patch ZIP contains **41 files: 28 replacements and 13 additions** relative to that uploaded source ZIP. It preserves repository-relative paths.
 
 ## Modified existing files
 - `.github/workflows/python-app.yml` — active GitHub Actions workflow; isolated full test matrix and offline smoke test.
@@ -12,7 +12,7 @@ This is the complete repository based on the user-uploaded `main` branch ZIP, re
 - `env.example` — safe configuration examples and current entry/risk settings.
 - `requirements_additions.txt` — clarified as a historical note; `requirements.txt` remains the sole runtime dependency source.
 - `main.py` — analytics/audit APIs, category-readiness, webhook-size limit, secret redaction, idempotent webhook insert, guarded manual write APIs, newest directional-signal and linked open-position context for the dashboard, and lifespan cleanup.
-- `paper_worker.py` — enriched WAIT reasons/audits, robust retry statuses, idempotent post-settlement learning sync, and use of the persisted adaptive entry target in hybrid paper-mode checks.
+- `paper_worker.py` — enriched WAIT reasons/audits, robust retry statuses, idempotent post-settlement learning sync, and explicit soft-preference/hard-cap entry semantics: the preferred target is advisory, while the hard cap and other safeguards gate entry.
 - `signal_engine.py` — preserve calculated evidence score on a WAIT/below-threshold result.
 - `smoke_shared_alert_flow.py` — offline webhook → shared queue → hybrid decision → paper-trade smoke test.
 - `dashboard.html` — final dashboard with Realized P&L, Engine connection, and Risk limits at the top, followed by Active paper position; current WAIT state, historical direction, and active-position entry rationale remain separate.
@@ -21,6 +21,8 @@ This is the complete repository based on the user-uploaded `main` branch ZIP, re
 - `test_paper_worker.py` — test isolation, current worker interface, and network-free expectations.
 - `test_trend_monitor_worker.py` — deterministic feed stub to prevent accidental network access.
 - `test_wait_alerts.py` — unit-test isolation for worker monitor side effects.
+- `test_entry_quality.py` — verifies that asks above the preferred target can enter if they remain under the hard cap, while asks over the hard cap wait.
+- `test_signal_fusion_trend_gate.py` — verifies a directionally approved hybrid signal can pass at a price above the soft preference and below the hard cap.
 
 ## Added source and test files
 - `.gitignore` — ignores local database, bytecode, caches, virtual environments, and `.env` files.
@@ -59,3 +61,6 @@ The package retains the repository's existing `candle_feed.py`, `trend_stop.py`,
 
 After a paper position has reached and armed its fee-adjusted take-profit target, optional profit protection can trigger an immediate simulated exit when either (a) the internal engine detects a predefined major opposing setup, or (b) a newly closed 1-minute BTC candle moves adversely by at least `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles. Configure `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` and `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER=2.5`. The exit is modeled from the observed Kalshi bid, subtracts entry and exit fees, and is logged as `PROFIT_PROTECTION`. This is best-effort only: gaps, wide spreads, missing liquidity, or polling delays can result in an exit below break-even; no no-loss outcome is guaranteed. It applies only to simulated paper positions and never enables real orders.
 
+### Entry-price semantics update
+
+`PAPER_ENTRY_TARGET_MAX_CENTS` (default 80¢) is a soft preferred price, not a trade blocker. A directional signal that passes freshness, major-flaw, quote, spread, risk, and budget checks may enter above that preference up to `PAPER_MAX_ENTRY_CENTS` (default hard cap 92¢). Quotes above the hard cap wait and are not opened. Higher entry prices leave less maximum upside; a direction/evidence score is not a calibrated win probability.

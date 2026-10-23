@@ -580,23 +580,25 @@ def _quarter_hour_window_start(value: datetime) -> datetime:
 
 
 def _entry_price_limits() -> tuple[float, float]:
-    """Return (configured hard cap, effective target cap) in cents.
+    """Return (hard entry cap, preferred soft target) in cents.
 
-    The hard cap preserves the existing safety setting. The separate target cap
-    defaults to 80c so we do not chase expensive contracts while the model lacks
-    a calibrated per-signal probability. The effective entry ceiling is the lower
-    of those two limits.
+    PAPER_MAX_ENTRY_CENTS is the only fixed price ceiling. The default 80c
+    PAPER_ENTRY_TARGET_MAX_CENTS is a soft reference for reporting and learning;
+    it must not block an otherwise approved directional signal. The learning
+    policy may tighten that preference, but can never relax the hard cap.
     """
     hard_cap = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_MAX_ENTRY_CENTS", "92"), 92)))
-    target_cap = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_ENTRY_TARGET_MAX_CENTS", "80"), 80)))
-    return hard_cap, min(hard_cap, target_cap)
+    target = max(1.0, min(99.0, _safe_float(os.getenv("PAPER_ENTRY_TARGET_MAX_CENTS", "80"), 80)))
+    return hard_cap, min(hard_cap, target)
 
 
 def _entry_price_gate(current_ask_cents: float, hard_cap_cents: float, target_cap_cents: float) -> tuple[str, str]:
-    """Fail-closed price discipline: enter only at/below the active target cap.
+    """Allow any valid ask up to the hard cap; target_cap is advisory only.
 
-    An expensive quote should wait, not be treated as an entry or as evidence of
-    an edge. Calling code still enforces signal freshness, market validity, and spread.
+    A price above the preferred target can still enter when the signal direction,
+    major-flaw checks, quote/spread checks, signal freshness and risk guards pass.
+    The 92c default hard cap stays in force because direction alone is not a
+    calibrated probability or a guarantee of positive expected value.
     """
     try:
         ask = float(current_ask_cents)
@@ -607,9 +609,12 @@ def _entry_price_gate(current_ask_cents: float, hard_cap_cents: float, target_ca
     if (not all(math.isfinite(v) for v in (ask, hard_cap, target))
             or not (0 < ask < 100) or not (0 < hard_cap < 100) or not (0 < target < 100)):
         return "invalid", "Current order-book ask or configured price limit is invalid; no entry."
+    if ask > hard_cap:
+        return "wait", f"Current ask {ask:.2f}c exceeds the hard entry cap {hard_cap:.2f}c; no entry at this quote. It may be reconsidered only while the alert remains fresh and in the same 15-minute window."
     if ask > target:
-        return "wait", f"Current ask {ask:.2f}c is above the entry target {target:.2f}c; waiting for a better price instead of chasing."
-    return "enter", f"Current ask {ask:.2f}c is at or below the entry target {target:.2f}c."
+        return "enter", (f"Current ask {ask:.2f}c is above the preferred target {target:.2f}c but remains within the hard cap {hard_cap:.2f}c. "
+                            "Price alone will not block an otherwise approved direction; expensive contracts leave less upside and are not evidence of positive expectancy.")
+    return "enter", f"Current ask {ask:.2f}c is at or below the preferred target {target:.2f}c and hard cap {hard_cap:.2f}c."
 
 
 def _set_gainzalgo_pending(conn, signal_id: int, status: str, note: str) -> None:
@@ -1209,12 +1214,14 @@ def run_once() -> dict[str, Any]:
                     "adaptive_learning_policy": adaptive_policy,
                     "disclaimer": "No paper entry opened at this price; hypothetical outcome is evaluated separately from actual trading.",
                 }
+                wait_payload["entry_price_gate"].update({"hard_cap_cents": hard_max_entry, "preferred_target_cents": max_entry})
                 _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
                                    score=0, btc_price=float((trend_snapshot or {}).get("btc_price") or market["strike"]),
                                    strike=market["strike"], seconds_remaining=market["seconds"],
-                                   max_entry_cents=max_entry, payload=wait_payload)
+                                   max_entry_cents=hard_max_entry, payload=wait_payload)
                 return {"action": "wait_for_better_price", "reason": note, "ticker": market["ticker"],
                         "direction": direction, "entry_ask_cents": entry, "entry_target_max_cents": max_entry,
+                        "hard_entry_cap_cents": hard_max_entry,
                         "signal_age_seconds": queued.get("age_seconds"), "signal_freshness_seconds_remaining": round(remaining, 1),
                         "trade_placed": False, "mode": "SIMULATION_ONLY"}
 
@@ -1225,7 +1232,7 @@ def run_once() -> dict[str, Any]:
                     MarketContext(strike_price=market["strike"], seconds_remaining=market["seconds"],
                                   up_ask_cents=yes_ask, down_ask_cents=no_ask, spread_cents=spread,
                                   estimated_fee_cents=fee),
-                    minimum_score=min_score, max_entry_cents=max_entry, max_spread_cents=max_spread,
+                    minimum_score=min_score, max_entry_cents=hard_max_entry, max_spread_cents=max_spread,
                 )
                 internal_payload = internal_signal.to_dict()
                 entry_btc = float(internal_signal.btc_price)
@@ -1238,7 +1245,7 @@ def run_once() -> dict[str, Any]:
                     timeframe=queued.get("timeframe"), internal_payload=internal_payload,
                     market_ticker=market["ticker"], seconds_remaining=market["seconds"],
                     up_ask_cents=yes_ask, down_ask_cents=no_ask, spread_cents=spread,
-                    fee_cents_per_contract=fee, max_entry_cents=max_entry, max_spread_cents=max_spread,
+                    fee_cents_per_contract=fee, max_entry_cents=hard_max_entry, max_spread_cents=max_spread,
                     max_alert_age_seconds=max(30, min(900, int(_safe_float(os.getenv("TRADINGVIEW_MAX_SIGNAL_AGE_SECONDS", "300"), 300)))),
                     min_seconds_remaining=min_seconds, minimum_opposing_points=max(2, min(12, int(_safe_float(os.getenv("PAPER_HYBRID_VETO_MIN_POINTS", "4"), 4)))),
                     trend_snapshot=trend_snapshot,
@@ -1277,7 +1284,7 @@ def run_once() -> dict[str, Any]:
                 entry_signal_log_id = _record_signal_log(
                     conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
                     score=score, btc_price=entry_btc, strike=market["strike"],
-                    seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=payload,
+                    seconds_remaining=market["seconds"], max_entry_cents=hard_max_entry, payload=payload,
                 )
                 entry_signal_score = score
                 if not fused["approved"]:
@@ -1304,7 +1311,7 @@ def run_once() -> dict[str, Any]:
                 entry_signal_log_id = _record_signal_log(
                     conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
                     score=0, btc_price=entry_btc, strike=market["strike"],
-                    seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=payload,
+                    seconds_remaining=market["seconds"], max_entry_cents=hard_max_entry, payload=payload,
                 )
                 entry_signal_score = None
                 warnings = payload["warnings"]
@@ -1315,7 +1322,7 @@ def run_once() -> dict[str, Any]:
                 MarketContext(strike_price=market["strike"], seconds_remaining=market["seconds"],
                               up_ask_cents=yes_ask, down_ask_cents=no_ask, spread_cents=spread,
                               estimated_fee_cents=fee),
-                minimum_score=min_score, max_entry_cents=max_entry, max_spread_cents=max_spread,
+                minimum_score=min_score, max_entry_cents=hard_max_entry, max_spread_cents=max_spread,
             )
             payload = signal.to_dict()
             payload["source"] = "internal"
@@ -1325,7 +1332,7 @@ def run_once() -> dict[str, Any]:
             if signal.direction == "WAIT":
                 _record_signal_log(conn, created_at=now_text, ticker=market["ticker"], direction="WAIT", score=score,
                                    btc_price=signal.btc_price, strike=signal.strike_price,
-                                   seconds_remaining=signal.seconds_remaining, max_entry_cents=max_entry, payload=payload)
+                                   seconds_remaining=signal.seconds_remaining, max_entry_cents=hard_max_entry, payload=payload)
                 return {"action": "wait", "ticker": market["ticker"], "score": signal.score,
                         "reasons": signal.reasons, "warnings": signal.warnings}
             direction = "UP" if signal.direction == "BUY_UP" else "DOWN"
@@ -1335,7 +1342,7 @@ def run_once() -> dict[str, Any]:
             entry_signal_log_id = _record_signal_log(
                 conn, created_at=now_text, ticker=market["ticker"], direction=final_direction,
                 score=score, btc_price=signal.btc_price, strike=signal.strike_price,
-                seconds_remaining=signal.seconds_remaining, max_entry_cents=signal.max_entry_cents, payload=payload,
+                seconds_remaining=signal.seconds_remaining, max_entry_cents=hard_max_entry, payload=payload,
             )
             entry_signal_score = score
 
@@ -1350,12 +1357,34 @@ def run_once() -> dict[str, Any]:
             wait_payload["reasons"] = list(wait_payload.get("reasons", [])) + [price_note]
             wait_signal_id = _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
                                score=score, btc_price=entry_btc, strike=market["strike"],
-                               seconds_remaining=market["seconds"], max_entry_cents=max_entry, payload=wait_payload)
+                               seconds_remaining=market["seconds"], max_entry_cents=hard_max_entry, payload=wait_payload)
             if entry_signal_log_id is not None:
                 _update_signal_decision_status(conn, entry_signal_log_id, "wait_for_better_price", price_note)
             return {"action": "wait_for_better_price", "reason": price_note, "ticker": market["ticker"],
                     "entry_ask_cents": float(entry), "entry_target_max_cents": max_entry,
-                    "trade_placed": False, "mode": "SIMULATION_ONLY"}
+                    "hard_entry_cap_cents": hard_max_entry, "trade_placed": False, "mode": "SIMULATION_ONLY"}
+        if float(entry) > max_entry:
+            premium_note = (
+                f"Entry ask {float(entry):.2f}c is above the preferred soft target {max_entry:.2f}c, "
+                f"but is allowed under the hard cap {hard_max_entry:.2f}c because the direction passed its required checks. "
+                "The preferred target is not a probability estimate; higher entry prices leave less upside."
+            )
+            if isinstance(payload, dict):
+                existing_reasons = payload.get("reasons", [])
+                payload["reasons"] = list(existing_reasons) + [premium_note] if isinstance(existing_reasons, list) else [premium_note]
+                existing_warnings = payload.get("warnings", [])
+                payload["warnings"] = list(existing_warnings) + ["Entry is above the preferred price target; the hard cap and all other safeguards still apply."] if isinstance(existing_warnings, list) else ["Entry is above the preferred price target; the hard cap and all other safeguards still apply."]
+            warnings = list(warnings or []) + ["Entry is above the preferred price target; the hard cap and all other safeguards still apply."]
+            # Keep the same explanation in the persisted signal payload that the dashboard reads.
+            if entry_signal_log_id is not None:
+                conn.execute(
+                    "UPDATE signal_log SET payload_json=? WHERE id=?",
+                    (json.dumps(payload, separators=(",", ":"), default=str), entry_signal_log_id),
+                )
+                conn.commit()
+            log.info("Entry above preferred target: ask=%.2fc preferred=%.2fc hard_cap=%.2fc; passing signal/risk checks remain required",
+                     float(entry), max_entry, hard_max_entry)
+
         contracts = max(0, min(10, int((max_trade * 100) // (float(entry) + fee))))
         if contracts < 1:
             reason = "even one contract plus fees exceeds MAX_TRADE_DOLLARS"
@@ -1386,7 +1415,7 @@ def run_once() -> dict[str, Any]:
                entry_signal_log_id,entry_signal_score)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (now_text, market["ticker"], direction, contracts, float(entry), fee,
-             note + f" | entry target <= {max_entry:.2f}c (configured hard cap {hard_max_entry:.2f}c)", stop,
+             note + f" | preferred target {max_entry:.2f}c (soft only); hard entry cap {hard_max_entry:.2f}c", stop,
              entry_btc, entry_btc, entry_btc, entry_candle_timestamp, tp_target, signal_source, external_id,
              timeframe_note or "15m contract; TV timeframe unknown", entry_signal_log_id, entry_signal_score),
         )
@@ -1418,7 +1447,7 @@ def run_once() -> dict[str, Any]:
                 "trend_stop_shadow_mode": _truthy("PAPER_TREND_STOP_SHADOW_MODE", False),
                 "take_profit_enabled": tp_enabled, "take_profit_target_cents": round(tp_target, 2) if tp_target is not None else None,
                 "take_profit_target_return_percent": tp_pct if tp_enabled else None, "entry_btc_price": round(entry_btc, 2),
-                "entry_target_max_cents": max_entry, "configured_hard_max_entry_cents": hard_max_entry,
+                "preferred_entry_target_cents": max_entry, "entry_target_max_cents": max_entry, "configured_hard_max_entry_cents": hard_max_entry,
                 "entry_signal_log_id": entry_signal_log_id, "entry_signal_score": entry_signal_score,
                 "mode": "SIMULATION_ONLY", "warnings": warnings}
     except (CandleFeedError, KalshiAPIError, ValueError, TypeError, KeyError) as exc:

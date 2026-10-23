@@ -21,7 +21,7 @@ BTC_TREND_MONITOR_INTERVAL_SECONDS=30
 BTC_TREND_MONITOR_MAX_CACHE_AGE_SECONDS=45
 ```
 
-The 92¢ value is the hard cap; 80¢ is the lower preferred entry target. The worker does not chase an ask above the active target.
+The 92¢ value is the hard cap; 80¢ is a soft preferred entry target, not an entry blocker. If a fresh directional signal passes the hybrid major-flaw check, executable quote/spread checks, time-window validation, and risk/budget checks, the worker may enter above 80¢ through 92¢. Above 92¢ it waits and does not open a position. The adaptive learner can tighten the displayed preference, but that preference does not block an otherwise approved signal. Expensive contracts leave much less upside, and the direction/evidence score is not a calibrated probability of winning.
 
 ## Architecture
 
@@ -98,3 +98,6 @@ Do not enable live trading as part of this project. Historical results, simulate
 
 After a paper position has reached and armed its fee-adjusted take-profit target, optional profit protection can trigger an immediate simulated exit when either (a) the internal engine detects a predefined major opposing setup, or (b) a newly closed 1-minute BTC candle moves adversely by at least `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles. Configure `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` and `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER=2.5`. The exit is modeled from the observed Kalshi bid, subtracts entry and exit fees, and is logged as `PROFIT_PROTECTION`. This is best-effort only: gaps, wide spreads, missing liquidity, or polling delays can result in an exit below break-even; no no-loss outcome is guaranteed. It applies only to simulated paper positions and never enables real orders.
 
+### Entry-price semantics update
+
+`PAPER_ENTRY_TARGET_MAX_CENTS` (default 80¢) is a soft preferred price, not a trade blocker. A directional signal that passes freshness, major-flaw, quote, spread, risk, and budget checks may enter above that preference up to `PAPER_MAX_ENTRY_CENTS` (default hard cap 92¢). Quotes above the hard cap wait and are not opened. Higher entry prices leave less maximum upside; a direction/evidence score is not a calibrated win probability.

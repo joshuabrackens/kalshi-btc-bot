@@ -2,13 +2,13 @@
 
 ## Final status
 
-- **27 isolated test modules passed: 115 test cases after major-drop profit-protection update.** Each module was run as a separate process to avoid global/module stub state leaking between tests.
+- **27 isolated test modules passed: 117 test cases after the soft-target/hard-cap correction.** Each module was run as a separate process to avoid global/module stub state leaking between tests.
 - **Offline end-to-end smoke test passed** from signed webhook intake through shared alert queue, hybrid decision, simulated paper entry, and dashboard heartbeat.
 - `python -m compileall -q .`: passed.
 - Both `.github/workflows/python-app.yml` and root `python-app.yml` parse as YAML, are byte-identical, and define the same 32-step workflow.
 - Dashboard inline JavaScript passed `node --check` after extracting the latest script from `dashboard.html`.
-- HTML structural validation found **203 element IDs with zero duplicate IDs**.
-- Dashboard regression checks passed for the top-priority active-position panel, separated current-window WAIT state, preserved historical directional context, countdown/reasoning content, and the learning panel.
+- HTML structural validation found **204 element IDs with zero duplicate IDs**.
+- Dashboard regression checks passed for the top-priority active-position panel, separated current-window WAIT state, preserved historical directional context, countdown/reasoning content, the learning panel, hard-cap/preferred-target labels, and chart-evidence score fallback when a WAIT row stores score 0.
 - A local headless Chromium render using mocked API responses exercised both the no-position “Waiting For Next Available Signal” state and an open DOWN position while the current-window state remained WAIT; both rendered with “Dashboard connected” and no browser/console exceptions.
 - Static safety scan found no assignment to dynamic `.innerHTML`; dashboard values are inserted through text-safe DOM APIs.
 - Per-trade learning tests verify idempotency, unsettled-trade exclusion, legacy linkage through external alert ID, realized P&L classification, bounded adaptive-entry policy thresholds, one-way tightening, the 5¢ cap, 10-new-trade review watermark, and protection against historical backfill causing repeat adjustments.
@@ -21,13 +21,13 @@
 | `test_trend_stop.py` | 4 | PASS |
 | `test_hybrid_take_profit.py` | 17 | PASS |
 | `test_paper_bot_fixes.py` | 4 | PASS |
-| `test_signal_fusion_trend_gate.py` | 7 | PASS |
+| `test_signal_fusion_trend_gate.py` | 8 | PASS |
 | `test_btc_trend_monitor.py` | 2 | PASS |
 | `test_trend_monitor_worker.py` | 1 | PASS |
 | `test_signal_engine.py` | 5 | PASS |
 | `test_kalshi_api.py` | 3 | PASS |
 | `test_orderbook_quote_pricing.py` | 3 | PASS |
-| `test_entry_quality.py` | 6 | PASS |
+| `test_entry_quality.py` | 7 | PASS |
 | `test_current_signal.py` | 5 | PASS |
 | `test_current_window_wait.py` | 4 | PASS |
 | `test_wait_alerts.py` | 2 | PASS |
@@ -44,7 +44,7 @@
 | `test_manual_api_security.py` | 4 | PASS |
 | `test_app_http_surface.py` | 2 | PASS |
 | `test_dashboard_context.py` | 3 | PASS |
-| **Total** | **115** | **ALL PASS** |
+| **Total** | **117** | **ALL PASS** |
 
 The separate offline integration smoke test also passed:
 
@@ -88,3 +88,14 @@ After a paper position has reached and armed its fee-adjusted take-profit target
 
 After take-profit has previously armed on a fee-adjusted target, `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` adds a conditional exit on a major opposing internal setup or an adverse, fully closed 1-minute BTC candle whose adverse move meets `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles (default 2.5). It is not an exit on every trade. The simulated exit uses the actual observed Kalshi contract bid and subtracts entry and exit fees; it is recorded as `PROFIT_PROTECTION`. If the observed bid has already fallen below fee-adjusted break-even, the note explicitly records that a loss cannot be prevented at that quote. Polling delays, price gaps, slippage and missing liquidity mean no system can guarantee a no-loss exit. Tests cover large adverse movement on UP and DOWN positions, ordinary candles that must not trigger, and an integrated profit-armed protection exit.
 
+### Entry-price semantics update
+
+`PAPER_ENTRY_TARGET_MAX_CENTS` (default 80¢) is a soft preferred price, not a trade blocker. A directional signal that passes freshness, major-flaw, quote, spread, risk, and budget checks may enter above that preference up to `PAPER_MAX_ENTRY_CENTS` (default hard cap 92¢). Quotes above the hard cap wait and are not opened. Higher entry prices leave less maximum upside; a direction/evidence score is not a calibrated win probability.
+
+
+## Entry target clarification and dashboard corrections
+
+- `PAPER_ENTRY_TARGET_MAX_CENTS=80` is advisory only; it no longer blocks otherwise approved trades. `PAPER_MAX_ENTRY_CENTS=92` remains the actual hard cap. The code/test matrix permits a 90¢ ask if directional, market, quote, freshness and risk checks pass, and waits at 93¢.
+- Dashboard risk card labels the 80¢ value as **Preferred entry target (soft)** and separately displays the configured **Hard entry cap**.
+- Fixed the score mismatch: when a WAIT row uses score `0` as the action placeholder but has a saved chart-evidence score, the dashboard displays the chart-evidence score alongside the explanation rather than showing `0/100` against a reason like “58/100 below threshold.”
+- For entries above the soft preference, the human-readable price warning is now persisted back to the linked signal payload consumed by the dashboard.

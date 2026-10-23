@@ -158,8 +158,9 @@
       <div class="card-titleline"><h2>Risk limits</h2><span class="badge green">Guardrails</span></div>
       <div class="rowline"><span class="label">Max cost / trade</span><span class="value" id="max-trade">—</span></div>
       <div class="rowline"><span class="label">Daily loss limit</span><span class="value" id="daily-loss-limit">—</span></div>
-      <div class="rowline"><span class="label">Effective entry target</span><span class="value" id="adaptive-entry-target">—</span></div>
-      <p class="small" id="adaptive-entry-note" style="margin-top:6px">Adaptive paper-only policy status will appear here.</p>
+      <div class="rowline"><span class="label">Preferred entry target (soft)</span><span class="value" id="adaptive-entry-target">—</span></div>
+      <div class="rowline"><span class="label">Hard entry cap</span><span class="value" id="hard-entry-cap">—</span></div>
+      <p class="small" id="adaptive-entry-note" style="margin-top:6px">Preferred price is advisory only; valid signals can enter above it up to the hard cap if all safeguards pass.</p>
       <div class="rowline"><span class="label">Open exposure</span><span class="value" id="exposure">—</span></div>
       <div class="rowline"><span class="label">Open positions</span><span class="value" id="open-positions">—</span></div>
       <div class="notice"><strong>Safety lock:</strong> This dashboard is read-only. It cannot place, close, or enable real orders.</div>
@@ -244,7 +245,7 @@
           <div class="mini"><div class="label">Time remaining at signal</div><div class="value" id="seconds-remaining">—</div></div>
           <div class="mini"><div class="label" id="indicator-countdown-label">Current-window indicator timer</div><div class="value" id="indicator-countdown">—</div><div class="help" id="indicator-countdown-help">Waiting for current-window timing.</div></div>
           <div class="mini"><div class="label">Entry ask</div><div class="value" id="entry-ask">—</div></div>
-          <div class="mini"><div class="label">Max entry limit</div><div class="value" id="max-entry-cents">—</div></div>
+          <div class="mini"><div class="label">Hard entry cap</div><div class="value" id="max-entry-cents">—</div></div>
         </div>
       </div>
       <div>
@@ -509,7 +510,21 @@
     const isHistorical=showHistorical;
     const side=hasDisplayedEvaluation?direction(s.direction||s.proposed_direction):(currentAlert?cwSide:'');
     const waitingLabel=String(cw.phase||'')==='indicator_wait'?'INDICATOR SAYS WAIT':'WAIT THIS WINDOW';
-    const score=hasDisplayedEvaluation&&hasNum(s.score)?Math.max(0,Math.min(100,Number(s.score))):null;
+    const rawScore=hasDisplayedEvaluation&&hasNum(s.score)?Math.max(0,Math.min(100,Number(s.score))):null;
+    const chartScoreCandidates=[s.trend_evidence_score,s.chart_evidence_score,s.chart_trend_at_decision?.evidence_score,
+      s.payload?.chart_trend_at_decision?.evidence_score,s.payload?.trend_evidence_score];
+    const savedChartScore=chartScoreCandidates.find(v=>hasNum(v)&&Number(v)>0);
+    // Older/current WAIT payloads sometimes store action score 0 and omit the separate chart score.
+    // If the bot's own reason says "Evidence score 58/100...", use that exact displayed evidence.
+    const reasonText=Array.isArray(s.reasons)?s.reasons.join(' '):'';
+    const reasonScoreMatch=reasonText.match(/(?:chart\s+)?evidence score\s+(\d{1,3}(?:\.\d+)?)\s*\/\s*100/i);
+    const scoreFromReason=reasonScoreMatch?Number(reasonScoreMatch[1]):undefined;
+    const chartScore=savedChartScore!==undefined?savedChartScore:(hasNum(scoreFromReason)&&scoreFromReason>0?scoreFromReason:undefined);
+    const statusForScore=String(s.decision_status||s.entry_price_gate?.decision||'').toLowerCase();
+    const waitPlaceholderScore=(rawScore===0||rawScore===null)&&(String(s.direction||'').toUpperCase()==='WAIT'||statusForScore.includes('wait_for_better_price'));
+    // WAIT/price-wait journal rows may store score 0 to represent the non-entry decision;
+    // display the saved chart score or the exact score embedded in the bot's own explanation.
+    const score=hasDisplayedEvaluation?(waitPlaceholderScore&&chartScore!==undefined?Math.max(0,Math.min(100,Number(chartScore))):rawScore):null;
     const ageSeconds=hasDisplayedEvaluation?s.age_seconds:null;
     const thresholdMatch=(hasDisplayedEvaluation&&Array.isArray(s.reasons)?s.reasons.join(' '):'').match(/configured\s+(\d+(?:\.\d+)?)\/100\s+threshold/i);
     const threshold=thresholdMatch?Number(thresholdMatch[1]):65;
@@ -568,7 +583,7 @@
     write('distance-strike',hasDisplayedEvaluation&&hasNum(s.distance_from_strike)?`${Number(s.distance_from_strike)>0?'+':Number(s.distance_from_strike)<0?'−':''}$${Math.abs(Number(s.distance_from_strike)).toFixed(2)}`:'—');
     write('seconds-remaining',hasDisplayedEvaluation&&hasNum(s.seconds_remaining)?`${Math.round(Number(s.seconds_remaining))} sec at evaluation`:'—');
     write('entry-ask',hasDisplayedEvaluation?cents(s.entry_ask_cents):'—');
-    write('max-entry-cents',hasDisplayedEvaluation?cents(d.risk?.entry_target_max_cents??s.max_entry_cents):'—');
+    write('max-entry-cents',hasDisplayedEvaluation?cents(d.risk?.configured_hard_max_entry_cents??s.max_entry_cents):cents(d.risk?.configured_hard_max_entry_cents));
     write('evidence-score',score===null?'Not available':`${nfmt(score,0)} / 100`);
     if($('score-bar')) $('score-bar').style.width=`${score===null?0:score}%`;
     write('score-note',score===null?'No directional score recorded':`Rule score captured at evaluation; ${isHistorical?'historical only · ':''}configured internal threshold ${threshold}/100`);
@@ -626,8 +641,8 @@
     nextSignalCountdownState.selectedDirection=latestSide;
     nextSignalCountdownState.maxAge=hasNum(cw.max_age_seconds)?Number(cw.max_age_seconds):300;
     nextSignalCountdownState.entryAsk=hasNum(latest.entry_ask_cents)?Number(latest.entry_ask_cents):null;
-    nextSignalCountdownState.targetAsk=hasNum(latest.max_entry_cents)?Number(latest.max_entry_cents):
-      (hasNum(dataForCountdown.risk?.entry_target_max_cents)?Number(dataForCountdown.risk.entry_target_max_cents):null);
+    nextSignalCountdownState.targetAsk=hasNum(dataForCountdown.risk?.configured_hard_max_entry_cents)?Number(dataForCountdown.risk.configured_hard_max_entry_cents):
+      (hasNum(latest.max_entry_cents)?Number(latest.max_entry_cents):null);
     window.__btcLatestDecisionStatus=(phase==='signal_received'&&matching)?latestStatus:'';
     updateNextSignalCountdown();
   }
@@ -643,7 +658,7 @@
       write('next-signal-countdown-label',`${st.selectedDirection} alert validity remaining`);
       write('next-signal-countdown',`${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`);
       write('next-signal-countdown-help',left>0
-        ?`Waiting for the ${st.selectedDirection} side ask to reach ${st.targetAsk===null?'the configured entry target':cents(st.targetAsk)}. Current ask: ${st.entryAsk===null?'not recorded':cents(st.entryAsk)}. This alert expires when its freshness window ends; it will not be carried into a later 15-minute window.`
+        ?`Waiting for the ${st.selectedDirection} side ask to fall to or below the hard cap ${st.targetAsk===null?'(not reported)':cents(st.targetAsk)}. Current ask: ${st.entryAsk===null?'not recorded':cents(st.entryAsk)}. The 80¢ preferred target is soft and does not block an accepted signal below the hard cap. This alert expires at the freshness/window boundary and will not be reused later.`
         :'The alert freshness window has expired. The bot must discard it rather than reuse this direction.');
       return;
     }
@@ -701,15 +716,18 @@
     const waitingForPrice=hasFreshAlert&&evalInThisWindow&&!lastEval.is_stale&&
       evaluatedStatus==='wait_for_better_price'&&['BUY UP','BUY DOWN'].includes(lastSide)&&lastSide===directionNow;
     const currentAsk=hasNum(lastEval.entry_ask_cents)?Number(lastEval.entry_ask_cents):null;
-    const targetAsk=hasNum(lastEval.max_entry_cents)?Number(lastEval.max_entry_cents):
-      (hasNum(data.risk?.entry_target_max_cents)?Number(data.risk.entry_target_max_cents):null);
+    const targetAsk=hasNum(data.risk?.entry_target_max_cents)?Number(data.risk.entry_target_max_cents):
+      (hasNum(lastEval.preferred_entry_target_cents)?Number(lastEval.preferred_entry_target_cents):null);
+    const hardCapAsk=hasNum(data.risk?.configured_hard_max_entry_cents)?Number(data.risk.configured_hard_max_entry_cents):
+      (hasNum(lastEval.max_entry_cents)?Number(lastEval.max_entry_cents):null);
     const validityLeft=hasNum(cw.alert_age_seconds)?Math.max(0,(hasNum(cw.max_age_seconds)?Number(cw.max_age_seconds):300)-Number(cw.alert_age_seconds)):null;
     let status='Waiting For Next Available Signal';
     let summary='No paper position is open. The bot is waiting for a fresh indicator alert. No previous directional signal is reused as a new entry.';
     let badge='Waiting for signal',badgeTone='amber';
     if(waitingForPrice){
       status=`${lastSide} · WAITING FOR BETTER ENTRY PRICE`;
-      summary=`The indicator selected ${lastSide}. The current executable ask is ${currentAsk===null?'not available':cents(currentAsk)}${targetAsk===null?'':`; the preferred entry target is ${cents(targetAsk)}`}. No paper position has been opened yet. The worker may keep rechecking the price only while this alert is fresh and belongs to the current 15-minute window; if the ask does not reach the target in time, the signal must be skipped rather than reused.`;
+      const hardCap=hasNum(data.risk?.configured_hard_max_entry_cents)?Number(data.risk.configured_hard_max_entry_cents):null;
+      summary=`The indicator selected ${lastSide}. The current executable ask is ${currentAsk===null?'not available':cents(currentAsk)}${targetAsk===null?'':`; the preferred target is ${cents(targetAsk)} (soft preference)`}${hardCap===null?'':`; the hard entry cap is ${cents(hardCap)}`}. A quote above the preferred target can still enter if it is within the hard cap and all signal, market, and risk checks pass. This price-wait state applies only when the ask is above the hard cap; the alert must remain fresh and within this 15-minute window.`;
       badge='Waiting for better price';badgeTone='amber';
     }else if(hasFreshAlert&&!alreadyEvaluated){
       status=`${directionNow} ALERT RECEIVED · EVALUATION PENDING`;
@@ -734,7 +752,8 @@
     const reasons=[];
     if(waitingForPrice){
       reasons.push(`The current indicator direction is ${lastSide}; it is a pending entry candidate, not an open position.`);
-      if(currentAsk!==null&&targetAsk!==null) reasons.push(`Current ask ${cents(currentAsk)} is above the target ${cents(targetAsk)}; the worker is waiting instead of chasing the price.`);
+      const hardCap=hasNum(data.risk?.configured_hard_max_entry_cents)?Number(data.risk.configured_hard_max_entry_cents):null;
+      if(currentAsk!==null&&hardCap!==null) reasons.push(`Current ask ${cents(currentAsk)} is above the hard cap ${cents(hardCap)}; the worker will not enter at this quote.`);
       else if(lastEval.reasons?.length) reasons.push(...lastEval.reasons.slice(0,3).map(formatReason));
       if(validityLeft!==null) reasons.push(validityLeft>0?`The alert has approximately ${Math.ceil(validityLeft)} seconds of freshness remaining.`:'The alert freshness window has expired and it must not be reused.');
       reasons.push('If the target is not reached while the alert remains fresh and in the same window, the alert will be skipped.');
@@ -949,9 +968,8 @@
     write('settled-trades',s.settled_trades??0);write('wins-losses',`${s.wins??0} / ${s.losses??0}`);write('total-trades',s.total_trades??0);
     write('max-trade',money(r.max_trade_dollars));write('daily-loss-limit',money(r.max_daily_loss_dollars));
     write('adaptive-entry-target',hasNum(r.entry_target_max_cents)?cents(r.entry_target_max_cents):'—');
-    write('adaptive-entry-note',r.adaptive_entry_target_enabled
-      ?`${Number(r.adaptive_entry_target_adjustment_count||0)} automatic tightenings · ${r.adaptive_entry_target_reason||'Collecting settled hybrid trade outcomes.'}`
-      :'Configured target active; automatic target adjustment is disabled.');
+    write('hard-entry-cap',hasNum(r.configured_hard_max_entry_cents)?cents(r.configured_hard_max_entry_cents):'—');
+    write('adaptive-entry-note',`${r.adaptive_entry_target_enabled?'Adaptive preference enabled':'Adaptive preference adjustment disabled'} · ${Number(r.adaptive_entry_target_adjustment_count||0)} automatic tightenings · ${r.adaptive_entry_target_reason||'Collecting settled hybrid trade outcomes.'} The preferred target is advisory only; an approved signal may enter above it up to the hard cap.`);
     write('exposure',money(r.open_exposure_dollars));write('open-positions',s.open_positions??0);
     write('next-worker-status',worker==='running'?'Worker running':worker==='stale'?'Heartbeat stale':'Worker not confirmed');
     write('next-last-signal',d.latest_signal?.created_at?time(d.latest_signal.created_at):'No saved signal');

@@ -94,6 +94,9 @@ def test_wait_window_does_not_erase_last_directional_or_open_position_reasoning(
             assert data["risk"]["configured_entry_target_max_cents"] == 80.0
             assert data["risk"]["entry_target_max_cents"] == 78.0
             assert data["risk"]["adaptive_entry_target_adjustment_count"] == 2
+            # The latest WAIT record stores zero as a decision placeholder, but the
+            # actual chart evidence remains available separately for readable display.
+            assert data["latest_signal"]["trend_evidence_score"] == 40
 
 
 def test_dashboard_has_separate_historical_signal_active_position_and_window_context():
@@ -118,7 +121,7 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
         "active-position-details", "active-position-reasons", "active-position-warnings",
         "current-window-status", "current-window-reason", "signal-age-badge", "decision-section-title",
         "signal-eyebrow", "active-position-summary", "strategy-checks-title",
-        "next-signal-countdown", "next-signal-reasons", "learning-reviewed", "learning-latest-observations",
+        "next-signal-countdown", "next-signal-reasons", "hard-entry-cap", "learning-reviewed", "learning-latest-observations",
         "learning-cohorts", "learning-recent-reviews", "adaptive-entry-target", "adaptive-entry-note",
         "learning-effective-target", "learning-adjustment-count", "learning-policy-sample",
     ):
@@ -130,6 +133,10 @@ def test_dashboard_has_separate_historical_signal_active_position_and_window_con
     assert "renderLearning(report)" in html
     assert "getJSON('/api/learning')" in html
     assert "Automatic tightenings" in html and "preferred entry target may tighten" in html
+    assert "Preferred entry target (soft)" in html
+    assert "Current ask" in html and "hard cap" in html
+    assert "chartScoreCandidates" in html, "WAIT placeholder score should fall back to stored chart evidence"
+    assert "reasonScoreMatch" in html, "WAIT placeholder score should fall back to the evidence score in the actual reason text"
     # KPI/status/guardrail row is the first content after the header; the intro
     # follows it, then the active-position panel remains near the top.
     active_pos = html.index('id="active-position-section"')

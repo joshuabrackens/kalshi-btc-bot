@@ -28,12 +28,18 @@ _stub_if_missing("market_discovery", discover=lambda: {"candidates": []})
 from paper_worker import _entry_price_gate, _quarter_hour_window_start
 
 class EntryPriceQualityTests(unittest.TestCase):
-    def test_expensive_contract_waits_for_target_not_entry(self):
+    def test_price_above_preferred_target_is_allowed_below_hard_cap(self):
         action, note = _entry_price_gate(90, 92, 80)
-        self.assertEqual(action, "wait")
+        self.assertEqual(action, "enter")
         self.assertIn("90.00c", note)
-        self.assertIn("80.00c", note)
-        self.assertIn("waiting for a better price", note)
+        self.assertIn("preferred target 80.00c", note)
+        self.assertIn("hard cap 92.00c", note)
+        self.assertIn("less upside", note)
+
+    def test_price_above_hard_cap_waits(self):
+        action, note = _entry_price_gate(93, 92, 80)
+        self.assertEqual(action, "wait")
+        self.assertIn("hard entry cap 92.00c", note)
 
     def test_price_at_target_is_allowed(self):
         action, _ = _entry_price_gate(80, 92, 80)
@@ -43,10 +49,10 @@ class EntryPriceQualityTests(unittest.TestCase):
         action, _ = _entry_price_gate(78, 92, 80)
         self.assertEqual(action, "enter")
 
-    def test_hard_cap_clamps_target(self):
+    def test_hard_cap_is_the_only_fixed_price_block(self):
         action, note = _entry_price_gate(79, 78, 80)
         self.assertEqual(action, "wait")
-        self.assertIn("78.00c", note)
+        self.assertIn("hard entry cap 78.00c", note)
 
     def test_invalid_non_finite_or_out_of_range_prices_fail_closed(self):
         for ask in (0, 100, -1, float('nan'), float('inf')):

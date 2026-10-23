@@ -432,7 +432,8 @@ def dashboard_data() -> dict[str, Any]:
         ).fetchall()
         signal_row = conn.execute(
             """SELECT created_at, market_ticker, direction, score, btc_price,
-                      strike_price, seconds_remaining, max_entry_cents, payload_json
+                      strike_price, seconds_remaining, max_entry_cents, payload_json,
+                      trend_evidence_score
                FROM signal_log ORDER BY id DESC LIMIT 1"""
         ).fetchone()
         directional_signal_row = conn.execute(
@@ -547,6 +548,17 @@ def dashboard_data() -> dict[str, Any]:
             "disclaimer", "Score is heuristic only; it is not a calibrated win probability."
         )
         signal["strategies"] = payload.get("strategies", payload.get("strategy_diagnostics", {}))
+        chart_context = payload.get("chart_trend_at_decision") if isinstance(payload.get("chart_trend_at_decision"), dict) else {}
+        signal["chart_trend_at_decision"] = chart_context
+        signal["trend_evidence_score"] = (
+            payload.get("trend_evidence_score")
+            if payload.get("trend_evidence_score") is not None else
+            chart_context.get("evidence_score")
+            if chart_context.get("evidence_score") is not None else
+            signal_row[9]
+        )
+        signal["decision_status"] = payload.get("decision_status")
+        signal["entry_price_gate"] = payload.get("entry_price_gate") if isinstance(payload.get("entry_price_gate"), dict) else {}
         try:
             created = datetime.fromisoformat(str(signal["created_at"]).replace("Z", "+00:00"))
             if created.tzinfo is None:

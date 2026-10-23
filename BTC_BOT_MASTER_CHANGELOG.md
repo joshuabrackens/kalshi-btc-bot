@@ -61,3 +61,12 @@ The final validation report accompanies this package. All repository test module
 
 After a paper position has reached and armed its fee-adjusted take-profit target, optional profit protection can trigger an immediate simulated exit when either (a) the internal engine detects a predefined major opposing setup, or (b) a newly closed 1-minute BTC candle moves adversely by at least `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER` times the ATR baseline from prior closed candles. Configure `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED=true` and `PAPER_TAKE_PROFIT_MAJOR_MOVE_ATR_MULTIPLIER=2.5`. The exit is modeled from the observed Kalshi bid, subtracts entry and exit fees, and is logged as `PROFIT_PROTECTION`. This is best-effort only: gaps, wide spreads, missing liquidity, or polling delays can result in an exit below break-even; no no-loss outcome is guaranteed. It applies only to simulated paper positions and never enables real orders.
 
+### Entry-price semantics update
+
+`PAPER_ENTRY_TARGET_MAX_CENTS` (default 80¢) is a soft preferred price, not a trade blocker. A directional signal that passes freshness, major-flaw, quote, spread, risk, and budget checks may enter above that preference up to `PAPER_MAX_ENTRY_CENTS` (default hard cap 92¢). Quotes above the hard cap wait and are not opened. Higher entry prices leave less maximum upside; a direction/evidence score is not a calibrated win probability.
+
+
+## Entry-price and decision-display correction
+- The 80¢ preferred entry target is advisory, not a price gate. With the default 92¢ hard cap, a signal that otherwise passes freshness, hybrid major-flaw, executable quote/spread, window and risk/budget checks can enter from above 80¢ through 92¢. Above 92¢ it waits. This does not imply a positive expected value; expensive contracts leave little upside.
+- Dashboard now distinguishes the soft preferred target from the hard cap and falls back to saved chart evidence when a WAIT row stores a zero action score, preventing contradictory “0/100” display next to a nonzero threshold reason.
+- Premium-entry explanation/warning is persisted with the signal payload so the dashboard can show why the entry was allowed above the preference.
