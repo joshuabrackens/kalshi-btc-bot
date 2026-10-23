@@ -85,7 +85,7 @@ def migrate(source_path: Path) -> None:
                         if old_alert_id is not None:
                             values[idx] = id_maps.get(int(old_alert_id))
                     cols = ["id"] + common
-                    placeholders = ", ".join(["%s"] * len(cols))
+                    placeholders = ", ".join(["?"] * len(cols))
                     quoted_cols = ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
                     target.execute(
                         f"INSERT INTO {table} ({quoted_cols}) VALUES ({placeholders})",
