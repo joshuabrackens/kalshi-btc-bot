@@ -527,9 +527,9 @@ class MarketDecisionPipeline:
                  AND d.evaluated_at < ? AND o.market_ticker IS NULL
                  AND (c.last_checked_at IS NULL OR
                       (c.last_checked_at < ? AND c.check_status NOT IN ('resolved_before_prediction','invalid_probability')))
-                 AND d.id=(SELECT MAX(d2.id) FROM market_research_decisions d2
-                           WHERE d2.market_ticker=d.market_ticker AND d2.model_id=d.model_id
-                             AND d2.model_version=d.model_version AND d2.model_probability_yes IS NOT NULL)
+                 AND d.id=(SELECT MIN(d2.id) FROM market_research_decisions d2
+                            WHERE d2.market_ticker=d.market_ticker AND d2.model_id=d.model_id
+                              AND d2.model_version=d.model_version AND d2.model_probability_yes IS NOT NULL)
                ORDER BY d.id ASC LIMIT ?""",
             (cutoff, retry_cutoff, max_markets),
         ).fetchall()
