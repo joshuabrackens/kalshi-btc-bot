@@ -70,6 +70,11 @@ def _safe_market_analysis_error(exc: Exception) -> str:
     return type(exc).__name__
 
 
+def _retryable_database_error(exc: Exception) -> bool:
+    """Retry only transient PostgreSQL transaction conflicts; never repeat provider calls."""
+    return type(exc).__name__ in {"DeadlockDetected", "SerializationFailure"}
+
+
 def _paper_candidate_rank(result: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
     """Score only already-eligible opportunities; this is a ranking score, not a win probability."""
     side = str(result.get("selected_side") or "").upper()
@@ -284,7 +289,9 @@ class MarketDecisionPipeline:
                     conn = connect_database()
                     try:
                         ensure_schema(conn)
-                        self._settle_open_trades(conn)
+                        with self._settlement_lock:
+                            self._settle_open_trades(conn)
+                            conn.commit()
                         self._collect_resolved_predictions(conn)
                         conn.commit()
                     finally:
@@ -307,9 +314,13 @@ class MarketDecisionPipeline:
             conn = connect_database()
             try:
                 ensure_schema(conn)
+                # Keep the settlement writes short and commit before any provider/network
+                # calls. This releases row locks while the bounded market batch is analyzed.
                 with self._settlement_lock:
                     self._settle_open_trades(conn)
+                    conn.commit()
                 self._collect_resolved_predictions(conn)
+                conn.commit()
                 for row in selected:
                     ticker = row["ticker"]
                     try:
@@ -471,7 +482,7 @@ class MarketDecisionPipeline:
                             candidate["paper_selection_status"] = "eligible_candidate_not_selected_this_cycle"
                         else:
                             candidate.setdefault("paper_selection", {})["selected_for_attempt"] = True
-                            created, risk_reason = self._create_paper_trade(
+                            created, risk_reason = self._create_paper_trade_with_retry(
                                 conn, candidate,
                                 allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
                             )
@@ -496,9 +507,7 @@ class MarketDecisionPipeline:
                             "is_best_candidate": index == 1,
                             "selected_for_attempt": bool(candidate.get("paper_selection", {}).get("selected_for_attempt", False)),
                         })
-                for item in decisions:
-                    self._record_decision(conn, item)
-                conn.commit()
+                self._record_decisions_with_retry(conn, decisions)
             finally:
                 conn.close()
             with self._lock:
@@ -633,6 +642,45 @@ class MarketDecisionPipeline:
             stats["checked"] += 1
         return stats
 
+    def _create_paper_trade_with_retry(
+        self, conn: Any, result: Mapping[str, Any], *, allow_manual_entry_once: bool = False,
+    ) -> tuple[bool, str | None]:
+        """Serialize paper entry writes and retry transient deadlocks without re-running analysis."""
+        for attempt in range(3):
+            try:
+                with self._settlement_lock:
+                    created, reason = self._create_paper_trade(
+                        conn, result, allow_manual_entry_once=allow_manual_entry_once,
+                    )
+                    if created:
+                        # Each paper position is durable before decision-journal writes begin.
+                        conn.commit()
+                return created, reason
+            except Exception as exc:
+                conn.rollback()
+                if not _retryable_database_error(exc) or attempt >= 2:
+                    raise
+                log.warning("Research paper entry retry after %s (attempt %s/3).",
+                            type(exc).__name__, attempt + 1)
+                time.sleep(0.1 * (attempt + 1))
+        return False, "research_paper_entry_retry_exhausted"
+
+    def _record_decisions_with_retry(self, conn: Any, decisions: list[dict[str, Any]]) -> None:
+        """Retry decision-journal writes using cached decisions; never call the model again."""
+        for attempt in range(3):
+            try:
+                for item in decisions:
+                    self._record_decision(conn, item)
+                conn.commit()
+                return
+            except Exception as exc:
+                conn.rollback()
+                if not _retryable_database_error(exc) or attempt >= 2:
+                    raise
+                log.warning("Research decision persistence retry after %s (attempt %s/3).",
+                            type(exc).__name__, attempt + 1)
+                time.sleep(0.1 * (attempt + 1))
+
     def _create_paper_trade(
         self, conn: Any, result: Mapping[str, Any], *, allow_manual_entry_once: bool = False,
     ) -> tuple[bool, str | None]:
@@ -729,7 +777,7 @@ class MarketDecisionPipeline:
                 return {"checked": 0, "settled": 0, "open_before": 0, "open_after": 0, "errors": 0}
             with self._settlement_lock:
                 self._settle_open_trades(conn)
-            conn.commit()
+                conn.commit()
             open_after = int(conn.execute(
                 "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
             ).fetchone()[0] or 0)
