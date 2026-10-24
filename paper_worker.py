@@ -118,7 +118,10 @@ def _extract_market(raw: dict) -> dict | None:
     seconds = int((close - _utcnow()).total_seconds())
     if seconds <= 0 or seconds > 900:
         return None
-    if "up" not in title or ("btc" not in title and "bitcoin" not in title):
+    # The KXBTC15M series already identifies the binary above/below contract.
+    # Real Kalshi titles often say "Bitcoin above $X" and do not contain the word
+    # "up"; requiring that word silently rejected every valid live contract.
+    if "btc" not in title and "bitcoin" not in title:
         return None
     if status in {"settled", "finalized", "closed", "inactive"}:
         return None
