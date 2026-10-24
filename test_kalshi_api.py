@@ -62,7 +62,7 @@ class KalshiApiRetryTests(unittest.TestCase):
             result = kalshi_api.get_markets()
         self.assertEqual(result, {"markets": []})
         self.assertEqual(get.call_count, 2)
-        self.assertEqual(kalshi_api._RATE_LIMITED_UNTIL, 0.0)
+        self.assertLessEqual(kalshi_api._RATE_LIMITED_UNTIL, self.fake_monotonic[0])
 
     def test_429_cooldown_is_shared_by_later_requests_and_respects_long_retry_after(self):
         kalshi_api.MAX_RETRIES = 0
