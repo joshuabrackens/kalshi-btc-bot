@@ -212,6 +212,7 @@ class MarketDecisionPipeline:
             "provider_configured": provider_configured(), "autopaper_enabled": _bool_env("MARKET_AUTOPAPER_ENABLED", False) and market_autopilot_enabled(),
             "candidate_pool_size": 0, "analyzed_count": 0, "paper_entries_created": 0,
             "blocked_count": 0, "decisions": [], "last_error": None,
+            "catalog_snapshot_status": None, "catalog_snapshot_partial": False,
             "mode": "PAPER_RESEARCH_ONLY", "live_orders_submitted": 0,
             "exploratory_paper_enabled": _bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False),
             "note": "Validated entries require calibrated evidence; explicitly enabled exploratory entries are labeled unvalidated and used only to measure paper accuracy. No live order API exists.",
@@ -254,11 +255,32 @@ class MarketDecisionPipeline:
         try:
             catalog = self._catalog_snapshot()
             catalog_status = catalog.get("status") if isinstance(catalog, dict) else "unavailable"
-            if catalog_status not in {"complete", "partial"}:
-                raise RuntimeError("market_catalog_not_ready")
             raw_candidates = catalog.get("analysis_candidates") if isinstance(catalog.get("analysis_candidates"), list) else catalog.get("markets", [])
             raw_candidates = [row for row in raw_candidates if isinstance(row, dict) and isinstance(row.get("ticker"), str) and row.get("ticker")]
             raw_pool_size = len(raw_candidates)
+            # The scanner publishes its ranked candidate heap after every successful
+            # page. Do not wait for the entire public catalog to finish before using
+            # that bounded, already-safe research pool; this keeps research fresh while
+            # long paginated inventories continue or recover from transient 429s.
+            if catalog_status not in {"complete", "partial", "running"}:
+                raise RuntimeError("market_catalog_not_ready")
+            if catalog_status == "running" and not raw_candidates:
+                with self._lock:
+                    self._state.update(
+                        status="waiting_for_catalog", updated_at=_stamp(),
+                        catalog_snapshot_status=catalog_status, catalog_snapshot_partial=True,
+                        candidate_pool_size=0, analyzed_count=0, blocked_count=0,
+                        decisions=[], last_error="The catalog scan is still running and has not published any research candidates yet.",
+                    )
+                return
+            with self._lock:
+                self._state["catalog_snapshot_status"] = catalog_status
+                self._state["catalog_snapshot_partial"] = catalog_status != "complete"
+                self._state["candidate_pool_size"] = raw_pool_size
+            log.info(
+                "Starting bounded research batch from catalog_status=%s candidate_count=%s",
+                catalog_status, raw_pool_size,
+            )
             enabled_categories = {x.strip().lower() for x in os.getenv("MARKET_PAPER_ENABLED_CATEGORIES", "sports,politics,economics,weather,crypto_event,financial_markets,entertainment,companies,world,science_technology").split(",") if x.strip()}
             # Don't spend model tokens on unknown categories, BTC markets that belong
             # to the separate BTC engine, or research categories not explicitly allowed.
@@ -515,8 +537,15 @@ class MarketDecisionPipeline:
                 self._state.update(status="complete", updated_at=_stamp(), candidate_pool_size=pool_size,
                                    analyzed_count=len(decisions), blocked_count=blocked,
                                    paper_entries_created=entered, decisions=decisions, last_error=None,
+                                   catalog_snapshot_status=catalog_status,
+                                   catalog_snapshot_partial=catalog_status != "complete",
                                    live_orders_submitted=0,
-                                   note="Only isolated research paper trades may be created. Live orders are not supported by this pipeline.")
+                                   note=(
+                                       "Batch used a partial/running catalog snapshot; the full inventory continues independently. "
+                                       "Only isolated research paper trades may be created. Live orders are not supported by this pipeline."
+                                       if catalog_status != "complete" else
+                                       "Only isolated research paper trades may be created. Live orders are not supported by this pipeline."
+                                   ))
         except Exception as exc:
             log.warning("Market decision pipeline failed (%s).", type(exc).__name__)
             with self._lock:
@@ -849,7 +878,15 @@ class MarketDecisionPipeline:
                     time.sleep(5)
                     continue
                 catalog = self._catalog_snapshot()
-                ready = isinstance(catalog, dict) and catalog.get("status") in {"complete", "partial"}
+                catalog_status = catalog.get("status") if isinstance(catalog, dict) else None
+                candidates = catalog.get("analysis_candidates") if isinstance(catalog, dict) else None
+                ready = (
+                    isinstance(catalog, dict)
+                    and (
+                        catalog_status in {"complete", "partial"}
+                        or (catalog_status == "running" and isinstance(candidates, list) and bool(candidates))
+                    )
+                )
                 if ready and provider_configured() and now - last_scheduled_run >= interval:
                     started = self.start(force=True)
                     if started.get("status") == "running":
