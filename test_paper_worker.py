@@ -106,9 +106,10 @@ class WorkerSafetyTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["strike"], 65000)
 
-    def test_exact_btc_series_accepts_target_price_dollars_without_title(self):
+    def test_btc_title_accepts_target_price_dollars_without_literal_up(self):
         m = {"market": {
             "ticker": "KXBTC15M-TEST", "status": "active",
+            "title": "Bitcoin above $80,500 at 4:00 PM ET",
             "close_time": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
             "target_price_dollars": 80500.0,
         }}
