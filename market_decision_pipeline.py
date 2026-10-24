@@ -263,7 +263,8 @@ class MarketDecisionPipeline:
             # Don't spend model tokens on unknown categories, BTC markets that belong
             # to the separate BTC engine, or research categories not explicitly allowed.
             candidates = [row for row in raw_candidates
-                          if str(row.get("category") or "unclassified").lower() in _REQUIRED_EVIDENCE
+                          if str(row.get("category") or "unclassified").strip().lower() in _REQUIRED_EVIDENCE
+                          and str(row.get("category") or "unclassified").strip().lower() in enabled_categories
                           and row.get("route_status") in (None, "research_only")]
             pool_size = len(candidates)
             max_per_cycle = _int_env("MARKET_ANALYSIS_MAX_PER_CYCLE", 10, 1, 50)

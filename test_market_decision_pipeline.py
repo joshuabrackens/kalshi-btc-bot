@@ -123,21 +123,38 @@ def test_pipeline_does_not_create_paper_trade_when_live_flag_is_true(tmp_path):
         assert result["decisions"][0]["paper_trade_created"] is False
 
 
-def test_pipeline_category_allowlist_is_required_for_research_paper(tmp_path):
+def test_pipeline_category_allowlist_blocks_before_market_book_or_model_calls(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "category.sqlite3"),
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
         "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "politics",
         "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
     }, clear=False):
+        calls = {"market": 0, "book": 0, "model": 0}
+        def forbidden_market(_ticker):
+            calls["market"] += 1
+            raise AssertionError("disabled category must not fetch market detail")
+        def forbidden_book(_ticker):
+            calls["book"] += 1
+            raise AssertionError("disabled category must not fetch orderbook")
+        def forbidden_model(_market, _book_data, _required):
+            calls["model"] += 1
+            raise AssertionError("disabled category must not call paid analysis provider")
         pipeline = MarketDecisionPipeline(
-            lambda: {"status": "complete", "analysis_candidates": [{"ticker": "KXSPORTS-TEST", "category": "sports"}]},
-            lambda _t: {"market": _market()}, lambda _t: _book(), _model,
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-TEST", "category": "sports"}
+            ]},
+            forbidden_market, forbidden_book, forbidden_model,
         )
         result = pipeline.run_once_for_tests()
+        assert result["status"] == "complete"
         assert result["paper_entries_created"] == 0
-        assert result["decisions"][0]["eligible"] is False
-        assert result["decisions"][0]["status"] == "category_paper_disabled"
+        assert result["analyzed_count"] == 0
+        assert result["blocked_count"] == 1
+        assert result["decisions"] == []
+        assert calls == {"market": 0, "book": 0, "model": 0}
+
 
 
 def test_end_to_end_catalog_scan_to_automatic_research_paper_entry(tmp_path):
