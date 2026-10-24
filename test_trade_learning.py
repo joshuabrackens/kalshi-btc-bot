@@ -57,6 +57,55 @@ def _insert_linked_trade(conn, *, trade_id_ticker="KXBTC15M-LEARN", direction="U
     return signal_id
 
 
+def test_rejected_signal_counterfactuals_are_grouped_without_auto_changing_rules():
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "rejections.sqlite3")}):
+            conn = _new_db(tmp)
+            try:
+                def insert_rejection(*, status, reason, pnl, signal_id):
+                    payload = {
+                        "final_decision_reason": reason,
+                        "reasons": [reason],
+                        "fusion": {"reasons": [reason], "approved": False},
+                    }
+                    now = f"2026-10-23T00:{signal_id:02d}:00+00:00"
+                    conn.execute(
+                        """INSERT INTO signal_log
+                           (created_at,market_ticker,direction,score,btc_price,strike_price,seconds_remaining,
+                            max_entry_cents,payload_json,decision_status,proposed_direction,entry_ask_cents,
+                            spread_cents,trend_bias,trend_evidence_score,trend_snapshot_age_seconds,
+                            counterfactual_outcome,counterfactual_pnl_cents,counterfactual_settled_at,
+                            counterfactual_check_note)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (now, f"KXBTC15M-TEST-{signal_id}", "WAIT", 0, 81000.0, 81000.0, 600, 92.0,
+                         json.dumps(payload), status, "UP", 56.0, 1.0, "DOWN", 55, 2.0,
+                         "UP" if pnl > 0 else "DOWN", pnl, now, "hypothetical-only test result"),
+                    )
+
+                insert_rejection(status="vetoed", reason="Internal system vetoed a major conflict.", pnl=42.0, signal_id=1)
+                insert_rejection(status="vetoed", reason="Internal system vetoed a major conflict.", pnl=-72.0, signal_id=2)
+                insert_rejection(status="vetoed", reason="Internal system vetoed a major conflict.", pnl=23.0, signal_id=3)
+                insert_rejection(status="wait_for_better_price", reason="Ask exceeds preferred target.", pnl=-10.0, signal_id=4)
+                conn.commit()
+
+                report = build_learning_report(conn)
+                feedback = report["rejection_feedback"]
+                groups = {item["rejection_class"]: item for item in feedback["groups"]}
+
+                assert feedback["settled_rejected_signal_count"] == 4
+                veto = groups["strategy_conflict_veto"]
+                assert veto["sample_count"] == 3
+                assert veto["positive_net_count"] == 2
+                assert veto["negative_net_count"] == 1
+                assert veto["positive_net_rate_percent"] == 66.67
+                assert veto["meets_review_gate"] is False
+                assert veto["automatic_rule_change"] is False
+                assert groups["entry_price_filter"]["sample_count"] == 1
+                assert feedback["automatic_strategy_changes_enabled"] is False
+            finally:
+                conn.close()
+
+
 def test_settled_trade_learning_captures_features_and_is_idempotent():
     with tempfile.TemporaryDirectory() as tmp:
         with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "learning.sqlite3")}):

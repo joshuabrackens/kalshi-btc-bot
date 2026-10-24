@@ -1034,6 +1034,33 @@ def _major_flaw_veto(direction: str, internal_payload: dict[str, Any], minimum_o
     return bool(reasons), reasons
 
 
+def _mark_queued_alerts_during_cooldown(conn, source: str, cooldown_reason: str, *, max_alerts: int = 30) -> int:
+    """Record why queued TradingView alerts cannot be acted on during a risk cooldown.
+
+    Alerts are time-sensitive: do not leave them pending to be replayed after the
+    cooldown ends, and never let this helper bypass the circuit breaker.
+    """
+    if str(source or "").strip().lower() not in {"gainzalgo", "hybrid"}:
+        return 0
+    limit = max(1, min(100, int(max_alerts)))
+    marked = 0
+    for _ in range(limit):
+        queued, direction = _next_gainzalgo_signal(conn)
+        if not queued:
+            break
+        if direction == "WAIT":
+            note = "Indicator explicitly reported WAIT; no entry was opened. " + str(cooldown_reason)[:300]
+            _mark_gainzalgo(conn, queued["id"], "wait", note)
+        else:
+            note = (
+                "Blocked by paper risk cooldown: " + str(cooldown_reason)[:300]
+                + ". This time-sensitive alert will not be replayed after cooldown or outside its original 15-minute window."
+            )
+            _mark_gainzalgo(conn, queued["id"], "skipped", note)
+        marked += 1
+    return marked
+
+
 def run_once() -> dict[str, Any]:
     """Run one paper-only cycle. Any error or missing critical data fails closed."""
     if os.getenv("TRADING_MODE", "paper").strip().lower() != "paper":
@@ -1107,8 +1134,19 @@ def run_once() -> dict[str, Any]:
             ).fetchall()
             cooldown = _loss_streak_cooldown_status(recent_settled, limit=streak_limit, cooldown_minutes=cooldown_minutes)
             if cooldown:
-                log.warning("Paper entry circuit breaker active: %s", cooldown["reason"])
-                return {"action": "risk_cooldown", **cooldown, "mode": "SIMULATION_ONLY", "trade_placed": False}
+                blocked_alerts = 0
+                try:
+                    blocked_alerts = _mark_queued_alerts_during_cooldown(
+                        conn, source, cooldown["reason"], max_alerts=30,
+                    )
+                except Exception as alert_exc:
+                    log.warning("Could not persist queued-alert cooldown status: %s", alert_exc)
+                log.warning(
+                    "Paper entry circuit breaker active: %s; marked %s queued external alert(s) without opening trades",
+                    cooldown["reason"], blocked_alerts,
+                )
+                return {"action": "risk_cooldown", **cooldown, "blocked_alerts": blocked_alerts,
+                        "mode": "SIMULATION_ONLY", "trade_placed": False}
 
         # Keep chart trends precomputed even when no TradingView alert is waiting.
         # Retain this exact snapshot for the entry decision later in this cycle.
