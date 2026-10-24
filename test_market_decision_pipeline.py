@@ -424,3 +424,110 @@ def test_pipeline_opens_multiple_top_ranked_research_paper_positions(tmp_path):
             for suffix in ("", "-wal", "-shm"):
                 Path(str(db_path) + suffix).unlink(missing_ok=True)
 
+def test_exploratory_paper_mode_opens_unvalidated_prediction_for_accuracy_tracking(tmp_path):
+    db_path = tmp_path / "exploratory-paper.sqlite3"
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_EXPLORATORY_PAPER_ENABLED": "true",
+        "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "MARKET_RESEARCH_MAX_OPEN_POSITIONS": "5", "MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE": "3",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(True)
+
+        def unvalidated_model(market, _book, _required):
+            return {
+                "market_ticker": market["ticker"], "model_probability_yes": 0.90,
+                "model_id": "exploratory-test-model", "model_version": "exploratory-v1",
+                "as_of_utc": _stamp(),
+                "validation": {"out_of_sample": False, "sample_count": 0},
+                "evidence": [],
+            }
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-EXPLORATORY", "title": "Exploratory paper test", "category": "sports"}
+            ]},
+            lambda ticker: {"market": _market(ticker=ticker)},
+            lambda _ticker: _book(),
+            unvalidated_model,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "complete"
+            assert result["paper_entries_created"] == 1
+            assert result["live_orders_submitted"] == 0
+            decision = result["decisions"][0]
+            assert decision["status"] == "exploratory_paper_candidate"
+            assert decision["experimental_paper_mode"] is True
+            assert decision["model_validation_status"] == "UNVALIDATED_EXPLORATORY"
+            assert decision["model_probability_yes_pct"] == 90.0
+            assert decision["selected_side"] == "YES"
+            assert decision["paper_trade_created"] is True
+            assert "required_evidence_missing:injury_report,lineup,recent_news,recent_stats" in decision["exploratory_validation_warnings"]
+
+            conn = db_store.connect_database()
+            try:
+                row = conn.execute(
+                    "SELECT status,model_probability_yes,source_snapshot_json FROM market_research_paper_trades"
+                ).fetchone()
+                assert row[0] == "open"
+                assert row[1] == 0.9
+                saved = json.loads(row[2])["decision"]
+                assert saved["experimental_paper_mode"] is True
+                assert saved["model_validation_status"] == "UNVALIDATED_EXPLORATORY"
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
+
+
+def test_exploratory_paper_mode_still_rejects_closed_or_unsafe_markets(tmp_path):
+    db_path = tmp_path / "exploratory-closed.sqlite3"
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_EXPLORATORY_PAPER_ENABLED": "true",
+        "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(True)
+
+        def unvalidated_model(market, _book, _required):
+            return {
+                "market_ticker": market["ticker"], "model_probability_yes": 0.90,
+                "model_id": "exploratory-test-model", "model_version": "exploratory-v1",
+                "as_of_utc": _stamp(), "validation": {"out_of_sample": False, "sample_count": 0},
+                "evidence": [],
+            }
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-CLOSED", "title": "Closed-market test", "category": "sports"}
+            ]},
+            lambda ticker: {"market": _market(ticker=ticker, status="closed")},
+            lambda _ticker: _book(),
+            unvalidated_model,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["paper_entries_created"] == 0
+            assert result["live_orders_submitted"] == 0
+            assert result["decisions"][0]["eligible"] is False
+            conn = db_store.connect_database()
+            try:
+                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades").fetchone()[0] == 0
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
+
