@@ -42,6 +42,23 @@ def _official_outcome(value: Any) -> str | None:
     return None
 
 
+def _comparison_cohort(created_at: Any) -> str:
+    """Separate prospective shadow results from history using a fixed start time."""
+    raw_start = str(os.getenv("PAPER_STRATEGY_SHADOW_START_AT", "")).strip()
+    if not raw_start:
+        return "historical_backfill"
+    try:
+        start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return "prospective" if created.astimezone(timezone.utc) >= start.astimezone(timezone.utc) else "historical_backfill"
+    except (ValueError, TypeError, OverflowError):
+        return "historical_backfill"
+
+
 def _settlement_pnl(direction: str, outcome: str, contracts: int,
                      entry_cents: float, fee_cents_per_contract: float) -> float:
     gross = 100.0 * int(contracts) if str(direction).upper() == outcome else 0.0
@@ -87,14 +104,14 @@ def ensure_hold_to_settlement_shadow_rows(conn: Any) -> dict[str, int]:
             """INSERT INTO strategy_shadow_trades
                (baseline_trade_id,strategy_key,created_at,settled_at,market_ticker,direction,
                 contracts,entry_cents,fee_cents_per_contract,outcome,pnl_cents,state,
-                last_checked_at,last_error,feature_snapshot_json,notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                last_checked_at,last_error,comparison_cohort,feature_snapshot_json,notes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (int(trade_id), HOLD_TO_SETTLEMENT_KEY, str(created_at or _now_utc().isoformat()),
              str(actual_settled_at) if is_official and actual_settled_at else None,
              str(ticker or ""), str(direction or "").upper(), qty, entry, fee,
              outcome, pnl, state,
              str(actual_settled_at) if is_official and actual_settled_at else None,
-             None, str(feature_json or "{}"), note),
+             None, _comparison_cohort(created_at), str(feature_json or "{}"), note),
         )
         created += 1
         already_resolved += int(is_official)
