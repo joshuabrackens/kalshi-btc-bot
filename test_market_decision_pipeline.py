@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -116,7 +117,7 @@ def test_pipeline_does_not_create_paper_trade_when_live_flag_is_true(tmp_path):
             lambda: {"status": "complete", "analysis_candidates": [{"ticker": "KXSPORTS-TEST", "category": "sports"}]},
             lambda _t: {"market": _market()}, lambda _t: _book(), _model,
         )
-        result = pipeline.run_once_for_tests()
+        result = pipeline.run_once_for_tests(paper_entry_once=True)
         assert result["paper_entries_created"] == 0
         assert result["live_orders_submitted"] == 0
         assert result["decisions"][0]["paper_trade_created"] is False
@@ -193,3 +194,131 @@ def test_end_to_end_catalog_scan_to_automatic_research_paper_entry(tmp_path):
                 pass
             for suffix in ("", "-wal", "-shm"):
                 Path(str(tmp_path / "scan-to-paper.sqlite3") + suffix).unlink(missing_ok=True)
+
+
+
+def test_only_best_eligible_candidate_opens_and_settlement_pnl_is_recorded(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "best-market.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+        "MARKET_ANALYSIS_MAX_PER_CYCLE": "10",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(True)
+
+        markets = [
+            {"ticker": "KXSPORTS-LIQUID", "title": "High liquidity lower edge", "category": "sports"},
+            {"ticker": "KXSPORTS-EDGE", "title": "Higher edge candidate", "category": "sports"},
+        ]
+
+        def catalog():
+            return {"status": "complete", "analysis_candidates": markets}
+
+        def fetch_market(ticker):
+            volume = "1000000" if ticker == "KXSPORTS-LIQUID" else "50"
+            return {"market": {
+                **_market(ticker=ticker),
+                "volume_24h_fp": volume,
+            }}
+
+        def fetch_book(ticker):
+            depth = 1000 if ticker == "KXSPORTS-LIQUID" else 5
+            return {"orderbook": {
+                "yes": [[49, depth], [48, depth]],
+                "no": [[49, depth], [48, depth]],
+            }}
+
+        def model_with_different_odds(market, book, required):
+            result = _model(market, book, required)
+            result["model_probability_yes"] = 0.75 if market["ticker"] == "KXSPORTS-LIQUID" else 0.95
+            return result
+
+        pipeline = MarketDecisionPipeline(catalog, fetch_market, fetch_book, model_with_different_odds)
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "complete"
+            assert result["analyzed_count"] == 2
+            assert result["paper_entries_created"] == 1
+            assert result["live_orders_submitted"] == 0
+            ranked = {row["ticker"]: row for row in result["decisions"]}
+            assert ranked["KXSPORTS-EDGE"]["paper_selection"]["rank"] == 1
+            assert ranked["KXSPORTS-EDGE"]["paper_trade_created"] is True
+            assert ranked["KXSPORTS-LIQUID"]["paper_selection"]["rank"] == 2
+            assert ranked["KXSPORTS-LIQUID"]["paper_trade_created"] is False
+
+            conn = db_store.connect_database()
+            try:
+                row = conn.execute(
+                    """SELECT market_ticker,status,entry_cents,estimated_fee_cents,
+                              estimated_slippage_cents,expected_net_edge_cents,source_snapshot_json
+                       FROM market_research_paper_trades"""
+                ).fetchone()
+                assert row[0] == "KXSPORTS-EDGE"
+                assert row[1] == "open"
+                assert row[2] == 51.0
+                assert row[3] == 2.0
+                assert row[4] == 1.0
+                assert row[5] == 41.0
+                saved = json.loads(row[6])["decision"]
+                assert saved["paper_selection"]["rank"] == 1
+                assert saved["paper_selection"]["rank_score_is_probability"] is False
+
+                # The result is only recorded from an official final status/result.
+                pipeline._market_fetcher = lambda ticker: {
+                    "market": {"ticker": ticker, "status": "settled", "result": "YES"}
+                }
+                pipeline._settle_open_trades(conn)
+                settled = conn.execute(
+                    """SELECT status,result,pnl_cents,settled_at
+                       FROM market_research_paper_trades WHERE market_ticker='KXSPORTS-EDGE'"""
+                ).fetchone()
+                assert settled[0] == "settled"
+                assert settled[1] == "YES"
+                assert settled[2] == 46.0  # 100¢ payout - 51¢ entry - 2¢ fee - 1¢ slippage
+                assert settled[3]
+                assert conn.execute(
+                    "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
+                ).fetchone()[0] == 0
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_path / "best-market.sqlite3") + suffix).unlink(missing_ok=True)
+
+
+def test_manual_research_batch_can_open_one_paper_position_with_autopilot_off(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "manual-one-shot.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(False)
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-MANUAL", "title": "Manual one-shot test", "category": "sports"}
+            ]},
+            lambda ticker: {"market": _market(ticker=ticker)},
+            lambda _ticker: _book(),
+            _model,
+        )
+        try:
+            result = pipeline.run_once_for_tests(paper_entry_once=True)
+            assert result["paper_entries_created"] == 1
+            assert result["decisions"][0]["paper_trade_created"] is True
+            assert result["decisions"][0]["paper_entry_gate"]["manual_one_shot_requested"] is True
+            conn = db_store.connect_database()
+            try:
+                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'").fetchone()[0] == 1
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_path / "manual-one-shot.sqlite3") + suffix).unlink(missing_ok=True)
