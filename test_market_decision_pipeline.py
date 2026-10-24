@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -821,3 +822,117 @@ def test_research_decision_journal_retries_deadlock_from_cached_decisions():
     assert conn.commit_attempts == 2
     assert conn.rollbacks == 1
 
+
+
+
+def test_pipeline_respects_persisted_provider_cooldown_without_model_or_market_requests(tmp_path):
+    db_path = tmp_path / "provider-cooldown.sqlite3"
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(True)
+        conn = db_store.connect_database()
+        db_store.ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO runtime_settings (setting_key,setting_value,updated_at) VALUES (?,?,?)",
+            ("openai_quota_cooldown_until_epoch", str(time.time() + 600), _stamp()),
+        )
+        conn.commit()
+        conn.close()
+
+        calls = {"market": 0, "book": 0, "model": 0}
+
+        def forbidden_market(_ticker):
+            calls["market"] += 1
+            raise AssertionError("market details must not be fetched during a persisted provider cooldown")
+
+        def forbidden_book(_ticker):
+            calls["book"] += 1
+            raise AssertionError("order books must not be fetched during a persisted provider cooldown")
+
+        def forbidden_model(*_args):
+            calls["model"] += 1
+            raise AssertionError("model provider must not be called during a persisted provider cooldown")
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-COOLDOWN", "title": "Cooldown test", "category": "sports"}
+            ]},
+            forbidden_market, forbidden_book, forbidden_model,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "provider_cooldown"
+            assert result["analyzed_count"] == 0
+            assert result["paper_entries_created"] == 0
+            assert "cooldown active" in result["last_error"].lower()
+            assert calls == {"market": 0, "book": 0, "model": 0}
+            conn = db_store.connect_database()
+            try:
+                assert conn.execute("SELECT COUNT(*) FROM market_research_decisions").fetchone()[0] == 0
+                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades").fetchone()[0] == 0
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
+
+
+def test_pipeline_stops_batch_after_provider_503_without_opening_partial_ranked_entries(tmp_path):
+    db_path = tmp_path / "provider-503-stop.sqlite3"
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "MARKET_ANALYSIS_MAX_PER_CYCLE": "10",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        from market_analysis_provider import MarketAnalysisProviderError
+        set_market_autopilot_enabled(True)
+        calls = {"market": 0, "book": 0, "model": 0}
+        tickers = ["KXSPORTS-503-A", "KXSPORTS-503-B"]
+
+        def fetch_market(ticker):
+            calls["market"] += 1
+            return {"market": _market(ticker=ticker)}
+
+        def fetch_book(_ticker):
+            calls["book"] += 1
+            return _book()
+
+        def failed_model(*_args):
+            calls["model"] += 1
+            raise MarketAnalysisProviderError("probability_provider_http_503")
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": ticker, "title": "Provider failure test", "category": "sports"}
+                for ticker in tickers
+            ]},
+            fetch_market, fetch_book, failed_model,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "provider_unavailable"
+            assert result["paper_entries_created"] == 0
+            assert result["live_orders_submitted"] == 0
+            assert calls == {"market": 1, "book": 1, "model": 1}
+            assert len(result["decisions"]) == 1
+            conn = db_store.connect_database()
+            try:
+                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades").fetchone()[0] == 0
+                assert conn.execute("SELECT COUNT(*) FROM market_research_decisions").fetchone()[0] == 1
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
