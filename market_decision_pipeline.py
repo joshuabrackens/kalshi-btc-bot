@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,15 @@ def _int_env(name: str, default: int, low: int, high: int) -> int:
     except (TypeError, ValueError, OverflowError):
         value = default
     return max(low, min(high, value))
+
+
+def _safe_provider_failure_code(exc: Exception) -> str:
+    """Expose only known provider reason codes; never persist arbitrary exception text."""
+    if isinstance(exc, MarketAnalysisProviderError):
+        reason = str(exc).strip()
+        if re.fullmatch(r"(?:invalid_probability_provider_url|probability(?:_and_evidence)?_provider_[A-Za-z0-9_.:-]{1,100})", reason):
+            return reason
+    return type(exc).__name__
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -336,13 +346,14 @@ class MarketDecisionPipeline:
                         decisions.append(result)
                         blocked += int(not result.get("eligible"))
                     except Exception as exc:
-                        # Continue to the next market; don't expose provider text/tokens.
-                        log.warning("Market analysis skipped ticker=%s err=%s", ticker[:120], type(exc).__name__)
+                        # Persist stable provider reason codes for diagnostics; never expose arbitrary exception text/tokens.
+                        error_code = _safe_provider_failure_code(exc)
+                        log.warning("Market analysis skipped ticker=%s err=%s", ticker[:120], error_code)
                         blocked += 1
                         decisions.append({"ticker": ticker, "title": str(row.get("title") or "")[:300],
                                           "category": row.get("category"), "status": "analysis_error",
                                           "eligible": False, "trade_submitted": False,
-                                          "reasons": ["market_analysis_unavailable", type(exc).__name__]})
+                                          "reasons": ["market_analysis_unavailable", error_code]})
                 # Rank all fully eligible results from this analyzed batch before opening anything.
                 # This prevents the first market returned by the scanner from winning merely by order.
                 eligible_for_entry = [
