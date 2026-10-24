@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,29 @@ def _num(value: Any, default: float = 0.0) -> float:
         return value if value == value and abs(value) != float("inf") else default
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+_SAFE_PROVIDER_ERROR = re.compile(
+    r"^(?:probability_provider_http_[1-5]\d{2}"
+    r"|probability_provider_network_error:[A-Za-z_][A-Za-z0-9_]*"
+    r"|probability_provider_redirect_refused"
+    r"|probability_provider_response_too_large"
+    r"|probability_provider_invalid_json"
+    r"|probability_provider_invalid_payload"
+    r"|probability_provider_ticker_mismatch"
+    r"|probability_and_evidence_provider_not_configured"
+    r"|probability_provider_auth_not_configured"
+    r"|invalid_probability_provider_url)$"
+)
+
+
+def _safe_market_analysis_error(exc: Exception) -> str:
+    """Return a controlled provider error code without logging arbitrary text/secrets."""
+    if isinstance(exc, MarketAnalysisProviderError):
+        message = str(exc)
+        if _SAFE_PROVIDER_ERROR.fullmatch(message):
+            return message
+    return type(exc).__name__
 
 
 def _paper_candidate_rank(result: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
@@ -336,13 +360,14 @@ class MarketDecisionPipeline:
                         decisions.append(result)
                         blocked += int(not result.get("eligible"))
                     except Exception as exc:
-                        # Continue to the next market; don't expose provider text/tokens.
-                        log.warning("Market analysis skipped ticker=%s err=%s", ticker[:120], type(exc).__name__)
+                        # Log only allowlisted provider codes; never arbitrary response text/tokens.
+                        error_code = _safe_market_analysis_error(exc)
+                        log.warning("Market analysis skipped ticker=%s error_code=%s", ticker[:120], error_code)
                         blocked += 1
                         decisions.append({"ticker": ticker, "title": str(row.get("title") or "")[:300],
                                           "category": row.get("category"), "status": "analysis_error",
                                           "eligible": False, "trade_submitted": False,
-                                          "reasons": ["market_analysis_unavailable", type(exc).__name__]})
+                                          "reasons": ["market_analysis_unavailable", error_code]})
                 # Rank all fully eligible results from this analyzed batch before opening anything.
                 # This prevents the first market returned by the scanner from winning merely by order.
                 eligible_for_entry = [
