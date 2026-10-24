@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+from math import isfinite
 import os
 import re
 import time
@@ -101,6 +102,7 @@ _VALIDATION_CACHE_LOCK = threading.Lock()
 # on every scanner cycle. This breaker is fail-closed and affects research analysis only.
 _QUOTA_COOLDOWN_LOCK = threading.Lock()
 _QUOTA_COOLDOWN_UNTIL = 0.0
+_QUOTA_COOLDOWN_SETTING_KEY = "openai_quota_cooldown_until_epoch"
 
 
 def _quota_cooldown_duration_seconds() -> int:
@@ -111,18 +113,81 @@ def _quota_cooldown_duration_seconds() -> int:
     return max(60, min(86400, configured))
 
 
+def _persist_quota_cooldown_until(deadline_epoch: float) -> None:
+    """Persist the cooldown in shared runtime settings when a shared DB is configured."""
+    if not os.getenv("DATABASE_URL", "").strip():
+        return
+    try:
+        from db_store import connect_database
+        conn = connect_database()
+        try:
+            conn.execute(
+                """INSERT INTO runtime_settings (setting_key,setting_value,updated_at)
+                   VALUES (?,?,?)
+                   ON CONFLICT(setting_key) DO UPDATE SET
+                     setting_value=CASE
+                       WHEN CAST(runtime_settings.setting_value AS REAL) > CAST(excluded.setting_value AS REAL)
+                       THEN runtime_settings.setting_value ELSE excluded.setting_value END,
+                     updated_at=excluded.updated_at""",
+                (_QUOTA_COOLDOWN_SETTING_KEY, str(float(deadline_epoch)), _now()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        # Keep the local breaker active even if persistence is temporarily unavailable.
+        logger.warning("OpenAI quota cooldown persistence unavailable (%s)", type(exc).__name__)
+
+
+def _read_persisted_quota_cooldown_until() -> float | None:
+    """Return None when shared state cannot be read; caller must then fail closed."""
+    if not os.getenv("DATABASE_URL", "").strip():
+        return 0.0
+    try:
+        from db_store import connect_database
+        conn = connect_database()
+        try:
+            row = conn.execute(
+                "SELECT setting_value FROM runtime_settings WHERE setting_key=?",
+                (_QUOTA_COOLDOWN_SETTING_KEY,),
+            ).fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        if not row:
+            return 0.0
+        deadline = float(row[0])
+        return deadline if isfinite(deadline) and deadline > 0 else 0.0
+    except Exception as exc:
+        logger.warning(
+            "OpenAI quota cooldown state unavailable (%s); paid provider calls remain fail-closed",
+            type(exc).__name__,
+        )
+        return None
+
+
 def _quota_cooldown_remaining_seconds() -> int:
     with _QUOTA_COOLDOWN_LOCK:
-        remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
-    return max(0, int(remaining + 0.999))
+        local_remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
+    if local_remaining > 0:
+        return max(1, int(local_remaining + 0.999))
+
+    persisted_deadline = _read_persisted_quota_cooldown_until()
+    if persisted_deadline is None:
+        # A configured shared database is unavailable, so do not make a paid call
+        # without being able to verify whether a quota cooldown is active.
+        return 60
+    return max(0, int(persisted_deadline - time.time() + 0.999))
 
 
 def _activate_quota_cooldown() -> int:
     global _QUOTA_COOLDOWN_UNTIL
     duration = _quota_cooldown_duration_seconds()
+    deadline_epoch = time.time() + duration
     with _QUOTA_COOLDOWN_LOCK:
         _QUOTA_COOLDOWN_UNTIL = max(_QUOTA_COOLDOWN_UNTIL, time.monotonic() + duration)
         remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
+    _persist_quota_cooldown_until(deadline_epoch)
     return max(1, int(remaining + 0.999))
 
 
@@ -131,7 +196,6 @@ def _clear_quota_cooldown() -> None:
     global _QUOTA_COOLDOWN_UNTIL
     with _QUOTA_COOLDOWN_LOCK:
         _QUOTA_COOLDOWN_UNTIL = 0.0
-
 
 
 def _validation_from_shared_database(category: str, model_id: str, model_version: str) -> dict[str, Any]:
