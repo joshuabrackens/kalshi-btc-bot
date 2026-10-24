@@ -166,6 +166,27 @@ def test_quota_cooldown_survives_process_local_reset_with_shared_database(tmp_pa
     assert 0 < remaining <= 3600
 
 
+def test_shared_quota_state_database_failure_blocks_paid_provider_call(monkeypatch, tmp_path):
+    import db_store
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unavailable-shared-db")
+    monkeypatch.setenv("BOT_DB_PATH", str(tmp_path / "unused.sqlite3"))
+    monkeypatch.setenv("MARKET_ANALYSIS_PROVIDER_API_KEY", "shared-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.1")
+    monkeypatch.setattr(db_store, "connect_database", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    with patch.object(provider.requests, "post") as post:
+        with TestClient(provider.app) as client:
+            response = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+    assert response.status_code == 503
+    assert int(response.headers["Retry-After"]) == 60
+    post.assert_not_called()
+
+
 def test_provider_classifies_rate_limit_429_from_safe_error_fields():
     fake = Mock(status_code=429, content=b"{}", is_redirect=False)
     fake.json.return_value = {
