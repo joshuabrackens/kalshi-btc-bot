@@ -549,3 +549,128 @@ def test_market_analysis_error_diagnostics_are_allowlisted_and_secret_safe():
     assert _safe_market_analysis_error(MarketAnalysisProviderError("Authorization: Bearer do-not-log-this")) == "MarketAnalysisProviderError"
     assert _safe_market_analysis_error(RuntimeError("api_key=do-not-log-this")) == "RuntimeError"
 
+def test_research_pipeline_commits_before_calling_slow_model_provider(tmp_path, monkeypatch):
+    import market_decision_pipeline as pipeline_module
+
+    db_path = tmp_path / "short-transaction.sqlite3"
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "MARKET_EXPLORATORY_PAPER_ENABLED": "false",
+        "MARKET_RESEARCH_MAX_OPEN_POSITIONS": "5", "MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE": "3",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        original_connect = pipeline_module.connect_database
+        tracked_connections = []
+
+        class CommitTrackingConnection:
+            def __init__(self, raw):
+                self.raw = raw
+                self.commit_count = 0
+
+            def __getattr__(self, name):
+                return getattr(self.raw, name)
+
+            def commit(self):
+                self.commit_count += 1
+                return self.raw.commit()
+
+        def tracked_connect():
+            conn = CommitTrackingConnection(original_connect())
+            tracked_connections.append(conn)
+            return conn
+
+        monkeypatch.setattr(pipeline_module, "connect_database", tracked_connect)
+        set_market_autopilot_enabled(True)
+
+        def model_after_commits(market, book, required):
+            assert tracked_connections
+            # The settlement/outcome checks must be committed before slow provider calls.
+            assert tracked_connections[0].commit_count >= 2
+            return _model(market, book, required)
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-SHORT-TX", "title": "Short transaction test", "category": "sports"}
+            ]},
+            lambda ticker: {"market": _market(ticker=ticker)},
+            lambda _ticker: _book(),
+            model_after_commits,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "complete"
+            assert result["paper_entries_created"] == 1
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
+
+
+def test_research_paper_entry_retries_deadlock_without_recalling_model():
+    class DeadlockDetected(Exception):
+        pass
+
+    class FakeConnection:
+        def __init__(self):
+            self.commit_attempts = 0
+            self.rollbacks = 0
+
+        def commit(self):
+            self.commit_attempts += 1
+            if self.commit_attempts == 1:
+                raise DeadlockDetected("simulated transaction conflict")
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    pipeline = MarketDecisionPipeline(lambda: {}, lambda _t: {}, lambda _t: {}, lambda *_: {})
+    create_attempts = []
+
+    def create_once_per_attempt(_conn, _result, *, allow_manual_entry_once=False):
+        create_attempts.append(allow_manual_entry_once)
+        return True, None
+
+    pipeline._create_paper_trade = create_once_per_attempt
+    conn = FakeConnection()
+    created, reason = pipeline._create_paper_trade_with_retry(conn, {"ticker": "KXSPORTS-RETRY"})
+    assert created is True
+    assert reason is None
+    assert len(create_attempts) == 2
+    assert conn.commit_attempts == 2
+    assert conn.rollbacks == 1
+
+
+def test_research_decision_journal_retries_deadlock_from_cached_decisions():
+    class DeadlockDetected(Exception):
+        pass
+
+    class FakeConnection:
+        def __init__(self):
+            self.commit_attempts = 0
+            self.rollbacks = 0
+
+        def commit(self):
+            self.commit_attempts += 1
+            if self.commit_attempts == 1:
+                raise DeadlockDetected("simulated transaction conflict")
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    pipeline = MarketDecisionPipeline(lambda: {}, lambda _t: {}, lambda _t: {}, lambda *_: {})
+    writes = []
+
+    def record_without_network(_conn, item):
+        writes.append(item["ticker"])
+
+    pipeline._record_decision = record_without_network
+    conn = FakeConnection()
+    pipeline._record_decisions_with_retry(conn, [{"ticker": "A"}, {"ticker": "B"}])
+    assert writes == ["A", "B", "A", "B"]
+    assert conn.commit_attempts == 2
+    assert conn.rollbacks == 1
+
