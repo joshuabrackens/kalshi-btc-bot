@@ -93,35 +93,49 @@ def _price(m: dict, side: str, kind: str) -> float | None:
     return _num(m, (f"{side}_{kind}",), dollars_keys=(f"{side}_{kind}_dollars",))
 
 
-def _extract_market(raw: dict) -> dict | None:
+def _extract_market(raw: dict, rejection_counts: dict[str, int] | None = None) -> dict | None:
+    """Validate a live KXBTC15M contract and optionally count safe rejection reasons."""
+    def reject(reason: str) -> None:
+        if rejection_counts is not None:
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+        return None
+
+    if not isinstance(raw, dict):
+        return reject("invalid_market_payload")
     m = raw.get("market", raw)
     if not isinstance(m, dict):
-        return None
+        return reject("invalid_market_payload")
     ticker = m.get("ticker")
-    status = str(m.get("status", "")).lower()
+    status = str(m.get("status", "")).strip().lower()
     title = " ".join(str(m.get(k, "")) for k in ("title", "subtitle", "event_ticker")).lower()
+    # KXBTC15M is Kalshi's dedicated BTC 15-minute up/down series. Its exact
+    # series ticker is a stronger identifier than presentation text, which can
+    # be absent or renamed by the API; still require a real strike and close time.
     if not ticker or not str(ticker).upper().startswith("KXBTC15M-"):
-        return None
+        return reject("wrong_series_ticker")
     strike = None
-    for key in ("floor_strike", "strike_price", "custom_strike", "strike"):
+    for key in (
+        "floor_strike", "floor_strike_dollars", "strike_price", "strike_price_dollars",
+        "custom_strike", "custom_strike_dollars", "strike", "target_price", "target_price_dollars",
+    ):
         try:
             if m.get(key) is not None:
                 strike = float(m[key])
-                break
+                if math.isfinite(strike) and strike > 0:
+                    break
+                strike = None
         except (TypeError, ValueError, OverflowError):
-            pass
-    if strike is None or not math.isfinite(strike) or strike <= 0:
-        return None
-    close = _parse_time(m.get("close_time") or m.get("expiration_time"))
+            strike = None
+    if strike is None:
+        return reject("missing_or_invalid_strike")
+    close = _parse_time(m.get("close_time") or m.get("expiration_time") or m.get("expected_expiration_time"))
     if close is None:
-        return None
+        return reject("missing_or_invalid_close_time")
     seconds = int((close - _utcnow()).total_seconds())
     if seconds <= 0 or seconds > 900:
-        return None
-    if "up" not in title or ("btc" not in title and "bitcoin" not in title):
-        return None
+        return reject("outside_active_15m_window")
     if status in {"settled", "finalized", "closed", "inactive"}:
-        return None
+        return reject("closed_status")
     return {"raw": m, "ticker": str(ticker), "strike": strike, "seconds": seconds,
             # Summary asks can be inconsistent with a later order-book snapshot.
             # Executable asks are derived from the corresponding current order book.
@@ -1230,18 +1244,25 @@ def run_once() -> dict[str, Any]:
         found = discover()
         candidates = found.get("candidates", []) if isinstance(found, dict) else []
         parsed: list[dict] = []
+        rejection_counts: dict[str, int] = {}
         for candidate in candidates:
             ticker = candidate.get("ticker") if isinstance(candidate, dict) else None
             if not ticker:
+                rejection_counts["missing_candidate_ticker"] = rejection_counts.get("missing_candidate_ticker", 0) + 1
                 continue
             try:
-                extracted = _extract_market(get_market(str(ticker)))
+                extracted = _extract_market(get_market(str(ticker)), rejection_counts)
                 if extracted:
                     parsed.append(extracted)
             except (KalshiAPIError, ValueError, TypeError) as exc:
+                rejection_counts["market_lookup_error"] = rejection_counts.get("market_lookup_error", 0) + 1
                 log.warning("Market lookup failed for %s: %s", ticker, exc)
         if not parsed:
-            reason = "No candidate had an explicit strike, valid 15m close time, and verified BTC-up market title."
+            log.warning(
+                "BTC market discovery found no eligible candidate: candidate_count=%s rejection_counts=%s",
+                len(candidates), json.dumps(rejection_counts, sort_keys=True),
+            )
+            reason = "No candidate had an explicit valid strike and active 15m close time in the KXBTC15M series."
             if queued:
                 # Keep a fresh external alert unprocessed while discovery can retry,
                 # and make the pending state visible in the audit trail.
