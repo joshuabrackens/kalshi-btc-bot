@@ -754,9 +754,12 @@ class MarketDecisionPipeline:
         for row in rows:
             try:
                 market = _normalize_market(self._market_fetcher(str(row[1])))
-                status = str(market.get("status") or "").lower()
-                resolution = str(market.get("result") or "").upper()
-                if status not in {"settled", "finalized", "resolved"} or resolution not in {"YES", "NO"}:
+                status = str(market.get("status") or "").strip().lower()
+                resolution = str(market.get("result") or market.get("settlement_result") or "").strip().upper()
+                # Only count a final status together with an explicit official YES/NO result.
+                # The API may report final contracts as closed/resolved and some wrappers
+                # expose the result under settlement_result.
+                if status not in {"settled", "finalized", "resolved", "closed"} or resolution not in {"YES", "NO"}:
                     continue
                 payout = 100.0 if str(row[2]).upper() == resolution else 0.0
                 pnl = payout - _num(row[3]) - _num(row[4]) - _num(row[5])
