@@ -167,13 +167,19 @@ def _exploratory_paper_candidate(result: dict[str, Any], market: Mapping[str, An
     max_entry = min(90.0, _num(os.getenv("MARKET_MAX_ENTRY_CENTS", "90"), 90))
     if edge < min_edge or entry > max_entry:
         return result
+    # Preserve the original validation diagnostics for audit, but do not keep a
+    # stale "net_edge_not_calculable" warning after this exploratory path has
+    # independently recomputed a finite fee/slippage-adjusted edge and passed its
+    # minimum-edge gate. This changes reporting only, not eligibility or execution.
+    exploratory_warnings = [reason for reason in reasons if reason != "net_edge_not_calculable"]
     result.update({
         "status": "exploratory_paper_candidate", "eligible": True, "selected_side": side,
         "model_probability_yes_pct": round(p * 100, 3), "yes_net_edge_cents": round(yes_edge, 3),
         "no_net_edge_cents": round(no_edge, 3), "expected_net_edge_cents": round(edge, 3),
         "entry_ask_cents": round(entry, 3), "experimental_paper_mode": True,
         "model_validation_status": "UNVALIDATED_EXPLORATORY",
-        "exploratory_validation_warnings": reasons, "warnings": [
+        "initial_validation_reasons": reasons,
+        "exploratory_validation_warnings": exploratory_warnings, "warnings": [
             "Unvalidated probability: paper accuracy measurement only.",
             "Do not treat exploratory results as validated predictive performance.",
         ], "reasons": [],
