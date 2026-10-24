@@ -560,7 +560,7 @@
       <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed evidence. Each batch ranks all eligible candidates it actually analyzed and can open at most one best-ranked paper position. The engine will not invent probabilities when the provider is missing.</p></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-analysis-badge">NOT RUN</span><button type="button" class="mode-button" id="market-analysis-button" disabled>Run research batch · unlock admin first</button></div>
     </div>
-    <p id="market-analysis-status" class="small" role="status" aria-live="polite">Waiting for scanner and validated evidence provider configuration. This pipeline can only create separate hold-to-settlement paper simulations; it cannot place live orders.</p>
+    <p id="market-analysis-status" class="small" role="status" aria-live="polite">Waiting for scanner and validated evidence provider configuration. This pipeline creates isolated hold-to-settlement paper simulations only; exploratory entries are labeled UNVALIDATED and cannot place live orders.</p>
     <div class="mini-grid" style="margin-top:12px">
       <div class="mini"><div class="label">Ranked research pool</div><div class="value" id="market-analysis-pool">—</div><div class="help">Bounded by the candidate-pool setting</div></div>
       <div class="mini"><div class="label">Analyzed this batch</div><div class="value" id="market-analysis-count">—</div><div class="help">Rotates through eligible candidates</div></div>
@@ -1526,14 +1526,14 @@
       setBadge('market-analysis-badge',`${nfmt(data?.analyzed_count,0)} ANALYZED`,'green');
       const best=(Array.isArray(data?.decisions)?data.decisions:[]).find(item=>item?.paper_selection?.is_best_candidate);
       const bestNote=best?' · best eligible candidate '+(best.ticker||'')+(hasNum(best.paper_selection.rank_score)?' (rank score '+nfmt(best.paper_selection.rank_score,1)+'/100; not win probability)':''):' · no fully eligible candidate to rank';
-      write('market-analysis-status','Last batch '+time(data?.last_run_at)+' · pool '+nfmt(data?.candidate_pool_size,0)+' · analyzed '+nfmt(data?.analyzed_count,0)+' · paper entries '+nfmt(data?.paper_entries_created,0)+' · live orders '+(data?.live_orders_submitted??0)+bestNote+'. At most one eligible research position is opened per batch and only one can remain open at a time.');
+      write('market-analysis-status','Last batch '+time(data?.last_run_at)+' · pool '+nfmt(data?.candidate_pool_size,0)+' · analyzed '+nfmt(data?.analyzed_count,0)+' · paper entries '+nfmt(data?.paper_entries_created,0)+' · live orders '+(data?.live_orders_submitted??0)+bestNote+'. Multiple top-ranked eligible candidates can open isolated paper positions within configured position/exposure limits.');
     }else{
       setBadge('market-analysis-badge','NOT RUN','blue');
-      write('market-analysis-status',data?.last_error||'Waiting for a completed market inventory and a validated model/evidence provider.');
+      write('market-analysis-status',data?.last_error||'Waiting for market inventory and model provider. When exploratory paper mode is enabled, only candidates that pass price, liquidity, freshness, edge, exposure, and safety checks may be paper-entered; those predictions remain labeled unvalidated.');
     }
     const rows=$('market-analysis-rows');if(!rows)return;rows.replaceChildren();
     const decisions=Array.isArray(data?.decisions)?data.decisions:[];
-    if(!decisions.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No current analysis results. No trade was inferred from market-implied probability alone.';tr.appendChild(td);rows.appendChild(tr);return;}
+    if(!decisions.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No current analysis results. No trade is inferred from market-implied probability alone; exploratory paper entries, when enabled, are labeled UNVALIDATED.';tr.appendChild(td);rows.appendChild(tr);return;}
     for(const item of decisions){
       const tr=document.createElement('tr');
       addCell(tr,`${item.ticker||'—'} · ${item.title||'Untitled market'}`);
@@ -1543,12 +1543,14 @@
       addCell(tr,`${hasNum(item.yes_net_edge_cents)?nfmt(item.yes_net_edge_cents,1)+'¢':'—'} / ${hasNum(item.no_net_edge_cents)?nfmt(item.no_net_edge_cents,1)+'¢':'—'}`);
       const selection=item.paper_selection||{};
       const scoreLabel=hasNum(selection.rank_score)?' · '+nfmt(selection.rank_score,1)+'/100 rank score':'';
-      const decision=item.paper_trade_created?'BEST · PAPER POSITION OPEN'+scoreLabel:
+      const decision=item.paper_trade_created?(item.experimental_paper_mode?'EXPLORATORY · UNVALIDATED PAPER OPEN':'RANKED · PAPER POSITION OPEN')+scoreLabel:
         (selection.is_best_candidate?'BEST CANDIDATE'+scoreLabel:
          hasNum(selection.rank)?'RANK #'+selection.rank+scoreLabel:
          (item.eligible?'EDGE CANDIDATE':(item.status||'BLOCKED')).replaceAll('_',' ').toUpperCase());
       addCell(tr,decision);
       const reasons=Array.isArray(item.reasons)?item.reasons.slice():[];
+      if(item.experimental_paper_mode)reasons.unshift('EXPLORATORY PAPER ONLY: probability is UNVALIDATED; use outcome to measure accuracy, not as proof of edge');
+      if(item.model_validation_status)reasons.unshift('Model validation: '+String(item.model_validation_status).replaceAll('_',' '));
       if(item.paper_selection_status)reasons.push(String(item.paper_selection_status).replaceAll('_',' '));
       if(item.paper_trade_block_reason)reasons.push(String(item.paper_trade_block_reason).replaceAll('_',' '));
       const reason=reasons.join(', ')||String(item.note||item.rationale||'');
