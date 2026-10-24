@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "models": {},
+  "note": "Empty by design. The hosted provider uses subsequent resolved predictions from market_research_prediction_outcomes when DATABASE_URL is configured. Historical replay registry generation remains available for a separate real chronological holdout. Never invent calibration metrics. The research pipeline fails closed until the exact category/model/version has at least 100 real resolved predictions, at least 10 YES and 10 NO outcomes, and acceptable Brier score."
+}

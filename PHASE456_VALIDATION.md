@@ -1,56 +1,44 @@
-# BTC Bot Phase 4–6 Readiness — Latest Validation
+# BTC Bot all-phases validation report
 
-**Validation date:** October 23, 2026  
-**Scope:** Current local project snapshot; offline tests only.
+**Snapshot:** October 24, 2026 UTC. This report applies to the local source snapshot only, not to any unverified live GitHub/Render deployment.
 
-## Latest results
+## Latest checks
 
-- **Five complete pytest suite runs passed:** 162/162 each (810 passing test executions across repeated runs). The latest clean source-tree run completed in 1.65 seconds. Repeated runs help expose flaky tests but are not a continuous soak test.
-- **Randomized checks:** 10 reproducible seeded runs passed, 3,580 operations per run (35,800 randomized operations total). One initial attempt failed to import the module because the harness was launched from outside the project directory; the runner was corrected and all ten intended runs then passed.
-- **Paper-flow smoke:** 3/3 offline runs passed: webhook received → shared queue → hybrid decision → simulated paper trade → dashboard heartbeat. No real orders were submitted.
-- **Deterministic stress harness:** passed in 8.06 seconds. Checked 100,000 synthetic market metadata cases, 20,000 trading-mode safety configurations, 10,000 session-token uniqueness/digest cases, and a virtual million-item market catalog with a maximum of 500 records consumed.
-- Python compilation passed.
-- Dashboard inline JavaScript syntax check passed.
-- Both workflow YAML files parse and are byte-identical.
-- Headless Chromium smoke test passed with locally stubbed APIs: Paper stayed active, choosing Real returned a locked HTTP 409 response, hostile scanner text remained inert, and there were no browser JavaScript exceptions.
-- Dashboard validation found 224 IDs with no duplicates.
-- Selected branch coverage from the previous detailed run: `market_router.py` 100%, `multi_user_security.py` 94%, `trading_mode.py` 92%, `market_category_registry.py` 96%, `main.py` 69%; combined selected modules 74%. The main application contains broad legacy routes not fully covered by this phase's tests.
-- Market scan cache/guard tests cover TTL expiry, repeated requests, 24 concurrent requests coalescing to one fetch, failed scans not being cached, and malformed/overlong/repeated cursors stopping safely.
-- Static scan found no authenticated exchange order-submission path or order-post call in the source.
+- `python -m pytest -q`: **215 passed** (latest run: 2.00 seconds).
+- `python -m compileall -q .`: passed.
+- `python validate_dashboard_js.py`: passed.
+- `python stress_market_decision_engine.py`: 25,000 deterministic market-decision cases passed; no uncaught exceptions and no orders submitted.
+- `python stress_phase456_readiness.py`: passed 100,000 metadata cases, 20,000 mode-gate cases, 10,000 session-token uniqueness checks; market inventory remained capped at 500 records from a virtual 1,000,000.
+- `python smoke_shared_alert_flow.py`: offline webhook -> shared queue -> hybrid decision -> simulated paper entry -> dashboard heartbeat passed; this was simulation-only.
+- Browser mock test: API connect form present; credential verify/store flow passed using mock credentials; private-key input cleared after submit; autopilot toggle switched on/off; zero browser page/console errors.
+- Historical export endpoint regression tests passed: admin protection works and curated exports exclude credentials and raw webhook payloads.
+- `kalshi_order_adapter.py`: mock tests passed with temporary test keys; it was not tested against a real Kalshi Demo account or production endpoint.
 
-All offline stress operations used no credentials, network access, exchange orders, or production database writes.
+## Current capabilities
 
-## Honest scope limitation
+- BTC strategy support: weekday/weekend and time-of-day cohorts, bounded learning history, signal/current-window dashboard handling, trend-stop/profit-protection behavior, paper worker, alert idempotency, analytics and decision audits.
+- Market inventory: cursor-paginated public open-market discovery with page/record caps and explicit failure/partial status.
+- Research-to-paper: activity-ranked rotating pool; current market data and order book; model probability vs market quote; source-attributed current evidence; liquidity/depth/spread; fee/slippage estimates; net edge; calibration and category/risk gates; isolated paper-research journal with deduplication and exposure/loss limits.
+- Analysis provider: service source is included (`market_analysis_provider_service.py`) but must be deployed separately as HTTPS with an OpenAI API key owned by the user, a private shared bearer token, and access to the shared PostgreSQL database for calibration. The service reports evidence/probabilities, never execution permission.
+- Actual outcome calibration: the project records predictions and later reads public YES/NO resolution after minimum age; it requires at least 100 resolved observations per model/category/version, adequate representation of both outcomes, and Brier <=0.22 before a category/model passes the calibration gate.
+- Credential UX: screenshot-inspired Key ID + private-key file uploader + acknowledgment checkbox + encrypted server-side storage/read-only verification; application-generated secrets are separate from vendor credentials.
+- Dashboard autopilot: controls periodic market research and eligible research paper entries only. It does not unlock live order execution.
+- Historical review: protected `/api/diagnostics/replay-export` and `audit_historical_export.py` review actual stored decisions and outcomes. They cannot recreate historical quotes/news that were never archived.
 
-**This is not a completed 30-minute continuous soak test.** The repeated test suites and stress harness completed in seconds, and the randomized suite took additional time, but no process was intentionally kept running for 30 uninterrupted minutes. The work also did not connect to the user's Render services or verify the latest deployed commit. The tests establish behavior for the tested code paths; they do not demonstrate that the strategy has a profitable edge or that live execution is safe.
+## Not verified / blocked
 
-The shared test container reports an unrelated dependency mismatch: preinstalled `moviepy 2.2.1` requires `pillow<12`, while the container has Pillow 12.3.0. Neither is part of the bot's declared requirements, and the bot's test suite passes.
+- **One-/two-hour soak NOT completed.** Earlier attempts were interrupted at approximately 32 seconds of completed command runtime. `run_validation_soak.py` defaults to 7,200 seconds of actual offline test-command runtime; it must report `status=passed` and `completed_test_command_seconds >= 7200` before the requested two-hour soak can be claimed complete. No sleep padding is counted.
+- Live Render state, actual Render Postgres, actual OpenAI provider credentials, and Kalshi Demo have not been exercised from this environment. Use staging, inspect logs, and run Demo lifecycle tests after deployment.
+- Earlier production dashboard screenshot showed `/api/market-scan` returning 502. The local scanner now uses the documented API base by default and tracks progress/failure explicitly, but this does not prove the current deployed service's 502 is fixed. Check for a stale `KALSHI_BASE_URL` override and Render upstream/network errors.
+- The user's ~95 paper trades / 56% win rate have not yet been analyzed from the actual production journal, because that Render database was not available to local tests. After deploying, sign into the dashboard and download `/api/diagnostics/replay-export`; run `python audit_historical_export.py btc_bot_historical_replay_export.zip`. Actual correctness replay is only possible for cases with known outcomes; full counterfactual replay requires historical quotes/evidence, which may not have been retained.
+- The user must create their Kalshi API Key ID/private key and OpenAI API key in those accounts. The app-secret file only contains locally generated app-owned secrets.
+- A low-level signed V2 order adapter exists with Demo-only defaults and mocked tests, but the app-level live-execution gate intentionally keeps `REAL_ORDER_ADAPTER_INSTALLED=false` and `LIVE_APPROVAL_RECORDED=false`. Live order placement is blocked. Keep `TRADING_MODE=paper`, `LIVE_TRADING_ENABLED=false`, `LIVE_TRADING_APPROVED=false`, and `MARKET_LIVE_EXECUTION_ENABLED=false`.
+- Complete production multi-user login/middleware/tenant isolation is still unfinished.
 
-## Current safety status
+## Win-rate interpretation
 
-- Keep `TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false`.
-- The dashboard's Real selection is a readiness request and is rejected server-side; there is no real-order submission adapter in this project snapshot.
-- Multi-user session/password utilities are groundwork only. Production login, middleware, database tenant isolation, and per-user risk controls are not complete.
-- Only the existing BTC 15-minute strategy is eligible for strategy routing. Other categories are inventory/research only.
-- The patch has not been pushed to GitHub or deployed to Render by this process.
+The reported baseline is approximately 95 paper trades at 56%. If that represents 53 wins out of 95 settled trades, the approximate 95% Wilson interval is 45.8%–65.4%; exact counts should be verified from the trade journal, excluding unsettled trades and distinguishing breakevens. Judge improvements by fee-adjusted expectancy, profit factor, drawdown, calibration, cohorts, and chronological out-of-sample tests—not win rate alone.
 
-## Safe rollout
+## Overall status
 
-1. Preserve the currently deployed, known-good commit/tag.
-2. Apply the patch on a separate branch and review all changed files against the live repository.
-3. Run GitHub Actions on the exact resulting commit.
-4. Deploy that same commit to both the Web Service and Background Worker in a staging or paper environment and verify they match.
-5. Confirm the shared database, fresh TradingView alert flow, paper journal, current worker heartbeat, and rollback path.
-6. Do not enable live orders without a separately implemented and tested order adapter, idempotency, partial-fill/cancel/reconciliation logic, fees/slippage validation, rate limiting, emergency controls, and a successful Kalshi Demo cycle. Demo success must never automatically enable production.
-
-## Research references
-
-- Kalshi Order V2: https://docs.kalshi.com/api-reference/orders/create-order-v2
-- Kalshi Demo: https://docs.kalshi.com/getting_started/demo_env
-- Kalshi authenticated requests: https://docs.kalshi.com/getting_started/quick_start_authenticated_requests
-- Kalshi rate limits: https://docs.kalshi.com/getting_started/rate_limits
-- Kalshi positions: https://docs.kalshi.com/api-reference/portfolio/get-positions
-- Kalshi fees: https://help.kalshi.com/en/articles/13823805-fees
-- OWASP Session Management Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html
-- scikit-learn TimeSeriesSplit: https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html
-- Bailey et al., Probability of Backtest Overfitting: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253
+**Local regression/stress: PASS. Provider + live services: NOT VERIFIED. Production historical trade audit: PENDING EXPORT. One-/two-hour soak: NOT COMPLETED. Cross-market research autopaper: OFF by default pending provider and calibration validation. Live execution: BLOCKED.**

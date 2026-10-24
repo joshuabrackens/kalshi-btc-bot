@@ -6,6 +6,9 @@ read public market data; no endpoint in this file submits an order.
 from __future__ import annotations
 
 import hmac
+import csv
+import io
+import zipfile
 import json
 import hashlib
 import logging
@@ -20,7 +23,7 @@ from typing import Any, Iterator, Literal
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from signal_engine import MarketContext, evaluate_signal
@@ -35,6 +38,11 @@ from trading_mode import LiveModeLocked, live_readiness_report, request_mode, tr
 from multi_user_security import multi_user_readiness
 from market_discovery import discover
 from kalshi_api import get_market, get_orderbook, KalshiAPIError
+from market_catalog_scanner import MarketCatalogScanner
+from market_decision_pipeline import MarketDecisionPipeline
+from admin_session import COOKIE_NAME, SESSION_TTL_SECONDS, create_admin_cookie, validate_admin_cookie
+from kalshi_credentials import (CredentialVaultError, credential_status, save_credentials, load_credentials, delete_credentials, verify_credentials_read_only, normalize_environment)
+from runtime_controls import market_autopilot_enabled, set_market_autopilot_enabled
 try:
     from kalshi_api import get_markets
 except ImportError:  # Offline tests may inject a minimal public-data stub.
@@ -69,13 +77,15 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 86400) ->
     return max(minimum, min(maximum, value))
 
 
-# The dashboard market scanner is a public, read-only feature. Cache it so a
-# visitor cannot turn repeated button presses into repeated upstream API calls.
-MARKET_SCAN_CACHE_TTL_SECONDS = _env_int("MARKET_SCAN_CACHE_TTL_SECONDS", 30, minimum=5, maximum=600)
-MARKET_SCAN_MAX_CURSOR_LENGTH = 512
-_market_scan_cache_lock = threading.Lock()
-_market_scan_cache_payload: dict[str, Any] | None = None
-_market_scan_cache_fetched_at = 0.0
+# One scanner instance per web-service process. On Render it crawls all open catalog
+# pages in a background thread and publishes progress to the dashboard. It inventories
+# markets only; it never places orders or routes unvalidated categories to BTC strategy.
+market_scanner = MarketCatalogScanner(lambda **kwargs: get_markets(**kwargs))
+market_decision_pipeline = MarketDecisionPipeline(
+    catalog_snapshot=market_scanner.analysis_snapshot,
+    market_fetcher=get_market,
+    orderbook_fetcher=get_orderbook,
+)
 
 
 @contextmanager
@@ -95,17 +105,20 @@ def db_connect() -> Iterator[Any]:
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI):
-    """Initialize storage/optional local worker using FastAPI's lifespan API."""
+    """Initialize storage and optional background services using FastAPI lifespan."""
     startup()
+    auto_scan_default = os.getenv("RENDER", "").strip().lower() == "true"
+    market_scanner.start_scheduler(enabled=_env_bool("MARKET_SCANNER_AUTO_START", auto_scan_default))
+    market_decision_pipeline.start_scheduler(enabled=_env_bool("MARKET_ANALYSIS_AUTO_START", auto_scan_default))
     yield
 
 
 app = FastAPI(
     title="Kalshi BTC 15-Minute Bot",
     description=(
-        "Paper-trading runtime, decision audit, and research analytics. Public "
-        "read-only routes expose diagnostics; manual journal/evaluation write routes "
-        "require an explicitly configured admin secret. Real order placement is not implemented."
+        "Paper-trading runtime, decision audit, and research analytics. Public read-only routes "
+        "expose diagnostics and a paginated public market inventory. Admin-only credential vault "
+        "stores keys encrypted; real order placement remains unavailable in this build."
     ),
     version="0.3.0",
     lifespan=app_lifespan,
@@ -1353,6 +1366,101 @@ def decision_audit(limit: int = 100) -> dict[str, Any]:
             "note": "Append-only diagnostics; audit entries do not submit, open, close, or enable real orders."}
 
 
+@app.get("/api/diagnostics/replay-export")
+def download_replay_export(request: Request) -> Response:
+    """Admin-only curated CSV bundle for historical outcome replay/audit.
+
+    No credential table, private key, runtime secret, or raw webhook payload is
+    exported. This lets the owner evaluate actual historical decisions without
+    granting this service direct access to the user's local analysis environment.
+    """
+    _require_admin_session(request)
+    row_cap = _env_int("REPLAY_EXPORT_MAX_ROWS", 10000, 100, 50000)
+    files: dict[str, tuple[list[str], list[tuple[Any, ...]]]] = {}
+    with db_connect() as conn:
+        files["paper_trades.csv"] = (
+            ["id", "created_at", "settled_at", "market_ticker", "direction", "contracts", "entry_cents",
+             "fee_cents_per_contract", "outcome", "pnl_cents", "notes", "timeframe", "entry_signal_source",
+             "entry_signal_id", "entry_signal_log_id", "entry_signal_score"],
+            conn.execute(
+                """SELECT id,created_at,settled_at,market_ticker,direction,contracts,entry_cents,
+                          fee_cents_per_contract,outcome,pnl_cents,notes,timeframe,entry_signal_source,
+                          external_signal_id,entry_signal_log_id,entry_signal_score
+                   FROM paper_trades ORDER BY id ASC LIMIT ?""", (row_cap,)
+            ).fetchall(),
+        )
+        files["trade_learning.csv"] = (
+            ["id", "trade_id", "created_at", "settled_at", "market_ticker", "direction", "contracts",
+             "entry_cents", "trade_outcome", "pnl_result", "pnl_cents", "signal_source", "entry_score",
+             "trend_bias", "trend_evidence_score", "trend_alignment", "entry_price_bucket", "evidence_bucket",
+             "volume_confirmation", "momentum_alignment", "chase_warning", "feature_snapshot_json", "review_json"],
+            conn.execute(
+                """SELECT id,trade_id,created_at,settled_at,market_ticker,direction,contracts,entry_cents,
+                          trade_outcome,pnl_result,pnl_cents,signal_source,entry_score,trend_bias,trend_evidence_score,
+                          trend_alignment,entry_price_bucket,evidence_bucket,volume_confirmation,momentum_alignment,
+                          chase_warning,feature_snapshot_json,review_json
+                   FROM trade_learning ORDER BY trade_id ASC LIMIT ?""", (row_cap,)
+            ).fetchall(),
+        )
+        files["signal_decisions.csv"] = (
+            ["id", "created_at", "market_ticker", "direction", "score", "decision_status", "proposed_direction",
+             "entry_ask_cents", "spread_cents", "trend_bias", "trend_evidence_score", "trend_snapshot_age_seconds",
+             "counterfactual_outcome", "counterfactual_pnl_cents", "counterfactual_settled_at", "counterfactual_check_note"],
+            conn.execute(
+                """SELECT id,created_at,market_ticker,direction,score,decision_status,proposed_direction,
+                          entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,trend_snapshot_age_seconds,
+                          counterfactual_outcome,counterfactual_pnl_cents,counterfactual_settled_at,counterfactual_check_note
+                   FROM signal_log ORDER BY id ASC LIMIT ?""", (row_cap,)
+            ).fetchall(),
+        )
+        files["market_research_decisions.csv"] = (
+            ["id", "evaluated_at", "market_ticker", "category", "decision", "selected_side",
+             "model_probability_yes", "expected_net_edge_cents", "model_id", "model_version", "payload_json"],
+            conn.execute(
+                """SELECT id,evaluated_at,market_ticker,category,decision,selected_side,model_probability_yes,
+                          expected_net_edge_cents,model_id,model_version,payload_json
+                   FROM market_research_decisions ORDER BY id ASC LIMIT ?""", (row_cap,)
+            ).fetchall(),
+        )
+        files["market_research_prediction_outcomes.csv"] = (
+            ["id", "market_ticker", "category", "model_id", "model_version", "evaluated_at", "settled_at",
+             "model_probability_yes", "actual_outcome_yes", "outcome_source", "recorded_at"],
+            conn.execute(
+                """SELECT id,market_ticker,category,model_id,model_version,evaluated_at,settled_at,
+                          model_probability_yes,actual_outcome_yes,outcome_source,recorded_at
+                   FROM market_research_prediction_outcomes ORDER BY id ASC LIMIT ?""", (row_cap,)
+            ).fetchall(),
+        )
+        files["market_research_paper_trades.csv"] = (
+            ["id", "created_at", "settled_at", "market_ticker", "category", "side", "contracts", "entry_cents",
+             "estimated_fee_cents", "estimated_slippage_cents", "model_probability_yes", "model_id", "model_version",
+             "expected_net_edge_cents", "status", "result", "pnl_cents", "source_snapshot_json"],
+            conn.execute(
+                """SELECT id,created_at,settled_at,market_ticker,category,side,contracts,entry_cents,
+                          estimated_fee_cents,estimated_slippage_cents,model_probability_yes,model_id,model_version,
+                          expected_net_edge_cents,status,result,pnl_cents,source_snapshot_json
+                   FROM market_research_paper_trades ORDER BY id ASC LIMIT ?""", (row_cap,)
+            ).fetchall(),
+        )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        for filename, (headers, rows) in files.items():
+            text = io.StringIO(newline="")
+            writer = csv.writer(text)
+            writer.writerow(headers)
+            writer.writerows(rows)
+            zipped.writestr(filename, text.getvalue().encode("utf-8"))
+        zipped.writestr("README.txt", (
+            "Historical replay export generated by the BTC bot. Contains curated trade and decision data only.\n"
+            "It excludes API credentials, private key files, environment secrets, and raw webhook payloads.\n"
+            "Rows are capped per file by REPLAY_EXPORT_MAX_ROWS. Upload this ZIP for actual historical review;\n"
+            "local synthetic tests cannot establish the result of your production trades.\n"
+        ))
+    return Response(content=archive.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": "attachment; filename=btc_bot_historical_replay_export.zip",
+                             "Cache-Control": "no-store"})
+
+
 @app.get("/api/analytics")
 def performance_analytics() -> dict[str, Any]:
     """Paper-trade cohorts, decision counts, counterfactual rejected-signal outcomes, and exit-shadow review."""
@@ -1427,6 +1535,134 @@ def trade_learning_report() -> dict[str, Any]:
         return build_learning_report(conn)
 
 
+async def _read_json_request_limited(request: Request, max_bytes: int) -> Any:
+    """Read at most max_bytes from a JSON request, including chunked bodies without Content-Length."""
+    declared = request.headers.get("content-length", "").strip()
+    if declared:
+        try:
+            declared_size = int(declared)
+        except (TypeError, ValueError, OverflowError):
+            raise HTTPException(status_code=400, detail="Invalid content length.") from None
+        if declared_size < 0:
+            raise HTTPException(status_code=400, detail="Invalid content length.")
+        if declared_size > max_bytes:
+            raise HTTPException(status_code=413, detail="Request exceeds the allowed size.")
+    body = bytearray()
+    async for chunk in request.stream():
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise HTTPException(status_code=400, detail="Invalid request body.")
+        if len(body) + len(chunk) > max_bytes:
+            raise HTTPException(status_code=413, detail="Request exceeds the allowed size.")
+        body.extend(chunk)
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid JSON request.") from None
+
+
+def _admin_secret_configured() -> str:
+    secret = os.getenv("KALSHI_VAULT_ADMIN_SECRET", "").strip()
+    if len(secret) < 32 or "REPLACE_WITH" in secret.upper():
+        raise HTTPException(status_code=503, detail="Credential-vault controls are unavailable: configure a random KALSHI_VAULT_ADMIN_SECRET of at least 32 characters (not the example placeholder).")
+    return secret
+
+
+def _is_admin_session(request: Request) -> bool:
+    try:
+        secret = _admin_secret_configured()
+    except HTTPException:
+        return False
+    return validate_admin_cookie(request.cookies.get(COOKIE_NAME), secret)
+
+
+def _require_admin_session(request: Request) -> None:
+    if not _is_admin_session(request):
+        raise HTTPException(status_code=401, detail="Admin session required. Unlock the dashboard controls first.")
+
+
+@app.get("/api/admin/session")
+def api_admin_session(request: Request) -> dict[str, Any]:
+    configured_secret = os.getenv("KALSHI_VAULT_ADMIN_SECRET", "").strip()
+    configured = len(configured_secret) >= 32 and "REPLACE_WITH" not in configured_secret.upper()
+    return {"admin_secret_configured": configured, "authenticated": _is_admin_session(request),
+            "session_ttl_seconds": SESSION_TTL_SECONDS, "kalshi_credentials_returned": False}
+
+
+@app.post("/api/admin/login")
+async def api_admin_login(request: Request) -> dict[str, Any]:
+    body = await _read_json_request_limited(request, 2048)
+    if not isinstance(body, dict) or not isinstance(body.get("secret"), str) or len(body["secret"]) > 512:
+        raise HTTPException(status_code=400, detail="Invalid login request.")
+    expected = _admin_secret_configured()
+    if not hmac.compare_digest(body["secret"].encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Admin secret did not match.")
+    response = JSONResponse({"authenticated": True, "expires_in_seconds": SESSION_TTL_SECONDS})
+    response.set_cookie(COOKIE_NAME, create_admin_cookie(expected), max_age=SESSION_TTL_SECONDS,
+                        httponly=True, secure=os.getenv("RENDER", "").strip().lower() == "true",
+                        samesite="strict", path="/")
+    return response
+
+
+@app.post("/api/admin/logout")
+def api_admin_logout(request: Request):
+    from fastapi.responses import JSONResponse
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(COOKIE_NAME, path="/", secure=os.getenv("RENDER", "").strip().lower() == "true",
+                          httponly=True, samesite="strict")
+    return response
+
+
+@app.get("/api/kalshi-credentials")
+def api_kalshi_credentials_status(request: Request) -> dict[str, Any]:
+    _require_admin_session(request)
+    with db_connect() as conn:
+        return credential_status(conn)
+
+
+@app.put("/api/kalshi-credentials")
+async def api_save_kalshi_credentials(request: Request) -> dict[str, Any]:
+    _require_admin_session(request)
+    body = await _read_json_request_limited(request, 20_000)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid credential request.")
+    try:
+        with db_connect() as conn:
+            return save_credentials(conn, body.get("environment"), body.get("api_key_id"), body.get("private_key_pem"))
+    except CredentialVaultError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@app.post("/api/kalshi-credentials/verify")
+async def api_verify_kalshi_credentials(request: Request) -> dict[str, Any]:
+    _require_admin_session(request)
+    try:
+        body = await _read_json_request_limited(request, 2048)
+        environment = normalize_environment(body.get("environment") if isinstance(body, dict) else None)
+        with db_connect() as conn:
+            credentials = load_credentials(conn, environment)
+        return verify_credentials_read_only(credentials)
+    except CredentialVaultError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid verification request.") from None
+
+
+@app.delete("/api/kalshi-credentials/{environment}")
+def api_delete_kalshi_credentials(environment: str, request: Request) -> dict[str, Any]:
+    _require_admin_session(request)
+    try:
+        env = normalize_environment(environment)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    with db_connect() as conn:
+        delete_credentials(conn, env)
+    return {"deleted": True, "environment": env, "credential_returned": False}
+
+
 @app.get("/api/trading-mode")
 def api_trading_mode() -> dict[str, Any]:
     """Expose the effective mode and fail-closed live switch state."""
@@ -1467,73 +1703,108 @@ def api_multi_user_readiness() -> dict[str, Any]:
 
 @app.get("/api/market-scan")
 def api_market_scan() -> dict[str, Any]:
-    """Bounded, cached public catalog scan for readiness; never submits trades."""
-    global _market_scan_cache_payload, _market_scan_cache_fetched_at
-    with _market_scan_cache_lock:
-        now = time.monotonic()
-        if _market_scan_cache_payload is not None:
-            age = max(0.0, now - _market_scan_cache_fetched_at)
-            if age < MARKET_SCAN_CACHE_TTL_SECONDS:
-                return {**_market_scan_cache_payload, "cache_hit": True, "cache_age_seconds": round(age, 2)}
-        try:
-            # Follow at most five cursor pages; every request and the total input
-            # are bounded. Do not loop forever if an upstream cursor repeats.
-            markets: list[dict[str, Any]] = []
-            cursor: str | None = None
-            seen_cursors: set[str] = set()
-            pages_scanned = 0
-            cursor_available = False
-            pagination_warning: str | None = None
-            for _page in range(5):
-                response = get_markets(status="open", limit=100, cursor=cursor)
-                page_markets = response.get("markets", []) if isinstance(response, dict) else []
-                if isinstance(page_markets, list):
-                    markets.extend(item for item in page_markets[:max(0, 500 - len(markets))] if isinstance(item, dict))
-                pages_scanned += 1
-                raw_cursor = response.get("cursor") if isinstance(response, dict) else None
-                if raw_cursor in (None, ""):
-                    cursor_available = False
-                    break
-                if not isinstance(raw_cursor, str):
-                    cursor_available = True
-                    pagination_warning = "Catalog returned a non-text cursor; scan stopped without requesting another page."
-                    break
-                next_cursor = raw_cursor[:MARKET_SCAN_MAX_CURSOR_LENGTH + 1].strip()
-                if not next_cursor:
-                    cursor_available = False
-                    break
-                if len(raw_cursor) > MARKET_SCAN_MAX_CURSOR_LENGTH or len(next_cursor) > MARKET_SCAN_MAX_CURSOR_LENGTH:
-                    cursor_available = True
-                    pagination_warning = "Catalog cursor exceeded the safety length; scan stopped without requesting another page."
-                    break
-                if next_cursor in seen_cursors:
-                    cursor_available = True
-                    pagination_warning = "Catalog cursor repeated; scan stopped to avoid an unbounded pagination loop."
-                    break
-                seen_cursors.add(next_cursor)
-                cursor = next_cursor
-                cursor_available = True
-            result = scan_market_catalog(markets, max_results=50)
-            result["source"] = "Kalshi public market catalog"
-            result["cursor_available"] = cursor_available
-            result["pages_scanned"] = pages_scanned
-            result["pagination_warning"] = pagination_warning
-            result["cache_hit"] = False
-            result["cache_age_seconds"] = 0.0
-            # Cache data only after a fully successful fetch/classification.
-            _market_scan_cache_payload = dict(result)
-            _market_scan_cache_fetched_at = time.monotonic()
-            return result
-        except KalshiAPIError as exc:
-            raise HTTPException(status_code=502, detail="Public market catalog unavailable; no markets were routed.") from exc
+    """Return progress/results for the background all-open-market inventory scan."""
+    return market_scanner.snapshot()
+
+
+@app.post("/api/market-scan")
+def api_start_market_scan() -> dict[str, Any]:
+    """Start or resume a bounded full catalog scan; no trading action is possible."""
+    return market_scanner.start(force=True)
+
+
+@app.get("/api/market-automation")
+def api_market_automation(request: Request) -> dict[str, Any]:
+    """Expose dashboard master autopilot state; never exposes credentials or turns live mode on."""
+    enabled = market_autopilot_enabled()
+    provider_ok = bool(market_decision_pipeline.snapshot().get("provider_configured"))
+    paper_gate = _env_bool("MARKET_AUTOPAPER_ENABLED", False)
+    safe_mode = os.getenv("TRADING_MODE", "paper").strip().lower() == "paper" and not _env_bool("LIVE_TRADING_ENABLED", False)
+    return {
+        "autopilot_enabled": enabled,
+        "scanner_enabled": enabled,
+        "provider_configured": provider_ok,
+        "autopaper_environment_gate": paper_gate,
+        "paper_mode_safe": safe_mode,
+        "admin_authenticated": _is_admin_session(request),
+        "real_orders_enabled": False,
+        "mode": "PAPER_RESEARCH_ONLY",
+        "note": "The master autopilot toggle controls automatic market catalog scanning and eligible research-paper entries only. It never places real orders.",
+    }
+
+
+@app.post("/api/market-automation")
+async def api_set_market_automation(request: Request) -> dict[str, Any]:
+    """Enable or pause automatic catalog scanning + research paper entries via a gated admin control."""
+    body = await _read_json_request_limited(request, 2048)
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        raise HTTPException(status_code=400, detail="Request must contain a boolean 'enabled' value.")
+    enabled = body["enabled"]
+    if not _is_admin_session(request):
+        raise HTTPException(status_code=401, detail="Unlock dashboard secure controls before changing autopilot.")
+    if enabled:
+        provider_ok = bool(market_decision_pipeline.snapshot().get("provider_configured"))
+        if not provider_ok:
+            raise HTTPException(status_code=409, detail="Autopilot remains off: configure the HTTPS probability/evidence provider first.")
+        if not _env_bool("MARKET_AUTOPAPER_ENABLED", False):
+            raise HTTPException(status_code=409, detail="Autopilot remains off: MARKET_AUTOPAPER_ENABLED must be true as a deployment safety gate after provider validation.")
+        if os.getenv("TRADING_MODE", "paper").strip().lower() != "paper" or _env_bool("LIVE_TRADING_ENABLED", False):
+            raise HTTPException(status_code=409, detail="Autopilot remains off: configure TRADING_MODE=paper and LIVE_TRADING_ENABLED=false.")
+    try:
+        set_market_autopilot_enabled(enabled)
+    except Exception as exc:
+        log.warning("Market autopilot runtime setting unavailable (%s).", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Could not persist the autopilot setting to the shared database; state remains fail-closed.") from None
+    if enabled:
+        # Start schedulers even if their environment auto-start flags were false.
+        # Both loops consult the persistent switch on every cycle and fail closed.
+        market_scanner.start_scheduler(enabled=True)
+        market_decision_pipeline.start_scheduler(enabled=True)
+        if market_scanner.snapshot().get("status") in {"idle", "failed", "partial"}:
+            market_scanner.start(force=False)
+    return api_market_automation(request)
+
+
+@app.get("/api/market-analysis")
+def api_market_analysis() -> dict[str, Any]:
+    """Show recent edge/evidence checks and isolated research-paper performance."""
+    result = market_decision_pipeline.snapshot()
+    try:
+        with db_connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*), SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN status='settled' AND pnl_cents>0 THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN status='settled' AND pnl_cents<0 THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN status='settled' THEN pnl_cents ELSE 0 END)
+                   FROM market_research_paper_trades"""
+            ).fetchone()
+            total = int(row[0] or 0)
+            settled = int(row[2] or 0)
+            wins = int(row[3] or 0)
+            result["research_paper_performance"] = {
+                "total_trades": total, "open_trades": int(row[1] or 0), "settled_trades": settled,
+                "wins": wins, "losses": int(row[4] or 0),
+                "win_rate_percent": round(wins * 100 / settled, 2) if settled else None,
+                "net_pnl_cents": round(float(row[5] or 0), 3),
+                "note": "Separate research-only hold-to-settlement paper journal; not merged into the BTC 15-minute strategy stats.",
+            }
+    except Exception:
+        result["research_paper_performance"] = {"available": False, "note": "Research-paper statistics are temporarily unavailable."}
+    return result
+
+
+@app.post("/api/market-analysis/run")
+def api_run_market_analysis(request: Request) -> dict[str, Any]:
+    """Start one bounded market-model/evidence batch; admin auth prevents provider-cost abuse."""
+    _require_admin_session(request)
+    return market_decision_pipeline.start(force=True)
 
 
 def _clear_market_scan_cache_for_tests() -> None:
-    """Clear module-level market-scan cache between isolated HTTP tests."""
-    global _market_scan_cache_payload, _market_scan_cache_fetched_at
-    with _market_scan_cache_lock:
-        _market_scan_cache_payload = None
-        _market_scan_cache_fetched_at = 0.0
+    """Reset in-memory scanner and decision state between isolated HTTP tests."""
+    market_scanner.reset_for_tests()
+    market_decision_pipeline.reset_for_tests()
 
 
 @app.get("/api/category-readiness")

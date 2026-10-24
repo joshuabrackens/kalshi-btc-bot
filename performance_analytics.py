@@ -32,11 +32,26 @@ def _pnl_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         equity += _num(row.get("pnl_cents")) or 0.0
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
+    settled_count = len(settled)
+    win_rate = wins / settled_count if settled_count else None
+    # Wilson interval communicates how uncertain a modest observed win rate is.
+    # It is descriptive, not a forecast and not used to loosen/tighten trade rules.
+    if settled_count and win_rate is not None:
+        z = 1.959963984540054
+        denominator = 1 + z * z / settled_count
+        center = (win_rate + z * z / (2 * settled_count)) / denominator
+        margin = (z * ((win_rate * (1 - win_rate) / settled_count + z * z / (4 * settled_count * settled_count)) ** 0.5)) / denominator
+        ci_low = max(0.0, (center - margin) * 100)
+        ci_high = min(100.0, (center + margin) * 100)
+    else:
+        ci_low = ci_high = None
     return {
-        "total_trades": len(rows), "settled_trades": len(settled),
-        "open_positions": max(0, len(rows) - len(settled)),
+        "total_trades": len(rows), "settled_trades": settled_count,
+        "open_positions": max(0, len(rows) - settled_count),
         "wins": wins, "losses": losses, "break_even": flats,
-        "win_rate_percent": round(wins * 100 / len(settled), 2) if settled else None,
+        "win_rate_percent": round(wins * 100 / settled_count, 2) if settled_count else None,
+        "win_rate_95_ci_low_percent": round(ci_low, 2) if ci_low is not None else None,
+        "win_rate_95_ci_high_percent": round(ci_high, 2) if ci_high is not None else None,
         "net_pnl_cents": round(sum(pnls), 4), "net_pnl_dollars": round(sum(pnls) / 100, 4),
         "average_net_pnl_cents_per_settled_trade": round(sum(pnls) / len(pnls), 4) if pnls else None,
         "gross_profit_cents": round(gross_profit, 4), "gross_loss_cents": round(gross_loss, 4),
@@ -182,4 +197,5 @@ def build_performance_analytics(
         "decision_event_counts": {"signal_evaluations_by_status": dict(status_counts), "alert_transitions_by_status": dict(alert_status_counts)},
         "recent_decisions": [dict(e) for e in list(decision_events)[:50]],
         "important": "Actual paper P&L, entry-price cohorts, chart alignment, evidence score, and hypothetical rejected-signal outcomes are separate measures. Scores are not win probabilities. Do not use small samples alone to tune or enable live trading.",
+        "win_rate_interpretation": "The 95% Wilson interval describes sampling uncertainty in the observed win rate. Compare average net P&L, profit factor, fees and drawdown alongside win rate; higher win rate alone does not establish higher profitability.",
     }

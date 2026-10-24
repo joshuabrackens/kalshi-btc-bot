@@ -15,3 +15,16 @@ venv/
 .env
 .env.*
 !.env.example
+
+# Local generated validations, reports, exports, and API key materials.
+validation_soak.log
+validation_soak_result.json
+historical_replay_audit.json
+historical_replay_audit.md
+historical_replay_audit_*.json
+historical_replay_audit_*.md
+btc_bot_historical_replay_export.zip
+*.key
+*.pem
+*.private
+BTC_Bot_Generated_App_Secrets.txt

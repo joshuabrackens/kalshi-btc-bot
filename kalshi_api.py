@@ -15,7 +15,7 @@ from typing import Any
 
 import requests
 
-BASE_URL = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
+BASE_URL = os.getenv("KALSHI_BASE_URL", "https://external-api.kalshi.com/trade-api/v2")
 TIMEOUT = max(2.0, min(float(os.getenv("KALSHI_REQUEST_TIMEOUT_SECONDS", "12")), 30.0))
 MAX_RETRIES = max(0, min(int(os.getenv("KALSHI_GET_MAX_RETRIES", "2")), 4))
 _RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}

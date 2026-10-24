@@ -78,3 +78,11 @@ After a paper position has reached and armed its fee-adjusted take-profit target
 - Added a chronological 70/30 context holdout review. It requires at least 30 settled trades and minimum cohort samples in both slices; output is review-only and cannot authorize automatic signal-weight changes.
 - Added append-only `adaptive_policy_history` records for preferred-entry-target reductions and surfaced them in the read-only learning API/dashboard. The policy still cannot increase its target or change the hard cap, dollar budget, daily loss limit, or live-trading permissions.
 - Latest dashboard hotfix remains applied on top of the master patch; the current-window, alert-ID linkage, display-warning, and Web Service/worker signal-source diagnostics are preserved.
+
+
+## 2026-10-24 — Multi-market research-to-paper pipeline and validation improvements
+
+- Added `market_decision_engine.py`, `market_analysis_provider.py`, and `market_decision_pipeline.py` for a separate research-to-paper path. It requires a configured external HTTPS probability/evidence provider and never submits live orders.
+- Added per-category current evidence checks, exact market-ticker binding, model freshness, out-of-sample sample-count/Brier checks, liquidity/spread/edge checks, hard fee/slippage assumptions, and separate research paper journal/caps. Unknown categories and models cannot qualify.
+- Added dashboard research batch/performance view, a confidence interval for observed win rate, property-stress test, and a cumulative actual test-command-time soak runner.
+- Automatic research paper entries remain disabled by default until the operator validates/configures a provider. Live order execution and complete production multi-user isolation are still not implemented.

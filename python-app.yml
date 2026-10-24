@@ -123,14 +123,26 @@ jobs:
       - name: Run market-router isolation tests
         run: python -m pytest -q test_market_router.py
 
+      - name: Run market opportunity, provider, and paper-pipeline tests
+        run: python -m pytest -q test_market_decision_engine.py test_market_analysis_provider.py test_market_decision_pipeline.py
+
       - name: Run multi-user security primitive tests
         run: python -m pytest -q test_multi_user_security.py
+
+      - name: Run encrypted Kalshi credential-vault and session tests
+        run: python -m pytest -q test_kalshi_credentials.py
 
       - name: Run dashboard mode-selector and market-scanner checks
         run: python -m pytest -q test_phase456_dashboard.py
 
+      - name: Validate dashboard JavaScript syntax when Node.js is available
+        run: python validate_dashboard_js.py
+
       - name: Run deterministic offline Phase 4–6 stress checks
         run: python stress_phase456_readiness.py
+
+      - name: Run randomized market-decision property stress checks
+        run: python stress_market_decision_engine.py
 
       - name: Run shared alert-flow smoke test (offline stubs)
         run: python smoke_shared_alert_flow.py

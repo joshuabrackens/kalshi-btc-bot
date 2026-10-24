@@ -1,8 +1,9 @@
-"""Fail-closed research registry for future Kalshi market-category expansion.
+"""Fail-closed registry for routing markets into the original BTC strategy.
 
-Only the validated BTC 15-minute flow is marked paper-enabled. Other profiles are
-planning metadata only until they have category-specific data, calibration, and tests.
-This module never routes an order or opens a paper trade.
+Only BTC 15-minute is enabled for the original signal/worker path. A separate
+market_decision_pipeline can optionally record isolated research-only paper simulations
+when a category-specific external model/evidence provider passes its own gates. Neither
+module places live orders.
 """
 from __future__ import annotations
 

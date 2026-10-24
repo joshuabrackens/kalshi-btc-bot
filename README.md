@@ -1,5 +1,8 @@
 # Kalshi BTC 15-Minute Paper Bot
 
+> **Current Phase 1–6 snapshot (2026-10-23):** see [`DEPLOYMENT_PHASE1_TO_6.md`](DEPLOYMENT_PHASE1_TO_6.md) for exact Render settings and upload steps, and [`PHASE456_VALIDATION.md`](PHASE456_VALIDATION.md) for local test status. The scanner catalogs open markets within explicit safety caps. The encrypted Kalshi credential vault does not enable real orders; Real mode remains locked and the worker is paper-only.
+
+
 ## Purpose and safety boundary
 
 This repository implements a BTC-focused, paper-only Kalshi decision and journal system. It consumes fresh TradingView/GainzAlgo alerts, evaluates closed BTC candles across 1m/5m/15m timeframes, checks a continuously refreshed chart-trend snapshot, validates current Kalshi order-book quotes, and records simulated entries/exits and official settlement outcomes.
@@ -34,11 +37,12 @@ The 92¢ value is the hard cap; 80¢ is a soft preferred entry target, not an en
 - `db_store.py`: shared SQLite/PostgreSQL adapter and schema migrations.
 - `performance_analytics.py`: descriptive historical P&L and decision cohort analysis.
 - `trade_learning.py`: idempotent per-settled-trade feature snapshots, outcome reviews, cohort insights, and a bounded paper-only adaptive entry-target policy. It can tighten the preferred target after repeated poor high-price hybrid outcomes; it never loosens the target or changes the hard cap/dollar risk limits.
-- `market_category_registry.py` / `market_router.py`: Phase 4 market-catalog classification and bounded scan. BTC 15m is the only paper-enabled profile; all non-BTC categories are research-only and the scanner never executes orders.
+- `market_category_registry.py` / `market_router.py`: fail-closed market classification and the original BTC strategy router. Non-BTC categories are never sent to the BTC strategy. The separate `market_decision_pipeline.py` can record isolated research-paper simulations only after a category model/evidence provider and strict risk gates pass.
 - `trading_mode.py`: fail-closed dashboard mode gate and live-readiness checklist. The real option requests a readiness check; this build cannot enable live execution because it has no order-submission adapter.
 - `multi_user_security.py`: password/session security primitives and readiness checklist; no login middleware, tenant-scoped journal, or public account signup is enabled.
 - `payload_safety.py`: recursive sensitive-key removal for untrusted webhook payloads.
-- `dashboard.html`: current-window state, preserved latest directional evaluation, active-position entry rationale, trend and decision detail, journal, and analytics UI.
+- `market_decision_engine.py` / `market_analysis_provider.py` / `market_decision_pipeline.py`: separately evaluate ranked cross-market candidates against a configured probability/evidence provider, current book, liquidity, spread, estimated fees/slippage, validation quality and paper-only exposure limits. Without a configured provider, no cross-market edge or paper entry is created. This pipeline has no live-order endpoint.
+- `dashboard.html`: current-window state, preserved latest directional evaluation, active-position entry rationale, trend and decision detail, journal, analytics UI, and a separate market research/paper-results panel.
 
 ## Render configuration
 
@@ -63,7 +67,9 @@ Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `PO
 - `GET /api/learning` — persistent post-trade outcome feedback, entry-feature snapshots, cohort summaries, research notes, and the active bounded adaptive-entry policy. The endpoint is read-only; the worker applies the policy after settled outcomes are journaled.
 - `GET /api/decision-audit` — recent audit events, read-only.
 - `GET /api/category-readiness` — research readiness profiles; this endpoint never enables or routes trades.
-- `GET /api/market-scan` — manually invoked, cached (30-second default; `MARKET_SCAN_CACHE_TTL_SECONDS` is optional) and bounded public-market inventory; concurrent/repeated dashboard clicks do not repeatedly call the upstream API during the cache window. Non-BTC and unknown markets cannot reach the BTC strategy. The scanner follows at most five 100-market pages (500 total), is cached for 30 seconds by default, and does not submit trades.
+- `POST /api/market-scan` / `GET /api/market-scan` — starts/resumes and reports progress for the background paginated open-market inventory. It follows cursor pages up to the configured safety caps (500 pages / 100,000 distinct markets by default), refreshes every 10 minutes when enabled, displays up to 50 examples, and reports partial/failure states explicitly. Inventory alone does not submit trades.
+- `GET /api/market-analysis` — research provider status, last batch decisions, blockers, and isolated research-paper performance.
+- `POST /api/market-analysis/run` — runs an admin-session-protected research batch. It may create only separate simulated paper entries after the external model/evidence provider, market-price, liquidity, edge, and exposure checks pass. It never sends live orders.
 - `GET /api/trading-mode`, `POST /api/trading-mode` — show the effective paper-only state or reject a request for real mode; the browser cannot modify deployment settings.
 - `GET /api/live-readiness`, `GET /api/multi-user-readiness` — checklists for unimplemented live-order and production multi-user requirements; neither endpoint enables these capabilities.
 - `GET /diagnostics/market-data` — cached public-market diagnostic; it never places or modifies trades.
@@ -72,7 +78,13 @@ Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `PO
 - `GET /markets/btc-candidates`, `GET /markets/{ticker}`, `GET /markets/{ticker}/orderbook` — public Kalshi information.
 - `POST /evaluate`, `POST /paper/open`, `POST /paper/{trade_id}/settle` — manual journal/evaluation routes; require `PAPER_ADMIN_API_SECRET` and the `X-Paper-Admin-Secret` header.
 
-`/api/category-readiness` describes a safe expansion roadmap, not an active multi-market bot. Sports, politics/elections, economics, weather, crypto-event and other financial/event categories stay disabled until separate primary data sources, settlement validators, calibrated models and tests exist. Non-BTC markets must not be passed into the BTC strategy.
+`/api/category-readiness` remains the readiness view for routing categories into the original BTC strategy; non-BTC markets must not be passed into that strategy. The separate research pipeline can run isolated hold-to-settlement paper experiments for allowlisted categories only when `MARKET_ANALYSIS_PROVIDER_URL` is configured and its model/evidence claims pass validation. Provider-service source is included as `market_analysis_provider_service.py`, but it must be deployed as a separate HTTPS service and configured with your own OpenAI API key. By default the scanner inventories all available pages up to its caps, while deeper research rotates through the top 500 activity-ranked candidates and analyzes up to 10 per batch; this is not a guarantee that every market receives deep analysis in each cycle.
+
+## Automated multi-market research and win-rate evaluation
+
+The research pipeline is a separate, paper-only experiment; it does not change the existing BTC strategy or place authenticated orders. To make it operate automatically in staging, configure a vetted HTTPS `MARKET_ANALYSIS_PROVIDER_URL` that supplies a category-appropriate probability and source-attributed current evidence as specified in [`MARKET_RESEARCH_PIPELINE_GUIDE.md`](MARKET_RESEARCH_PIPELINE_GUIDE.md). Then set `MARKET_ANALYSIS_AUTO_START=true`; only after the provider contract, data sources and staging responses have been audited should `MARKET_AUTOPAPER_ENABLED=true` be considered. Keep `TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false`. With no provider configured, the pipeline fails closed and does not invent probability or trades.
+
+The reported 95-trade / 56% win-rate sample is not large enough to tune thresholds confidently. The analytics response includes a Wilson confidence interval plus average net P&L, profit factor and drawdown. Prefer changes that improve fee-adjusted out-of-sample expectancy and calibration, not just the headline win percentage; increasing win rate by taking low-payout/high-price contracts can worsen overall profitability.
 
 ## Local install and test
 
@@ -111,3 +123,33 @@ After a paper position has reached and armed its fee-adjusted take-profit target
 ## Phases 1–3 context upgrade
 
 See `README_PHASES_1_TO_3_COMPLETION.md` for the latest reconciled work: UTC weekday/weekend and time-of-day cohorts, descriptive trend/range and existing volatility-warning cohorts, chronological holdout review, append-only adaptive-target change history, and current-alert dashboard stabilization. Signal weights remain fixed pending sufficient out-of-sample evidence. The bot remains paper-only.
+
+
+### Automated market research and validation status
+
+The cross-market pipeline is a guarded research-to-paper-decision framework. Deep analysis requires a separately configured HTTPS `MARKET_ANALYSIS_PROVIDER_URL` that supplies calibrated probabilities and source-attributed, current evidence. Without it, the pipeline fails closed and does not fabricate a probability or create research-paper positions. This snapshot contains a low-level signed V2 order adapter for isolated Demo testing, but it is not wired into the application live-execution path. Keep `TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false`.
+
+The source includes `run_validation_soak.py`, which accumulates actual offline test-command runtime and defaults to 7,200 seconds (two hours). The latest 215-test suite and stress/smoke tests passed, but the requested two-hour soak has not been completed in this environment. See `PHASE456_VALIDATION.md` for exact status.
+
+
+## All-phases deployment quickstart
+
+Use [`BTC_Bot_All_Phases_Environment_Quickstart.md`](BTC_Bot_All_Phases_Environment_Quickstart.md) for the consolidated Render environment settings and deployment order. See [`BTC_BOT_MARKET_PIPELINE_VALIDATION.md`](BTC_BOT_MARKET_PIPELINE_VALIDATION.md) for the latest known local validation and explicit limitations.
+
+
+## Optional market-analysis provider service
+
+For multi-market research, deploy `market_analysis_provider_service.py` as a **separate** Render Web Service with start command:
+
+```bash
+uvicorn market_analysis_provider_service:app --host 0.0.0.0 --port $PORT
+```
+
+Set `OPENAI_API_KEY` (created in your own OpenAI Platform project), `OPENAI_MODEL` (a model available to your account that supports the Responses API web-search and strict structured outputs), `MARKET_ANALYSIS_PROVIDER_API_KEY` (same generated shared token as the main service), and the same `DATABASE_URL` on that service. On the main Web Service and Background Worker, set `MARKET_ANALYSIS_PROVIDER_URL=https://<provider-service>.onrender.com/analyze` and the same provider token. The provider can search for current news and evidence, but it does not place orders.
+
+Model probabilities are stored with decision timestamps and compared with actual market resolution outcomes when available. A model/category stays ineligible until at least 100 prior predictions have subsequently resolved, both YES and NO outcomes have sufficient representation, and the observed Brier score meets the configured threshold. This intentionally causes a calibration warm-up; do not fake or manually invent a validation report.
+
+The protected endpoint `GET /api/diagnostics/replay-export` exports curated historical trade and decision CSVs after dashboard admin login. It excludes credentials and private keys. Use `python audit_historical_export.py btc_bot_historical_replay_export.zip` to audit the real recorded journal, including win-rate confidence intervals, net P&L, entry-price/source cohorts, counterfactual records, and model Brier scores. It is an audit of logged decisions, not a complete counterfactual replay of markets for which contemporaneous quotes/news/model inputs were never stored.
+
+
+**Live order status:** `kalshi_order_adapter.py` is a low-level signed V2 adapter with Demo-only default and mocked tests. It is not registered as a live execution adapter in `trading_mode.py`; the app-level Real switch intentionally remains blocked until Demo lifecycle testing and reconciliation are complete. Keep `TRADING_MODE=paper`, `LIVE_TRADING_ENABLED=false`, `LIVE_TRADING_APPROVED=false`, and `MARKET_LIVE_EXECUTION_ENABLED=false`.

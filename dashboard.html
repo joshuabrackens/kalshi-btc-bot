@@ -106,6 +106,31 @@
     details{border:1px solid var(--line);border-radius:12px;background:rgba(28,72,110,.78);padding:14px 15px}
     details+details{margin-top:10px}summary{cursor:pointer;font-weight:800;font-size:14px}summary:focus-visible,button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}
     .settings-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:13px}
+    /* Kalshi connection form: deliberately visually distinct, matching the compact
+       dark account-connect flow in the reference while retaining BTC Engine styling. */
+    .credential-setup-card{margin-top:12px;border:1px solid #34363b;border-radius:18px;padding:18px;background:linear-gradient(145deg,#18191c,#202124);color:#f5f5f5;box-shadow:0 12px 28px rgba(0,0,0,.24)}
+    .credential-setup-card .mode-note,.credential-setup-card .small{color:#b8bcc4}
+    .credential-step{display:grid;grid-template-columns:40px minmax(0,1fr);gap:12px;align-items:start;margin:12px 0 16px}
+    .credential-step-number{width:34px;height:34px;border-radius:50%;border:2px solid #ff9a5b;color:#ffad72;display:grid;place-items:center;font-weight:900;font-size:15px}
+    .credential-step-copy{color:#e9e9eb;line-height:1.55;font-size:14px}
+    .credential-fields{display:grid;grid-template-columns:minmax(0,1fr);gap:13px;margin-top:14px}
+    .credential-field label{display:block;font-size:14px;color:#f3f3f4;margin-bottom:6px;font-weight:650}
+    .credential-input,.credential-file{display:block;width:100%;min-width:0;padding:13px 14px;border:1px solid #46484e;border-radius:12px;background:#191a1d;color:#f7f7f8;font:inherit;font-size:14px}
+    .credential-input:focus,.credential-file:focus{outline:2px solid #ff9a5b;outline-offset:2px;border-color:#ff9a5b}
+    .credential-file{padding:10px 12px;min-height:50px}
+    .credential-file::file-selector-button{border:0;background:#eceef1;color:#18191b;border-radius:999px;padding:7px 12px;margin-right:10px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+    .credential-ack{display:grid;grid-template-columns:20px minmax(0,1fr);gap:10px;align-items:start;margin:16px 0 14px;color:#c5c7cc;font-size:13px;line-height:1.6}
+    .credential-ack input{width:18px;height:18px;margin-top:3px;accent-color:#ff8a43}
+    .connect-button{width:100%;min-height:52px;border:0;border-radius:13px;background:#ff873f;color:#21130a;font:inherit;font-weight:850;font-size:16px;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.25);transition:filter .15s ease,transform .15s ease}
+    .connect-button:hover{filter:brightness(1.06)}.connect-button:active{transform:translateY(1px)}
+    .connect-button:disabled{opacity:.55;cursor:not-allowed;filter:saturate(.5)}
+    .credential-secondary-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+    .credential-secondary-actions .mode-button{background:#292b30;border-color:#484b52}
+    .autopilot-control{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:12px 0 14px;padding:14px;border:1px solid rgba(185,220,255,.27);border-radius:12px;background:rgba(7,28,48,.24)}
+    .autopilot-toggle{min-width:180px;display:inline-flex;align-items:center;justify-content:center;gap:9px}
+    .autopilot-toggle[aria-pressed="true"]{border-color:#42c59a;background:#124b42;color:#dffff0}
+    .autopilot-toggle[aria-pressed="false"]{border-color:#9d7b48;background:#3c3027;color:#ffe5c8}
+    @media(max-width:620px){.credential-setup-card{padding:14px}.credential-step{grid-template-columns:34px minmax(0,1fr);gap:9px}.credential-step-number{width:30px;height:30px}.credential-ack{font-size:12px}.connect-button{font-size:15px}.autopilot-toggle{width:100%}}
     .mode-control-row{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:12px}
     .mode-selector{display:flex;gap:8px;flex-wrap:wrap}
     .mode-button{cursor:pointer;border:1px solid #477596;background:#153954;color:#eaf5ff;font:inherit;font-size:12px;font-weight:850;padding:10px 14px;border-radius:10px;min-height:40px}
@@ -180,7 +205,7 @@
 
   <section class="card trading-mode-card" id="trading-mode-control" aria-label="Trading mode selection">
     <div class="section-head">
-      <div><h2>Trading mode</h2><p class="section-desc">Paper mode is the active, deployment-controlled mode. The Real Trading control checks readiness only; it cannot place or authorize real orders in this build.</p></div>
+      <div><h2>Trading mode</h2><p class="section-desc">Paper mode is active. Real mode remains server-locked until authenticated order execution, credential storage, reconciliation, and risk safeguards have passed end-to-end Demo tests.</p></div>
       <span class="badge green" id="mode-state-badge">PAPER MODE ACTIVE</span>
     </div>
     <div class="mode-control-row">
@@ -192,6 +217,45 @@
     </div>
     <p class="mode-note" id="mode-control-status">Real trading is locked because the current build has no real-order adapter, authenticated multi-user isolation, or live emergency-stop/reconciliation path. This lock is enforced server-side, not just by the button.</p>
     <details style="margin-top:12px"><summary>Real-trading readiness checklist</summary><div class="readiness-list" id="live-readiness-list"><div class="readiness-item">Loading readiness checks…</div></div></details>
+    <details style="margin-top:10px"><summary>Connect Kalshi account · one-time credential setup</summary>
+      <div class="credential-setup-card" id="kalshi-account-setup">
+        <div id="admin-login-controls" class="settings-grid" style="margin-top:0">
+          <div class="mini" style="grid-column:1/-1"><label for="admin-secret-input">Dashboard admin secret</label><input id="admin-secret-input" type="password" autocomplete="current-password" maxlength="512" placeholder="Enter KALSHI_VAULT_ADMIN_SECRET" style="width:100%;margin-top:6px"></div>
+          <div><button type="button" class="mode-button" id="admin-login-button">Unlock secure controls</button></div>
+          <div class="mini"><span id="admin-session-status" class="small" role="status" aria-live="polite">Checking admin configuration…</span></div>
+        </div>
+        <div id="kalshi-admin-controls" hidden>
+          <div class="credential-step">
+            <span class="credential-step-number">1</span>
+            <div class="credential-step-copy"><strong>Choose your environment.</strong><br>Start with <strong>Kalshi Demo</strong> (mock funds). Save production credentials separately; the two key pairs are not interchangeable.</div>
+          </div>
+          <div class="credential-field">
+            <label for="kalshi-cred-environment">Kalshi account environment</label>
+            <select id="kalshi-cred-environment" class="credential-input"><option value="demo">Kalshi Demo · mock funds</option><option value="production">Kalshi Production</option></select>
+          </div>
+          <div class="credential-step" style="margin-top:20px">
+            <span class="credential-step-number">2</span>
+            <div class="credential-step-copy"><strong>Create an API key in Kalshi Profile → Settings → API Keys.</strong><br>Use Read and Trade (or the equivalent Read and Write permission), then download the private key file that matches that key. Transfer permission is not required for this application.</div>
+          </div>
+          <div class="credential-step">
+            <span class="credential-step-number">3</span>
+            <div class="credential-step-copy"><strong>Enter the Key ID and upload the matching private key file.</strong><br>The server validates and encrypts the pair before storing it in the shared database. The private key will not be returned to the browser after saving.</div>
+          </div>
+          <div class="credential-fields">
+            <div class="credential-field"><label for="kalshi-api-key-id">Kalshi API Key ID</label><input id="kalshi-api-key-id" class="credential-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="200" placeholder="Paste API Key ID"></div>
+            <div class="credential-field"><label for="kalshi-private-key-file">Private key file (.key / .pem / .txt)</label><input id="kalshi-private-key-file" class="credential-file" type="file" accept=".key,.pem,.txt,text/plain,application/x-pem-file" aria-describedby="kalshi-file-help"><p class="small" id="kalshi-file-help" style="margin-top:5px">Maximum 16 KB. Choose the original private-key file downloaded from Kalshi; do not upload it to GitHub.</p></div>
+          </div>
+          <label class="credential-ack" for="kalshi-authorization-ack"><input id="kalshi-authorization-ack" type="checkbox"><span>I authorize this app to store and use these credentials for authenticated Kalshi account access. I understand that this current build does not submit real orders; any future live trading requires a separate enable action and completed readiness checks. Prediction-market trading carries risk and I remain responsible for my account and compliance with Kalshi’s terms.</span></label>
+          <button type="button" class="connect-button" id="kalshi-save-credentials">Connect Kalshi account</button>
+          <div class="credential-secondary-actions">
+            <button type="button" class="mode-button" id="kalshi-verify-credentials">Verify saved key · read-only</button>
+            <button type="button" class="mode-button" id="kalshi-clear-credentials">Delete saved key pair</button>
+            <button type="button" class="mode-button" id="admin-logout-button">Lock controls</button>
+          </div>
+          <p class="mode-note" id="kalshi-credential-status" role="status" aria-live="polite">Saved credential status not loaded.</p>
+        </div>
+      </div>
+    </details>
     <details style="margin-top:10px"><summary>Multi-user security readiness</summary><p class="mode-note" id="multi-user-summary">Multi-user access remains disabled until server-side authentication, account-scoped data, per-user risk limits, and isolation tests are implemented.</p><div class="readiness-list" id="multi-user-readiness-list"></div></details>
   </section>
 
@@ -383,7 +447,7 @@
     <div class="mini-grid">
       <div class="mini"><div class="label">Settled journal trades</div><div class="value" id="analytics-settled">—</div><div class="help" id="analytics-total">— total including open</div></div>
       <div class="mini"><div class="label">Actual net P&amp;L</div><div class="value" id="analytics-pnl">—</div><div class="help">Recorded fees included where stored</div></div>
-      <div class="mini"><div class="label">Win rate</div><div class="value" id="analytics-winrate">—</div><div class="help">Among settled journal trades</div></div>
+      <div class="mini"><div class="label">Win rate</div><div class="value" id="analytics-winrate">—</div><div class="help" id="analytics-winrate-interval">Among settled journal trades; uncertainty grows with small samples</div></div>
       <div class="mini"><div class="label">Average net / settled trade</div><div class="value" id="analytics-expectancy">—</div><div class="help">Historical average, not a forecast</div></div>
       <div class="mini"><div class="label">Profit factor</div><div class="value" id="analytics-profit-factor">—</div><div class="help">Gross profit ÷ absolute gross loss</div></div>
       <div class="mini"><div class="label">Maximum drawdown</div><div class="value" id="analytics-drawdown">—</div><div class="help">Peak-to-trough cumulative journal P&amp;L</div></div>
@@ -449,18 +513,38 @@
 
   <section class="card section" id="multi-market-scan-section" aria-label="Multi-market research scanner">
     <div class="section-head">
-      <div><h2>Multi-market scanner</h2><p class="section-desc">Manually scan a bounded sample of open Kalshi markets and classify readiness. This is research inventory only: no candidate here can submit a trade. BTC 15-minute remains the only strategy-enabled category.</p></div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-scan-badge">NOT SCANNED</span><button type="button" class="mode-button" id="market-scan-button">Scan open markets</button></div>
+      <div><h2>Multi-market scanner</h2><p class="section-desc">Inventory all open Kalshi markets through paginated public API scans, then rank a bounded research pool by reported activity. Deeper event analysis needs a configured, calibrated probability/evidence provider; other categories cannot reuse the BTC strategy.</p></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-scan-badge">NOT SCANNED</span><button type="button" class="mode-button" id="market-scan-button">Scan all open markets</button></div>
     </div>
-    <p class="small" id="market-scan-status" role="status" aria-live="polite">No scan has been run. Scanning makes a bounded public-data request and never accesses account credentials or places orders.</p>
+    <div class="autopilot-control" id="market-autopilot-control">
+      <div style="min-width:0;flex:1"><div class="statusline"><span class="badge amber" id="market-autopilot-badge">AUTOPILOT OFF</span><strong>Automatic market scanning + paper research trades</strong></div><p class="small" id="market-autopilot-status" style="margin-top:6px">Off by default. Unlock secure controls and configure a validated analysis provider before turning this on. This toggle can only enable automated paper research trades, never live orders.</p></div>
+      <button type="button" class="mode-button autopilot-toggle" id="market-autopilot-toggle" aria-pressed="false">Start autopilot</button>
+    </div>
+    <p class="small" id="market-scan-status" role="status" aria-live="polite">Waiting for the background catalog scanner. Open markets are inventoried page by page; no orders are placed by the scanner.</p>
     <div class="mini-grid" style="margin-top:12px">
-      <div class="mini"><div class="label">Candidates inventoried</div><div class="value" id="market-scan-total">—</div><div class="help">At most 500 records are classified per scan</div></div>
+      <div class="mini"><div class="label">Candidates inventoried</div><div class="value" id="market-scan-total">—</div><div class="help">All open-market pages are scanned up to a hard safety cap</div></div>
       <div class="mini"><div class="label">BTC 15-minute candidates</div><div class="value" id="market-scan-btc">—</div><div class="help">Still subject to normal BTC trade gates</div></div>
       <div class="mini"><div class="label">Research-only categories</div><div class="value" id="market-scan-research">—</div><div class="help">Not eligible for paper entries yet</div></div>
       <div class="mini"><div class="label">Unclassified / blocked</div><div class="value" id="market-scan-blocked">—</div><div class="help">Unknown markets never reach a strategy</div></div>
     </div>
-    <div class="table-wrap" style="margin-top:13px"><table style="min-width:900px" aria-label="Market scanner candidates"><thead><tr><th>Ticker</th><th>Market</th><th>Category</th><th>Route state</th><th>Reason</th></tr></thead><tbody id="market-scan-rows"><tr><td colspan="5" class="empty">Run a scan to inventory currently open markets.</td></tr></tbody></table></div>
-    <p class="small" style="margin-top:10px">Expansion rule: enable one category only after category-specific data validation, model calibration, settlement tests, cost modeling, and out-of-sample paper results. Do not reuse the BTC strategy for unrelated events.</p>
+    <div class="table-wrap" style="margin-top:13px"><table style="min-width:900px" aria-label="Market scanner candidates"><thead><tr><th>Ticker</th><th>Market</th><th>Category</th><th>Implied YES</th><th>Route state</th><th>Context readiness</th></tr></thead><tbody id="market-scan-rows"><tr><td colspan="6" class="empty">Waiting for the all-open-markets inventory…</td></tr></tbody></table></div>
+    <p class="small" style="margin-top:10px">The full catalog is inventoried; deeper research runs on a bounded activity-ranked rotating pool to respect API rate limits. A market cannot receive a trade candidate without a validated category probability model, fresh sourced evidence, usable order-book depth, narrow spreads, and positive expected value after costs. The inventory endpoint itself cannot place live orders.</p>
+  </section>
+
+  <section class="card section" id="market-decision-section" aria-label="Market research and paper opportunity engine">
+    <div class="section-head">
+      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed news, injury/lineup or event evidence. It will not invent probabilities when that provider is missing.</p></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-analysis-badge">NOT RUN</span><button type="button" class="mode-button" id="market-analysis-button" disabled>Run research batch · unlock admin first</button></div>
+    </div>
+    <p id="market-analysis-status" class="small" role="status" aria-live="polite">Waiting for scanner and validated evidence provider configuration. This pipeline can only create separate hold-to-settlement paper simulations; it cannot place live orders.</p>
+    <div class="mini-grid" style="margin-top:12px">
+      <div class="mini"><div class="label">Ranked research pool</div><div class="value" id="market-analysis-pool">—</div><div class="help">Bounded by the candidate-pool setting</div></div>
+      <div class="mini"><div class="label">Analyzed this batch</div><div class="value" id="market-analysis-count">—</div><div class="help">Rotates through eligible candidates</div></div>
+      <div class="mini"><div class="label">Paper entries created</div><div class="value" id="market-analysis-entered">—</div><div class="help">Separate research journal; no live orders</div></div>
+      <div class="mini"><div class="label">Settled research win rate</div><div class="value" id="market-analysis-winrate">—</div><div class="help" id="market-analysis-pnl">Separate hold-to-settlement results</div></div>
+    </div>
+    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Unlock admin controls, then run a batch; automatic scheduled analysis requires provider configuration.</td></tr></tbody></table></div>
+    <p class="small" style="margin-top:10px">Source and model gates: at least 100 out-of-sample calibration observations by default, Brier score ≤ 0.22, fresh source timestamps, category-required evidence types, ≥5 contracts at the best displayed ask, ≤5¢ spread, and ≥5¢ estimated net edge after fees/slippage. These are conservative defaults, not a guarantee of profitability.</p>
   </section>
 
   <section class="card section" aria-label="Paper trade activity">
@@ -652,7 +736,7 @@
     write('distance-strike',hasDisplayedEvaluation&&hasNum(s.distance_from_strike)?`${Number(s.distance_from_strike)>0?'+':Number(s.distance_from_strike)<0?'−':''}$${Math.abs(Number(s.distance_from_strike)).toFixed(2)}`:'—');
     write('seconds-remaining',hasDisplayedEvaluation&&hasNum(s.seconds_remaining)?`${Math.round(Number(s.seconds_remaining))} sec at evaluation`:'—');
     write('entry-ask',hasDisplayedEvaluation?cents(s.entry_ask_cents):'—');
-    write('max-entry-cents',hasDisplayedEvaluation?cents(d.risk?.configured_hard_max_entry_cents??s.max_entry_cents):cents(d.risk?.configured_hard_max_entry_cents));
+    write('max-entry-cents',hasDisplayedEvaluation?cents(data.risk?.configured_hard_max_entry_cents??s.max_entry_cents):cents(data.risk?.configured_hard_max_entry_cents));
     write('evidence-score',score===null?'Not available':`${nfmt(score,0)} / 100`);
     if($('score-bar')) $('score-bar').style.width=`${score===null?0:score}%`;
     write('score-note',score===null?'No directional score recorded':`Rule score captured at evaluation; ${isHistorical?'historical only · ':''}configured internal threshold ${threshold}/100`);
@@ -1009,6 +1093,7 @@
     setBadge('analytics-badge',`${s.settled_trades||0} settled trades`,(s.settled_trades||0)>=50?'blue':'amber');
     write('analytics-settled',s.settled_trades??0);write('analytics-total',`${s.total_trades??0} total · ${s.open_positions??0} open`);
     write('analytics-pnl',money(s.net_pnl_dollars));write('analytics-winrate',hasNum(s.win_rate_percent)?`${nfmt(s.win_rate_percent,1)}%`:'—');
+    write('analytics-winrate-interval',hasNum(s.win_rate_95_ci_low_percent)&&hasNum(s.win_rate_95_ci_high_percent)?`Approx. 95% Wilson interval: ${nfmt(s.win_rate_95_ci_low_percent,1)}–${nfmt(s.win_rate_95_ci_high_percent,1)}%; descriptive, not a forecast`:'Need settled wins/losses to estimate uncertainty');
     write('analytics-expectancy',hasNum(s.average_net_pnl_cents_per_settled_trade)?signedMoneyCents(s.average_net_pnl_cents_per_settled_trade):'—');
     write('analytics-profit-factor',typeof s.profit_factor==='number'?nfmt(s.profit_factor,2):s.profit_factor==='no_recorded_losses'?'No losses yet':'—');
     write('analytics-drawdown',signedMoneyCents(-(asNum(s.max_drawdown_cents))));
@@ -1202,40 +1287,147 @@
     write('market-scan-btc',counts.btc_15m??0);
     write('market-scan-research',routes.research_only??0);
     write('market-scan-blocked',routes.blocked_unclassified??0);
+    const state=String(data?.status||'idle');
+    if(state==='running'){
+      setBadge('market-scan-badge',`SCANNING · ${nfmt(data?.pages_scanned,0)} PAGES`,'amber');
+      write('market-scan-status',`Full catalog scan in progress: ${nfmt(data?.candidate_count,0)} distinct open markets classified across ${nfmt(data?.pages_scanned,0)} pages. This is metadata/probability inventory only; no order was submitted.`);
+    }else if(state==='failed'){
+      setBadge('market-scan-badge','SCAN FAILED','red');
+      write('market-scan-status',data?.error_message||'The public market catalog scan failed. No trade was attempted. Check Render logs and try again.');
+    }else if(state==='partial'){
+      setBadge('market-scan-badge','PARTIAL SCAN','amber');
+      write('market-scan-status',`Scanned ${nfmt(data?.candidate_count,0)} distinct markets across ${nfmt(data?.pages_scanned,0)} pages, but the scan is incomplete. ${data?.pagination_warning||''} Click Scan all open markets to resume. No trades were attempted.`);
+    }else if(state==='complete'){
+      setBadge('market-scan-badge',`COMPLETE · ${nfmt(data?.candidate_count,0)} MARKETS`,'green');
+      write('market-scan-status',`Complete open-market inventory from ${data?.source||'Kalshi public catalog'}: ${nfmt(data?.candidate_count,0)} distinct markets across ${nfmt(data?.pages_scanned,0)} pages; showing ${nfmt(data?.returned_count,0)} examples. Completed ${time(data?.last_completed_at)}. Market-implied prices are not model probabilities. No trades were attempted.`);
+    }else{
+      setBadge('market-scan-badge','NOT SCANNED','blue');
+      write('market-scan-status','The catalog scanner is idle. Press Scan all open markets to begin a complete paginated scan.');
+    }
     const rows=$('market-scan-rows');
     if(rows){
       rows.replaceChildren();
       const markets=Array.isArray(data?.markets)?data.markets:[];
-      if(!markets.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=5;td.className='empty';td.textContent='No market records returned. No orders were submitted.';tr.appendChild(td);rows.appendChild(tr);}
+      if(!markets.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent=state==='running'?'Inventory is being built; more market examples will appear as pages arrive.':'No market records returned. No orders were submitted.';tr.appendChild(td);rows.appendChild(tr);}
       for(const market of markets){
         const tr=document.createElement('tr');
         addCell(tr,market.ticker||'—');
         addCell(tr,market.title||'Untitled market');
         addCell(tr,market.category_label||market.category||'Unclassified');
+        addCell(tr,hasNum(market.market_implied_yes_probability_pct)?`${nfmt(market.market_implied_yes_probability_pct,1)}%`:'Unavailable');
         const route=String(market.route_status||'blocked_unclassified').replaceAll('_',' ').toUpperCase();
         addCell(tr,route);
-        addCell(tr,market.reason||'No routing reason provided.');
+        addCell(tr,market.context_status||market.reason||'No context source status provided.');
         rows.appendChild(tr);
       }
     }
-    const pass=Number(data?.candidate_count||0);
-    setBadge('market-scan-badge',`INVENTORY · ${pass} CHECKED`,'blue');
-    const returned=Number(data?.returned_count||0);
-    const cacheNote=data?.cache_hit?`cached ${nfmt(data?.cache_age_seconds,0)}s ago`:'fresh fetch';
-    const pageNote=`${nfmt(data?.pages_scanned,0)} page(s) scanned`+(data?.cursor_available?'; more pages may exist':'');
-    const paginationWarning=data?.pagination_warning?` Warning: ${data.pagination_warning}`:'';
-    write('market-scan-status',`Source: ${data?.source||'public market catalog'} (${cacheNote}; ${pageNote}). Classified ${pass} record(s), showing ${returned}. Trade submitted: no.${paginationWarning}`);
   }
   async function runMarketScan(){
     const button=$('market-scan-button');
     if(button)button.disabled=true;
-    setBadge('market-scan-badge','SCANNING','amber');
-    write('market-scan-status','Requesting a bounded public market catalog sample… no trades can be submitted by this action.');
-    try{renderMarketScan(await getJSON('/api/market-scan'));}
-    catch(err){setBadge('market-scan-badge','SCAN FAILED','red');write('market-scan-status',`Market scan failed safely: ${err?.message||'request failed'}. No trading was attempted.`);}
+    try{
+      setBadge('market-scan-badge','STARTING SCAN','amber');
+      write('market-scan-status','Starting/resuming the background crawl of open Kalshi market pages. This can take time for a large catalog.');
+      const startResponse=await fetch('/api/market-scan',{method:'POST',cache:'no-store',headers:{'Accept':'application/json'}});
+      const startData=await startResponse.json().catch(()=>({}));
+      if(!startResponse.ok)throw new Error(startData?.detail||`/api/market-scan returned ${startResponse.status}`);
+      renderMarketScan(startData);
+      const deadline=Date.now()+10*60*1000;
+      let latest=startData;
+      while(Date.now()<deadline){
+        if(latest.status!=='running')break;
+        await new Promise(resolve=>setTimeout(resolve,1200));
+        latest=await getJSON('/api/market-scan');
+        renderMarketScan(latest);
+      }
+      if(latest.status==='running')write('market-scan-status','The catalog scan is still running in the background. You can navigate away; progress is retained on this service and will continue.');
+    }catch(err){setBadge('market-scan-badge','SCAN FAILED','red');write('market-scan-status',`Market scan could not start or retrieve progress: ${err?.message||'request failed'}. No trade was attempted.`);}
     finally{if(button)button.disabled=false;}
   }
 
+  function renderMarketAnalysis(data){
+    const status=String(data?.status||'idle');
+    write('market-analysis-pool',data?.candidate_pool_size??'—');
+    write('market-analysis-count',data?.analyzed_count??'—');
+    write('market-analysis-entered',data?.paper_entries_created??0);
+    const perf=data?.research_paper_performance||{};
+    write('market-analysis-winrate',hasNum(perf.win_rate_percent)?`${nfmt(perf.win_rate_percent,1)}%`:'—');
+    write('market-analysis-pnl',hasNum(perf.net_pnl_cents)?`Net ${usd(Number(perf.net_pnl_cents)/100)} · ${nfmt(perf.settled_trades||0,0)} settled`:'Separate hold-to-settlement results');
+    if(status==='running'){
+      setBadge('market-analysis-badge','ANALYZING','amber');
+      write('market-analysis-status',`Analyzing a bounded batch. Live orders: ${data?.live_orders_submitted??0}.`);
+    }else if(status==='provider_not_configured'){
+      setBadge('market-analysis-badge','MODEL PROVIDER NEEDED','amber');
+      write('market-analysis-status',data?.last_error||'No probability/evidence provider configured. The bot refuses to invent an edge or trade from market-implied odds alone.');
+    }else if(status==='failed'){
+      setBadge('market-analysis-badge','ANALYSIS FAILED','red');
+      write('market-analysis-status',data?.last_error||'Research batch failed safely; no live orders were attempted.');
+    }else if(status==='complete'){
+      setBadge('market-analysis-badge',`${nfmt(data?.analyzed_count,0)} ANALYZED`,'green');
+      write('market-analysis-status',`Last batch ${time(data?.last_run_at)} · pool ${nfmt(data?.candidate_pool_size,0)} · paper entries ${nfmt(data?.paper_entries_created,0)} · live orders ${data?.live_orders_submitted??0}.`);
+    }else{
+      setBadge('market-analysis-badge','NOT RUN','blue');
+      write('market-analysis-status',data?.last_error||'Waiting for a completed market inventory and a validated model/evidence provider.');
+    }
+    const rows=$('market-analysis-rows');if(!rows)return;rows.replaceChildren();
+    const decisions=Array.isArray(data?.decisions)?data.decisions:[];
+    if(!decisions.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=7;td.className='empty';td.textContent='No current analysis results. No trade was inferred from market-implied probability alone.';tr.appendChild(td);rows.appendChild(tr);return;}
+    for(const item of decisions){
+      const tr=document.createElement('tr');
+      addCell(tr,`${item.ticker||'—'} · ${item.title||'Untitled market'}`);
+      addCell(tr,item.category||'unclassified');
+      addCell(tr,hasNum(item.model_probability_yes_pct)?`${nfmt(item.model_probability_yes_pct,1)}%`:'Unavailable');
+      addCell(tr,`${hasNum(item.yes_ask_cents)?nfmt(item.yes_ask_cents,1)+'¢':'—'} / ${hasNum(item.no_ask_cents)?nfmt(item.no_ask_cents,1)+'¢':'—'}`);
+      addCell(tr,`${hasNum(item.yes_net_edge_cents)?nfmt(item.yes_net_edge_cents,1)+'¢':'—'} / ${hasNum(item.no_net_edge_cents)?nfmt(item.no_net_edge_cents,1)+'¢':'—'}`);
+      const decision=item.paper_trade_created?'PAPER ENTRY':(item.eligible?'EDGE CANDIDATE':(item.status||'BLOCKED')).replaceAll('_',' ').toUpperCase();
+      addCell(tr,decision);
+      const reason=Array.isArray(item.reasons)?item.reasons.join(', '):String(item.note||item.rationale||'');
+      addCell(tr,reason||'Evidence / risk checks passed.');
+      rows.appendChild(tr);
+    }
+  }
+  async function runMarketAnalysis(){
+    const button=$('market-analysis-button');if(button)button.disabled=true;
+    try{
+      setBadge('market-analysis-badge','STARTING','amber');
+      write('market-analysis-status','Requesting an authenticated research batch. This never sends live orders.');
+      const data=await credentialApi('/api/market-analysis/run','POST',{});
+      renderMarketAnalysis(data);
+    }catch(err){setBadge('market-analysis-badge','REQUEST FAILED','red');write('market-analysis-status',`Could not start analysis: ${err?.message||'request failed'}. Unlock the dashboard admin controls first.`);}
+    finally{if(button)button.disabled=false;}
+  }
+
+  function renderMarketAutomation(data){
+    const enabled=Boolean(data?.autopilot_enabled);
+    const canEnable=Boolean(data?.provider_configured&&data?.autopaper_environment_gate&&data?.paper_mode_safe);
+    const logged=Boolean(data?.admin_authenticated);
+    const badge=$('market-autopilot-badge');
+    if(badge){badge.textContent=enabled?'AUTOPILOT ON':'AUTOPILOT OFF';badge.className=enabled?'badge green':'badge amber';}
+    const button=$('market-autopilot-toggle');
+    if(button){button.setAttribute('aria-pressed',enabled?'true':'false');button.textContent=enabled?'Pause autopilot':'Start autopilot';button.disabled=!logged||(!enabled&&!canEnable);button.title=!logged?'Unlock the dashboard admin controls first':(enabled?'Pause new automatic scans and research paper entries':(canEnable?'Start automatic market scan and eligible paper research trades':'Configure the model/evidence provider, set MARKET_AUTOPAPER_ENABLED=true, and keep paper mode safe first'));}
+    let message=data?.note||'Autopilot state loaded.';
+    if(!logged&&!enabled)message='Unlock secure controls inside “Connect Kalshi account” to start autopilot. It can only create eligible research paper entries, never live orders.';
+    if(enabled)message='Automatic catalog scanning and scheduled research are enabled. Eligible opportunities may create segregated paper research entries only; no live orders are sent.';
+    else if(!data?.provider_configured)message='Off: configure and validate the HTTPS model/evidence provider first. No probability is invented and no automatic research trades are created.';
+    else if(!data?.autopaper_environment_gate)message='Off: MARKET_AUTOPAPER_ENABLED must be true as an environment safety gate before dashboard autopilot can create paper research entries.';
+    else if(!data?.paper_mode_safe)message='Off: set TRADING_MODE=paper and LIVE_TRADING_ENABLED=false before enabling the automated paper pipeline.';
+    write('market-autopilot-status',message);
+  }
+  async function toggleMarketAutomation(){
+    const button=$('market-autopilot-toggle');if(button)button.disabled=true;
+    try{
+      const current=await getJSON('/api/market-automation');
+      const enabled=!Boolean(current.autopilot_enabled);
+      if(enabled&&!current.admin_authenticated){write('market-autopilot-status','Unlock secure controls inside “Connect Kalshi account” first.');return;}
+      if(enabled&&!current.provider_configured){write('market-autopilot-status','Cannot start: the HTTPS probability/evidence provider is not configured.');return;}
+      if(enabled&&!current.autopaper_environment_gate){write('market-autopilot-status','Cannot start: set MARKET_AUTOPAPER_ENABLED=true after validating the provider and the separate research paper journal.');return;}
+      if(enabled&&!current.paper_mode_safe){write('market-autopilot-status','Cannot start: safe paper-mode deployment settings are required.');return;}
+      const result=await credentialApi('/api/market-automation','POST',{enabled});
+      renderMarketAutomation(result);
+      await refresh();
+    }catch(err){write('market-autopilot-status',`Automation toggle failed closed: ${err?.message||'request failed'}. No live orders are possible from this control.`);}
+    finally{if(button){const state=await getJSON('/api/market-automation').catch(()=>null);if(state)renderMarketAutomation(state);}}
+  }
   function renderTradingMode(status, liveReady, multiUser){
     const safePaper=Boolean(status?.paper_execution_enabled)&&status?.effective_mode==='paper';
     const paper=$('mode-paper'),real=$('mode-real');
@@ -1271,10 +1463,13 @@
   }
   async function getJSON(url){const response=await fetch(url,{cache:'no-store',headers:{'Accept':'application/json'}});if(!response.ok)throw new Error(`${url} returned ${response.status}`);return response.json();}
   async function refresh(){
-    const [dashboardResult,diagResult,analyticsResult,learningResult,modeResult,liveReadyResult,multiUserResult]=await Promise.allSettled([
+    const [dashboardResult,diagResult,analyticsResult,learningResult,modeResult,liveReadyResult,multiUserResult,marketScanResult,marketAnalysisResult,marketAutomationResult]=await Promise.allSettled([
       getJSON('/api/dashboard'), getJSON('/diagnostics/market-data'), getJSON('/api/analytics'), getJSON('/api/learning'),
-      getJSON('/api/trading-mode'),getJSON('/api/live-readiness'),getJSON('/api/multi-user-readiness')
+      getJSON('/api/trading-mode'),getJSON('/api/live-readiness'),getJSON('/api/multi-user-readiness'),getJSON('/api/market-scan'),getJSON('/api/market-analysis'),getJSON('/api/market-automation')
     ]);
+    if(marketScanResult.status==='fulfilled'){try{renderMarketScan(marketScanResult.value);}catch(err){console.error('[BTC dashboard] market scan panel failed',err);}}
+    if(marketAnalysisResult.status==='fulfilled'){try{renderMarketAnalysis(marketAnalysisResult.value);}catch(err){console.error('[BTC dashboard] market analysis panel failed',err);}}
+    if(marketAutomationResult.status==='fulfilled'){try{renderMarketAutomation(marketAutomationResult.value);}catch(err){console.error('[BTC dashboard] market automation panel failed',err);}}
     if(modeResult.status==='fulfilled'&&liveReadyResult.status==='fulfilled'&&multiUserResult.status==='fulfilled'){
       try{renderTradingMode(modeResult.value,liveReadyResult.value,multiUserResult.value);}catch(err){console.error('[BTC dashboard] trading mode panel failed',err);}
     }else{write('mode-api-status','Mode/readiness check unavailable; live trading remains unavailable by default.');}
@@ -1349,8 +1544,87 @@
       write('last-refresh',`Last refreshed ${new Date().toLocaleTimeString()}. Automatic refresh every 5 seconds.`);
     }
   }
+  async function credentialApi(url,method='GET',body){
+    const options={method,cache:'no-store',credentials:'same-origin',headers:{'Accept':'application/json'}};
+    if(body!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
+    const response=await fetch(url,options);const payload=await response.json().catch(()=>({}));
+    if(!response.ok){const detail=payload?.detail;throw new Error(typeof detail==='string'?detail:`Request failed (HTTP ${response.status}).`);}
+    return payload;
+  }
+  async function refreshAdminControls(){
+    const sess=await credentialApi('/api/admin/session');
+    const logged=Boolean(sess.authenticated);
+    const login=$('admin-login-controls'),controls=$('kalshi-admin-controls');
+    if(login)login.hidden=logged;if(controls)controls.hidden=!logged;
+    const researchButton=$('market-analysis-button');if(researchButton){researchButton.disabled=!logged;researchButton.textContent=logged?'Run research batch':'Run research batch · unlock admin first';}
+    const automationButton=$('market-autopilot-toggle');if(automationButton&&!logged){const state=await getJSON('/api/market-automation').catch(()=>null);if(!state?.autopilot_enabled)automationButton.disabled=true;}
+    write('admin-session-status',sess.admin_secret_configured?'Admin controls are locked until authenticated.':'Credential vault unavailable: set KALSHI_VAULT_ADMIN_SECRET (at least 32 random characters) on the Web Service.');
+    if(logged){
+      const saved=await credentialApi('/api/kalshi-credentials');
+      const env=String($('kalshi-cred-environment')?.value||'demo');
+      const item=saved.configured_environments?.[env];
+      write('kalshi-credential-status',`Saved Demo: ${saved.demo_configured?'yes':'no'} · Production: ${saved.production_configured?'yes':'no'}. Selected ${env}: ${item?`configured (${item.key_id_hint}), updated ${time(item.updated_at)}`:'not saved'}. Private keys are never returned.`);
+    }
+  }
+  $('admin-login-button')?.addEventListener('click',async()=>{
+    const input=$('admin-secret-input');const secret=String(input?.value||'');
+    try{await credentialApi('/api/admin/login','POST',{secret});if(input)input.value='';await refreshAdminControls();}
+    catch(err){write('admin-session-status',`Unlock failed: ${err?.message||'request failed'}`);}
+  });
+  $('admin-logout-button')?.addEventListener('click',async()=>{
+    try{await credentialApi('/api/admin/logout','POST',{});await refreshAdminControls();}
+    catch(err){write('admin-session-status',`Lock request failed: ${err?.message||'request failed'}`);}
+  });
+  $('kalshi-cred-environment')?.addEventListener('change',()=>{refreshAdminControls().catch(err=>write('kalshi-credential-status',err?.message||'Unable to load credential status.'));});
+  $('kalshi-save-credentials')?.addEventListener('click',async()=>{
+    const button=$('kalshi-save-credentials');
+    const environment=String($('kalshi-cred-environment')?.value||'demo');
+    const keyId=String($('kalshi-api-key-id')?.value||'');
+    const file=$('kalshi-private-key-file')?.files?.[0];
+    const acknowledged=Boolean($('kalshi-authorization-ack')?.checked);
+    if(!acknowledged){write('kalshi-credential-status','Please read and acknowledge the account-access and risk notice before connecting.');return;}
+    if(!keyId.trim()||!file){write('kalshi-credential-status','Enter the API Key ID and choose the matching private-key file.');return;}
+    const filename=String(file.name||'').toLowerCase();
+    if(!/\.(key|pem|txt)$/.test(filename)){write('kalshi-credential-status','Choose a .key, .pem, or .txt private-key file.');return;}
+    if(file.size<100||file.size>16000){write('kalshi-credential-status','Private-key file must be between 100 bytes and 16 KB.');return;}
+    if(button){button.disabled=true;button.textContent='Connecting securely…';}
+    try{
+      const pem=await file.text();
+      if(!pem.includes('-----BEGIN')||!pem.includes('PRIVATE KEY-----'))throw new Error('The selected file does not look like a PEM private key. Choose the original matching private key file.');
+      const saved=await credentialApi('/api/kalshi-credentials','PUT',{environment,api_key_id:keyId,private_key_pem:pem});
+      $('kalshi-api-key-id').value='';$('kalshi-private-key-file').value='';
+      write('kalshi-credential-status',`Key pair saved and encrypted (${saved.key_id_hint}). Checking credentials with a read-only request…`);
+      try{
+        const result=await credentialApi('/api/kalshi-credentials/verify','POST',{environment});
+        const balance=hasNum(result.balance_cents)?usd(Number(result.balance_cents)/100):'not returned';
+        write('kalshi-credential-status',`Connected: ${environment} key verified by read-only balance request (${balance}). Credentials are encrypted at rest. No orders were placed; live execution remains locked.`);
+      }catch(verifyErr){
+        write('kalshi-credential-status',`Key pair saved encrypted (${saved.key_id_hint}), but read-only verification failed: ${verifyErr?.message||'request failed'}. Check that the Key ID and file match the selected environment, then choose “Verify saved key” to retry. No orders were placed.`);
+      }
+      const finalStatus=String($('kalshi-credential-status')?.textContent||'Credentials processed.');
+      await refreshAdminControls();
+      write('kalshi-credential-status',finalStatus);
+    }catch(err){write('kalshi-credential-status',`Connection failed: ${err?.message||'request failed'}`);}
+    finally{if(button){button.disabled=false;button.textContent='Connect Kalshi account';}}
+  });
+  $('kalshi-verify-credentials')?.addEventListener('click',async()=>{
+    const environment=String($('kalshi-cred-environment')?.value||'demo');
+    try{const result=await credentialApi('/api/kalshi-credentials/verify','POST',{environment});
+      const balance=hasNum(result.balance_cents)?usd(Number(result.balance_cents)/100):'not returned';
+      write('kalshi-credential-status',`${environment} credentials verified with a read-only balance request. Balance: ${balance}. Orders placed: no.`);
+    }catch(err){write('kalshi-credential-status',`Read-only verification failed: ${err?.message||'request failed'}`);}
+  });
+  $('kalshi-clear-credentials')?.addEventListener('click',async()=>{
+    const environment=String($('kalshi-cred-environment')?.value||'demo');
+    if(!window.confirm(`Delete the saved ${environment} key pair from the encrypted vault?`))return;
+    try{await credentialApi(`/api/kalshi-credentials/${encodeURIComponent(environment)}`,'DELETE');await refreshAdminControls();}
+    catch(err){write('kalshi-credential-status',`Delete failed: ${err?.message||'request failed'}`);}
+  });
+  refreshAdminControls().catch(()=>{});
   $('mode-paper')?.addEventListener('click',()=>selectTradingMode('paper'));
   $('market-scan-button')?.addEventListener('click',runMarketScan);
+  $('market-analysis-button')?.addEventListener('click',runMarketAnalysis);
+  $('market-autopilot-toggle')?.addEventListener('click',toggleMarketAutomation);
   $('mode-real')?.addEventListener('click',()=>selectTradingMode('real'));
   refresh();window.setInterval(refresh,5000);window.setInterval(updateIndicatorCountdown,1000);window.setInterval(updateNextSignalCountdown,1000);
 })();

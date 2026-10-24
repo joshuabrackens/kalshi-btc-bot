@@ -211,6 +211,13 @@ def ensure_schema(conn: DatabaseConnection) -> None:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
                     else:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        # Encrypted, per-environment Kalshi credentials. Only ciphertext and a non-secret
+        # key hint are stored here; the Fernet encryption key stays in Render secrets.
+        conn.execute("""CREATE TABLE IF NOT EXISTS kalshi_credentials (
+            environment TEXT PRIMARY KEY, key_id_hint TEXT NOT NULL,
+            encrypted_payload TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS runtime_settings (
+            setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_gainzalgo_queue ON gainzalgo_signals(processed_at, id)")
         # Preserve the alert audit trail if old versions stored duplicate fingerprints,
         # but clear duplicate keys before enforcing idempotency for concurrent webhooks.
@@ -269,6 +276,55 @@ def ensure_schema(conn: DatabaseConnection) -> None:
         )""")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_learning_trade_id ON trade_learning(trade_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_settled ON trade_learning(settled_at, trade_id)")
+        # Separate research-market journal: it never shares the BTC 15m lifecycle,
+        # risk accounting, or live-order tables. Orders here are simulated only.
+        research_id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        research_number_type = "DOUBLE PRECISION" if backend == "postgresql" else "REAL"
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS market_research_decisions (
+            id {research_id_type}, evaluated_at TEXT NOT NULL, market_ticker TEXT NOT NULL,
+            category TEXT, decision TEXT NOT NULL, selected_side TEXT,
+            model_probability_yes {research_number_type}, expected_net_edge_cents {research_number_type},
+            model_id TEXT, model_version TEXT, payload_json TEXT NOT NULL
+        )""")
+        research_trade_id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS market_research_paper_trades (
+            id {research_trade_id_type}, created_at TEXT NOT NULL, settled_at TEXT,
+            market_ticker TEXT NOT NULL, category TEXT NOT NULL, side TEXT NOT NULL,
+            contracts INTEGER NOT NULL, entry_cents {research_number_type} NOT NULL,
+            estimated_fee_cents {research_number_type} NOT NULL, estimated_slippage_cents {research_number_type} NOT NULL DEFAULT 0,
+            model_probability_yes {research_number_type} NOT NULL, model_id TEXT NOT NULL, model_version TEXT NOT NULL,
+            expected_net_edge_cents {research_number_type} NOT NULL,
+            status TEXT NOT NULL, result TEXT, pnl_cents {research_number_type}, source_snapshot_json TEXT NOT NULL
+        )""")
+        research_trade_columns = _existing_columns(conn, "market_research_paper_trades")
+        if "estimated_slippage_cents" not in research_trade_columns:
+            slippage_type = "DOUBLE PRECISION" if backend == "postgresql" else "REAL"
+            if backend == "postgresql":
+                conn.execute("ALTER TABLE market_research_paper_trades ADD COLUMN IF NOT EXISTS estimated_slippage_cents DOUBLE PRECISION NOT NULL DEFAULT 0")
+            else:
+                conn.execute("ALTER TABLE market_research_paper_trades ADD COLUMN estimated_slippage_cents REAL NOT NULL DEFAULT 0")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_market_research_paper_unique ON market_research_paper_trades(market_ticker,model_id,model_version)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_research_paper_open ON market_research_paper_trades(status, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_research_decisions_recent ON market_research_decisions(id)")
+        # Chronological model validation is built from predictions recorded before
+        # an event's final resolution. These tables keep labels separate from the
+        # prediction journal and record retry cadence to avoid hammering resolved
+        # or still-open market detail endpoints on every pipeline cycle.
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS market_research_prediction_outcomes (
+            id {research_id_type}, market_ticker TEXT NOT NULL, category TEXT NOT NULL,
+            model_id TEXT NOT NULL, model_version TEXT NOT NULL, evaluated_at TEXT NOT NULL,
+            settled_at TEXT NOT NULL, model_probability_yes {research_number_type} NOT NULL,
+            actual_outcome_yes INTEGER NOT NULL CHECK(actual_outcome_yes IN (0,1)),
+            outcome_source TEXT NOT NULL, recorded_at TEXT NOT NULL,
+            UNIQUE(market_ticker, model_id, model_version)
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_prediction_outcomes_model ON market_research_prediction_outcomes(category,model_id,model_version,settled_at)")
+        conn.execute(f"""CREATE TABLE IF NOT EXISTS market_research_prediction_checks (
+            id {research_id_type}, market_ticker TEXT NOT NULL, model_id TEXT NOT NULL,
+            model_version TEXT NOT NULL, last_checked_at TEXT NOT NULL, check_status TEXT NOT NULL,
+            UNIQUE(market_ticker, model_id, model_version)
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_prediction_checks_recent ON market_research_prediction_checks(last_checked_at)")
         # Append-only record of adaptive target changes. The current-state table
         # remains compact, while this history permits transparent review/reversal.
         policy_history_id_type = "BIGSERIAL PRIMARY KEY" if backend == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
