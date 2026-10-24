@@ -300,6 +300,7 @@ class MarketDecisionPipeline:
             selected = [candidates[(start + i) % len(candidates)] for i in range(min(max_per_cycle, len(candidates)))]
             self._cursor = (start + len(selected)) % max(1, len(candidates))
             decisions: list[dict[str, Any]] = []
+            decision_ids: list[int] = []
             eligible_for_entry: list[dict[str, Any]] = []
             entered = 0
             blocked = 0
@@ -391,17 +392,24 @@ class MarketDecisionPipeline:
                         result["paper_selection_status"] = "not_eligible"
                         if result.get("eligible") and category in enabled_categories:
                             eligible_for_entry.append(result)
+                        result["batch_persistence_phase"] = "candidate_evaluated_pre_rank"
                         decisions.append(result)
+                        decision_ids.append(self._record_decision_with_retry(conn, result))
                         blocked += int(not result.get("eligible"))
                     except Exception as exc:
                         # Log only allowlisted provider codes; never arbitrary response text/tokens.
                         error_code = _safe_market_analysis_error(exc)
                         log.warning("Market analysis skipped ticker=%s error_code=%s", ticker[:120], error_code)
                         blocked += 1
-                        decisions.append({"ticker": ticker, "title": str(row.get("title") or "")[:300],
-                                          "category": row.get("category"), "status": "analysis_error",
-                                          "eligible": False, "trade_submitted": False,
-                                          "reasons": ["market_analysis_unavailable", error_code]})
+                        failed_result = {
+                            "ticker": ticker, "title": str(row.get("title") or "")[:300],
+                            "category": row.get("category"), "status": "analysis_error",
+                            "eligible": False, "trade_submitted": False,
+                            "reasons": ["market_analysis_unavailable", error_code],
+                            "batch_persistence_phase": "candidate_evaluated_pre_rank",
+                        }
+                        decisions.append(failed_result)
+                        decision_ids.append(self._record_decision_with_retry(conn, failed_result))
                 # Rank all fully eligible results from this analyzed batch before opening anything.
                 # This prevents the first market returned by the scanner from winning merely by order.
                 eligible_for_entry = [
@@ -530,7 +538,13 @@ class MarketDecisionPipeline:
                             "is_best_candidate": index == 1,
                             "selected_for_attempt": bool(candidate.get("paper_selection", {}).get("selected_for_attempt", False)),
                         })
-                self._record_decisions_with_retry(conn, decisions)
+                # Each completed candidate was committed immediately after evaluation.
+                # Update those rows in place with final rank/entry-gate state instead of
+                # inserting duplicates. If a later market request stalls or the process
+                # restarts, already evaluated forecasts remain durably auditable.
+                for decision in decisions:
+                    decision["batch_persistence_phase"] = "batch_finalized"
+                self._update_decisions_with_retry(conn, decision_ids, decisions)
             finally:
                 conn.close()
             with self._lock:
@@ -551,20 +565,21 @@ class MarketDecisionPipeline:
             with self._lock:
                 self._state.update(status="failed", updated_at=_stamp(), last_error="Market research pipeline could not complete; no live order was attempted.", live_orders_submitted=0)
 
-    def _record_decision(self, conn: Any, result: Mapping[str, Any]) -> None:
+    def _record_decision(self, conn: Any, result: Mapping[str, Any]) -> int | None:
         payload = json.dumps(dict(result), ensure_ascii=False, allow_nan=False, default=str)[:100_000]
         model = result.get("model") if isinstance(result.get("model"), Mapping) else {}
         raw_probability = _num(model.get("model_probability_yes"), float("nan"))
         probability = raw_probability if 0.0 < raw_probability < 1.0 else None
         model_id = str(model.get("model_id") or "")[:100] or None
         model_version = str(model.get("model_version") or "")[:100] or None
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO market_research_decisions
                (evaluated_at,market_ticker,category,decision,selected_side,model_probability_yes,expected_net_edge_cents,model_id,model_version,payload_json)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (_stamp(), result.get("ticker"), result.get("category"), result.get("status"), result.get("selected_side"),
              probability, result.get("expected_net_edge_cents"), model_id, model_version, payload),
         )
+        return int(cur.lastrowid) if cur.lastrowid is not None else None
 
     def _collect_resolved_predictions(self, conn: Any, *, max_markets: int | None = None) -> dict[str, int]:
         """Label earlier predictions once a market resolves, for real calibration.
@@ -694,6 +709,58 @@ class MarketDecisionPipeline:
                             type(exc).__name__, attempt + 1)
                 time.sleep(0.1 * (attempt + 1))
         return False, "research_paper_entry_retry_exhausted"
+
+    def _record_decision_with_retry(self, conn: Any, result: Mapping[str, Any]) -> int:
+        """Commit one evaluated market before spending time on the next market request."""
+        for attempt in range(3):
+            try:
+                row_id = self._record_decision(conn, result)
+                if row_id is None:
+                    raise RuntimeError("research_decision_insert_missing_id")
+                conn.commit()
+                return row_id
+            except Exception as exc:
+                conn.rollback()
+                if not _retryable_database_error(exc) or attempt >= 2:
+                    raise
+                log.warning("Research decision checkpoint retry after %s (attempt %s/3).",
+                            type(exc).__name__, attempt + 1)
+                time.sleep(0.1 * (attempt + 1))
+        raise RuntimeError("research_decision_checkpoint_retry_exhausted")
+
+    def _update_decisions_with_retry(
+        self, conn: Any, decision_ids: list[int], decisions: list[Mapping[str, Any]],
+    ) -> None:
+        """Update checkpointed rows with the final rank and paper-entry gate results."""
+        if len(decision_ids) != len(decisions):
+            raise RuntimeError("research_decision_checkpoint_count_mismatch")
+        for attempt in range(3):
+            try:
+                for row_id, result in zip(decision_ids, decisions):
+                    payload = json.dumps(dict(result), ensure_ascii=False, allow_nan=False, default=str)[:100_000]
+                    model = result.get("model") if isinstance(result.get("model"), Mapping) else {}
+                    raw_probability = _num(model.get("model_probability_yes"), float("nan"))
+                    probability = raw_probability if 0.0 < raw_probability < 1.0 else None
+                    model_id = str(model.get("model_id") or "")[:100] or None
+                    model_version = str(model.get("model_version") or "")[:100] or None
+                    conn.execute(
+                        """UPDATE market_research_decisions
+                           SET decision=?,selected_side=?,model_probability_yes=?,
+                               expected_net_edge_cents=?,model_id=?,model_version=?,payload_json=?
+                           WHERE id=?""",
+                        (result.get("status"), result.get("selected_side"), probability,
+                         result.get("expected_net_edge_cents"), model_id, model_version, payload, int(row_id)),
+                    )
+                conn.commit()
+                return
+            except Exception as exc:
+                conn.rollback()
+                if not _retryable_database_error(exc) or attempt >= 2:
+                    raise
+                log.warning("Research decision finalization retry after %s (attempt %s/3).",
+                            type(exc).__name__, attempt + 1)
+                time.sleep(0.1 * (attempt + 1))
+        raise RuntimeError("research_decision_finalization_retry_exhausted")
 
     def _record_decisions_with_retry(self, conn: Any, decisions: list[dict[str, Any]]) -> None:
         """Retry decision-journal writes using cached decisions; never call the model again."""
