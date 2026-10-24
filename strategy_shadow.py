@@ -388,12 +388,12 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
         if prospective_actual else None
     )
     prospective_target_supported = bool(
-        len(prospective_shadow) >= 20
+        len(prospective_shadow_slippage_adjusted) >= 20
         and prospective_baseline_settled_count >= 20
         and prospective_pending_after_baseline_settlement == 0
-        and prospective_shadow_metrics["positive_net_rate_percent"] is not None
-        and prospective_shadow_metrics["positive_net_rate_percent"] >= float(target_positive_net_rate_percent)
-        and prospective_shadow_metrics["net_pnl_cents"] > 0
+        and prospective_shadow_slippage_metrics["positive_net_rate_percent"] is not None
+        and prospective_shadow_slippage_metrics["positive_net_rate_percent"] >= float(target_positive_net_rate_percent)
+        and prospective_shadow_slippage_metrics["net_pnl_cents"] > 0
     )
     actual_metrics = _metrics(paired_actual)
     shadow_metrics = _metrics(paired_shadow)
