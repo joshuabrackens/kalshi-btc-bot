@@ -378,3 +378,45 @@ def test_manual_research_batch_can_open_one_paper_position_with_autopilot_off(tm
             set_market_autopilot_enabled(False)
             for suffix in ("", "-wal", "-shm"):
                 Path(str(tmp_path / "manual-one-shot.sqlite3") + suffix).unlink(missing_ok=True)
+
+def test_pipeline_opens_multiple_top_ranked_research_paper_positions(tmp_path):
+    db_path = tmp_path / "multi-position.sqlite3"
+    tickers = ["KXSPORTS-MULTI-A", "KXSPORTS-MULTI-B", "KXSPORTS-MULTI-C", "KXSPORTS-MULTI-D"]
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "MARKET_RESEARCH_MAX_OPEN_POSITIONS": "5", "MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE": "3",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(True)
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": ticker, "title": f"Will team win? {ticker}", "category": "sports"}
+                for ticker in tickers
+            ]},
+            lambda ticker: {"market": _market(ticker=ticker)},
+            lambda _ticker: _book(),
+            _model,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "complete"
+            assert result["paper_entries_created"] == 3
+            assert result["live_orders_submitted"] == 0
+            assert sum(bool(row.get("paper_trade_created")) for row in result["decisions"]) == 3
+            opened = [row for row in result["decisions"] if row.get("paper_trade_created")]
+            assert all(row["paper_selection"]["selected_for_attempt"] for row in opened)
+            conn = db_store.connect_database()
+            try:
+                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'").fetchone()[0] == 3
+                assert conn.execute("SELECT COUNT(DISTINCT market_ticker) FROM market_research_paper_trades").fetchone()[0] == 3
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
+
