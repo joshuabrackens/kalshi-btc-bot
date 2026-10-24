@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from math import log1p
 from typing import Any, Callable, Mapping
 
 from db_store import connect_database, ensure_schema
@@ -45,6 +46,50 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _paper_candidate_rank(result: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
+    """Score only already-eligible opportunities; this is a ranking score, not a win probability."""
+    side = str(result.get("selected_side") or "").upper()
+    yes_probability = _num(result.get("model_probability_yes_pct"), -1)
+    selected_probability = (
+        yes_probability if side == "YES" else
+        100.0 - yes_probability if side == "NO" and yes_probability >= 0 else 0.0
+    )
+    edge = max(0.0, _num(result.get("expected_net_edge_cents"), 0.0))
+    depth_raw = result.get("yes_ask_depth_contracts") if side == "YES" else result.get("no_ask_depth_contracts")
+    spread_raw = result.get("yes_spread_cents") if side == "YES" else result.get("no_spread_cents")
+    depth = max(0.0, _num(depth_raw, 0.0))
+    volume = max(0.0, _num(result.get("volume_24h"), 0.0))
+    spread = max(0.0, _num(spread_raw, 5.0))
+    entry = max(0.0, _num(result.get("entry_ask_cents"), 100.0))
+
+    # Fixed scales keep ranking comparable from batch to batch.
+    edge_score = min(edge / 50.0, 1.0)
+    depth_score = log1p(min(depth, 1000.0)) / log1p(1000.0)
+    volume_score = log1p(min(volume, 1_000_000.0)) / log1p(1_000_000.0)
+    odds_score = max(0.0, min(selected_probability / 100.0, 1.0))
+    spread_score = max(0.0, 1.0 - min(spread, 5.0) / 5.0)
+    components = {
+        "net_edge": round(edge_score * 60.0, 3),
+        "selected_side_ask_depth": round(depth_score * 18.0, 3),
+        "volume_24h": round(volume_score * 12.0, 3),
+        "model_estimated_selected_side_probability": round(odds_score * 7.0, 3),
+        "spread_efficiency": round(spread_score * 3.0, 3),
+    }
+    score = round(sum(components.values()), 3)
+    return score, {
+        "rank_score": score,
+        "rank_score_is_probability": False,
+        "score_components": components,
+        "expected_net_edge_cents": round(edge, 3),
+        "selected_side_probability_percent": round(selected_probability, 3),
+        "selected_side_ask_depth_contracts": round(depth, 3),
+        "volume_24h": round(volume, 3),
+        "selected_side_spread_cents": round(spread, 3),
+        "entry_ask_cents": round(entry, 3),
+        "method": "60% net edge, 18% selected-side depth, 12% 24h volume, 7% model-estimated selected-side probability, 3% spread efficiency",
+    }
+
+
 def _stamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -70,8 +115,10 @@ class MarketDecisionPipeline:
         self._model_provider = model_provider
         self._lock = threading.RLock()
         self._job_lock = threading.Lock()
+        self._settlement_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._scheduler_started = False
+        self._manual_entry_once_pending = False
         self._cursor = 0
         self._state: dict[str, Any] = self._empty()
 
@@ -96,21 +143,26 @@ class MarketDecisionPipeline:
             result["autopaper_enabled"] = _bool_env("MARKET_AUTOPAPER_ENABLED", False) and market_autopilot_enabled()
             return result
 
-    def start(self, force: bool = True) -> dict[str, Any]:
+    def start(self, force: bool = True, *, paper_entry_once: bool = False) -> dict[str, Any]:
         with self._job_lock:
             with self._lock:
                 if self._state.get("status") == "running":
+                    if paper_entry_once:
+                        self._manual_entry_once_pending = True
                     return self.snapshot()
                 if not force and not provider_configured():
                     self._state.update(status="provider_not_configured", updated_at=_stamp(), provider_configured=False,
                                        last_error="Configure MARKET_ANALYSIS_PROVIDER_URL and MARKET_ANALYSIS_PROVIDER_API_KEY to provide calibrated probabilities and source-attributed current evidence.")
                     return self.snapshot()
                 self._state.update(status="running", updated_at=_stamp(), last_error=None)
-            self._thread = threading.Thread(target=self._run, name="market-research-decision-pipeline", daemon=True)
+            self._thread = threading.Thread(
+                target=self._run, args=(paper_entry_once,),
+                name="market-research-decision-pipeline", daemon=True,
+            )
             self._thread.start()
             return self.snapshot()
 
-    def _run(self) -> None:
+    def _run(self, paper_entry_once: bool = False) -> None:
         with self._lock:
             self._state.update(status="running", updated_at=_stamp(), last_run_at=_stamp(), last_error=None,
                                provider_configured=provider_configured(), paper_entries_created=0,
@@ -141,9 +193,9 @@ class MarketDecisionPipeline:
             selected = [candidates[(start + i) % len(candidates)] for i in range(min(max_per_cycle, len(candidates)))]
             self._cursor = (start + len(selected)) % max(1, len(candidates))
             decisions: list[dict[str, Any]] = []
+            eligible_for_entry: list[dict[str, Any]] = []
             entered = 0
             blocked = 0
-            max_new_trades = _int_env("MARKET_RESEARCH_MAX_NEW_TRADES_PER_RUN", 5, 1, 20)
             # If there is no current calibrated probability/news provider, do not
             # fetch order books or fabricate an edge. Surface the blocker visibly.
             if not provider_configured():
@@ -176,7 +228,8 @@ class MarketDecisionPipeline:
             conn = connect_database()
             try:
                 ensure_schema(conn)
-                self._settle_open_trades(conn)
+                with self._settlement_lock:
+                    self._settle_open_trades(conn)
                 self._collect_resolved_predictions(conn)
                 for row in selected:
                     ticker = row["ticker"]
@@ -217,24 +270,11 @@ class MarketDecisionPipeline:
                             result["eligible"] = False
                             result["status"] = "category_paper_disabled"
                             result.setdefault("reasons", []).append("category_not_allowlisted_for_paper")
-                        trade_created = False
-                        from runtime_controls import market_autopilot_enabled
-                        if result.get("eligible") and _bool_env("MARKET_AUTOPAPER_ENABLED", False) and market_autopilot_enabled(conn) and category in enabled_categories:
-                            if entered >= max_new_trades:
-                                result.setdefault("reasons", []).append("per_run_paper_entry_cap_reached")
-                                result["paper_trade_block_reason"] = "per_run_paper_entry_cap_reached"
-                                trade_created = False
-                            else:
-                                trade_created, risk_reason = self._create_paper_trade(conn, result)
-                                if risk_reason:
-                                    result["paper_trade_block_reason"] = risk_reason
-                                    result.setdefault("reasons", []).append(risk_reason)
-                            result["paper_trade_created"] = trade_created
-                        else:
-                            result["paper_trade_created"] = False
-                        self._record_decision(conn, result)
+                        result["paper_trade_created"] = False
+                        result["paper_selection_status"] = "not_eligible"
+                        if result.get("eligible") and category in enabled_categories:
+                            eligible_for_entry.append(result)
                         decisions.append(result)
-                        entered += int(trade_created)
                         blocked += int(not result.get("eligible"))
                     except Exception as exc:
                         # Continue to the next market; don't expose provider text/tokens.
@@ -244,6 +284,136 @@ class MarketDecisionPipeline:
                                           "category": row.get("category"), "status": "analysis_error",
                                           "eligible": False, "trade_submitted": False,
                                           "reasons": ["market_analysis_unavailable", type(exc).__name__]})
+                # Rank all fully eligible results from this analyzed batch before opening anything.
+                # This prevents the first market returned by the scanner from winning merely by order.
+                eligible_for_entry = [
+                    item for item in eligible_for_entry
+                    if isinstance(item.get("ticker"), str)
+                    and isinstance(item.get("model"), Mapping)
+                    and item.get("selected_side") in {"YES", "NO"}
+                ]
+                already_traded: list[dict[str, Any]] = []
+                ranked_candidates: list[tuple[dict[str, Any], float, dict[str, Any]]] = []
+                for item in eligible_for_entry:
+                    model = item.get("model") if isinstance(item.get("model"), Mapping) else {}
+                    model_id = str(model.get("model_id") or "")[:100]
+                    model_version = str(model.get("model_version") or "")[:100]
+                    prior = conn.execute(
+                        """SELECT id FROM market_research_paper_trades
+                           WHERE market_ticker=? AND model_id=? AND model_version=? LIMIT 1""",
+                        (item.get("ticker"), model_id, model_version),
+                    ).fetchone() if model_id and model_version else None
+                    if prior:
+                        item["paper_selection_status"] = "already_traded_for_model_version"
+                        item["paper_trade_block_reason"] = "duplicate_market_model_paper_trade"
+                        item.setdefault("reasons", []).append("already_paper_traded_for_this_model_version")
+                        already_traded.append(item)
+                        continue
+                    score, details = _paper_candidate_rank(item)
+                    ranked_candidates.append((item, score, details))
+                ranked_candidates.sort(
+                    key=lambda packed: (
+                        packed[1],
+                        _num(packed[0].get("expected_net_edge_cents"), 0.0),
+                        _num(packed[2].get("selected_side_ask_depth_contracts"), 0.0),
+                        _num(packed[2].get("selected_side_probability_percent"), 0.0),
+                        _num(packed[2].get("volume_24h"), 0.0),
+                        -_num(packed[2].get("selected_side_spread_cents"), 5.0),
+                        -_num(packed[2].get("entry_ask_cents"), 100.0),
+                    ),
+                    reverse=True,
+                )
+                for index, (item, score, details) in enumerate(ranked_candidates, start=1):
+                    item["paper_selection"] = {
+                        **details, "rank": index, "eligible_candidate_count": len(ranked_candidates),
+                        "is_best_candidate": index == 1,
+                    }
+                    item["paper_selection_status"] = (
+                        "best_eligible_candidate" if index == 1 else "eligible_not_selected_as_best"
+                    )
+                    if index > 1:
+                        item.setdefault("reasons", []).append("another_eligible_candidate_ranked_higher_this_batch")
+                for item in already_traded:
+                    item["paper_selection"] = {
+                        "rank": None, "rank_score": None, "rank_score_is_probability": False,
+                        "eligible_candidate_count": len(ranked_candidates), "is_best_candidate": False,
+                    }
+
+                from runtime_controls import market_autopilot_enabled
+                if self._manual_entry_once_pending:
+                    # If the user clicks "Run research batch" while an automatic
+                    # batch is already in progress, let that in-flight batch honour
+                    # the single manual paper-entry request once it finishes ranking.
+                    paper_entry_once = True
+                    self._manual_entry_once_pending = False
+                autopilot_on = bool(market_autopilot_enabled(conn))
+                paper_environment_safe = (
+                    _bool_env("MARKET_AUTOPAPER_ENABLED", False)
+                    and os.getenv("TRADING_MODE", "paper").strip().lower() == "paper"
+                    and not _bool_env("LIVE_TRADING_ENABLED", False)
+                )
+                entry_authorized = paper_environment_safe and (autopilot_on or paper_entry_once)
+                open_count = int(conn.execute(
+                    "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
+                ).fetchone()[0] or 0)
+
+                if ranked_candidates:
+                    best = ranked_candidates[0][0]
+                    best["paper_selection_status"] = "best_eligible_candidate_not_opened"
+                    if not paper_environment_safe:
+                        reason = "paper_entry_environment_gate_off_or_unsafe_mode"
+                    elif not (autopilot_on or paper_entry_once):
+                        reason = "master_autopilot_off; candidate ranked for research only"
+                    elif open_count >= 1:
+                        reason = "an_open_research_position_must_settle_before_another_position_can_open"
+                    else:
+                        best, score, details = ranked_candidates[0]
+                        # Persist a truthful selection record with the simulated
+                        # position when it is opened; a failed attempt is reset below.
+                        best["paper_trade_created"] = True
+                        best["paper_selection_status"] = "best_candidate_position_opened"
+                        best["paper_trade_block_reason"] = None
+                        best.setdefault("paper_selection", {})["selected_for_attempt"] = True
+                        best["paper_entry_gate"] = {
+                            "authorized_for_this_batch": entry_authorized,
+                            "autopilot_enabled": autopilot_on,
+                            "manual_one_shot_requested": bool(paper_entry_once),
+                            "environment_safe": paper_environment_safe,
+                            "open_position_count_before_entry": open_count,
+                        }
+                        created, risk_reason = self._create_paper_trade(
+                            conn, best,
+                            allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
+                        )
+                        if created:
+                            entered = 1
+                        else:
+                            reason = risk_reason or "paper_position_not_created"
+                            best["paper_trade_created"] = False
+                            best["paper_trade_block_reason"] = reason
+                            best["paper_selection_status"] = "best_candidate_blocked_by_risk_or_duplicate"
+                            best.setdefault("reasons", []).append(reason)
+                    if not best.get("paper_trade_created"):
+                        best["paper_trade_block_reason"] = reason
+                        if reason not in best.setdefault("reasons", []):
+                            best["reasons"].append(reason)
+                    best["paper_trade_created"] = bool(best.get("paper_trade_created"))
+                    best["paper_entry_gate"] = {
+                        "authorized_for_this_batch": entry_authorized,
+                        "autopilot_enabled": autopilot_on,
+                        "manual_one_shot_requested": bool(paper_entry_once),
+                        "environment_safe": paper_environment_safe,
+                        "open_position_count_before_entry": open_count,
+                    }
+                    if not entry_authorized and paper_environment_safe and not autopilot_on:
+                        best["paper_selection_status"] = "best_candidate_ranked_autopilot_off"
+                    elif open_count >= 1 and entry_authorized:
+                        best["paper_selection_status"] = "best_candidate_waiting_for_open_position_to_settle"
+                    best.setdefault("paper_selection", {})["selected_for_attempt"] = True
+                    for other, _, _ in ranked_candidates[1:]:
+                        other["paper_selection"].update(selected_for_attempt=False)
+                for item in decisions:
+                    self._record_decision(conn, item)
                 conn.commit()
             finally:
                 conn.close()
@@ -379,7 +549,9 @@ class MarketDecisionPipeline:
             stats["checked"] += 1
         return stats
 
-    def _create_paper_trade(self, conn: Any, result: Mapping[str, Any]) -> tuple[bool, str | None]:
+    def _create_paper_trade(
+        self, conn: Any, result: Mapping[str, Any], *, allow_manual_entry_once: bool = False,
+    ) -> tuple[bool, str | None]:
         side = result.get("selected_side")
         ticker = result.get("ticker")
         model = result.get("model") if isinstance(result.get("model"), Mapping) else {}
@@ -387,16 +559,24 @@ class MarketDecisionPipeline:
         if side not in {"YES", "NO"} or not isinstance(ticker, str) or not ticker or not isinstance(entry, (int, float)):
             return False, "invalid_paper_entry_payload"
         from runtime_controls import market_autopilot_enabled
-        if not _bool_env("MARKET_AUTOPAPER_ENABLED", False) or not market_autopilot_enabled(conn) or os.getenv("TRADING_MODE", "paper").strip().lower() != "paper" or _bool_env("LIVE_TRADING_ENABLED", False):
+        if (
+            not _bool_env("MARKET_AUTOPAPER_ENABLED", False)
+            or (not market_autopilot_enabled(conn) and not allow_manual_entry_once)
+            or os.getenv("TRADING_MODE", "paper").strip().lower() != "paper"
+            or _bool_env("LIVE_TRADING_ENABLED", False)
+        ):
             return False, "runtime_is_not_safe_paper_mode"
-        fee = max(0.0, _num(os.getenv("MARKET_ESTIMATED_FEE_CENTS", "2"), 2))
-        slippage = max(0.0, _num(os.getenv("MARKET_ESTIMATED_SLIPPAGE_CENTS", "1"), 1))
+        # Match the minimum costs used by assess_market_opportunity so the saved
+        # simulated entry/P&L cannot understate fees or slippage versus its edge gate.
+        fee = max(2.0, _num(os.getenv("MARKET_ESTIMATED_FEE_CENTS", "2"), 2))
+        slippage = max(1.0, _num(os.getenv("MARKET_ESTIMATED_SLIPPAGE_CENTS", "1"), 1))
         model_id = str(model.get("model_id") or "")[:100]
         model_version = str(model.get("model_version") or "")[:100]
         if not model_id or not model_version:
             return False, "model_identity_missing"
 
-        max_open = _int_env("MARKET_RESEARCH_MAX_OPEN_TRADES", 20, 1, 500)
+        # One research position at a time ensures the journal tests the single best eligible candidate.
+        max_open = 1
         max_open_cost = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_OPEN_COST_CENTS", "2000"), 2000))
         daily_loss_limit = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_DAILY_LOSS_CENTS", "500"), 500))
         open_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(contracts*(entry_cents+estimated_fee_cents+estimated_slippage_cents)),0) FROM market_research_paper_trades WHERE status='open'").fetchone()
@@ -443,11 +623,43 @@ class MarketDecisionPipeline:
             except Exception as exc:
                 log.debug("Paper-market settlement check failed (%s).", type(exc).__name__)
 
-    def run_once_for_tests(self) -> dict[str, Any]:
+    def settle_open_positions_only(self) -> dict[str, Any]:
+        """Check open research paper positions for official settlement without running any model analysis."""
+        conn = None
+        try:
+            conn = connect_database()
+            ensure_schema(conn)
+            open_before = int(conn.execute(
+                "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
+            ).fetchone()[0] or 0)
+            if open_before <= 0:
+                return {"checked": 0, "settled": 0, "open_before": 0, "open_after": 0, "errors": 0}
+            with self._settlement_lock:
+                self._settle_open_trades(conn)
+            conn.commit()
+            open_after = int(conn.execute(
+                "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
+            ).fetchone()[0] or 0)
+            return {
+                "checked": open_before,
+                "settled": max(0, open_before - open_after),
+                "open_before": open_before,
+                "open_after": open_after,
+                "errors": 0,
+            }
+        except Exception as exc:
+            log.warning("Research paper settlement-only pass failed (%s).", type(exc).__name__)
+            return {"checked": 0, "settled": 0, "open_before": None, "open_after": None,
+                    "errors": 1, "error_type": type(exc).__name__}
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def run_once_for_tests(self, *, paper_entry_once: bool = False) -> dict[str, Any]:
         """Synchronous entry point for deterministic tests; uses the same pipeline."""
         with self._lock:
             self._state.update(status="idle")
-        self._run()
+        self._run(paper_entry_once=paper_entry_once)
         return self.snapshot()
 
     def start_scheduler(self, enabled: bool = True) -> None:
@@ -459,17 +671,39 @@ class MarketDecisionPipeline:
             self._scheduler_started = True
         threading.Thread(target=self._scheduler_loop, name="market-decision-scheduler", daemon=True).start()
 
+    def settlement_monitor_status(self) -> dict[str, Any]:
+        with self._lock:
+            started = bool(self._scheduler_started)
+        return {
+            "scheduler_started": started,
+            "interval_seconds": _int_env("MARKET_RESEARCH_SETTLEMENT_INTERVAL_SECONDS", 60, 30, 3600),
+            "runs_when_master_autopilot_off": True,
+            "uses_model_provider": False,
+            "requires_official_final_market_result": True,
+        }
+
     def _scheduler_loop(self) -> None:
         interval = _int_env("MARKET_ANALYSIS_INTERVAL_SECONDS", 300, 60, 86400)
+        settlement_interval = _int_env("MARKET_RESEARCH_SETTLEMENT_INTERVAL_SECONDS", 60, 30, 3600)
         last_scheduled_run = 0.0
+        last_settlement_check = 0.0
         from runtime_controls import market_autopilot_enabled
         while True:
             try:
+                now = time.monotonic()
+                # Settlement tracking stays alive while autopilot is OFF. This pass
+                # performs only official market-detail checks for existing positions;
+                # it does not call the model/evidence provider or open new trades.
+                if now - last_settlement_check >= settlement_interval:
+                    settlement_result = self.settle_open_positions_only()
+                    last_settlement_check = now
+                    if settlement_result.get("settled") or settlement_result.get("errors"):
+                        log.info("Research paper settlement monitor: %s", settlement_result)
+
                 if not market_autopilot_enabled():
                     time.sleep(5)
                     continue
                 catalog = self._catalog_snapshot()
-                now = time.monotonic()
                 ready = isinstance(catalog, dict) and catalog.get("status") in {"complete", "partial"}
                 if ready and provider_configured() and now - last_scheduled_run >= interval:
                     started = self.start(force=True)
@@ -487,4 +721,5 @@ class MarketDecisionPipeline:
     def reset_for_tests(self) -> None:
         with self._job_lock, self._lock:
             self._cursor = 0
+            self._manual_entry_once_pending = False
             self._state = self._empty()
