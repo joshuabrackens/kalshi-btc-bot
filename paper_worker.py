@@ -535,18 +535,39 @@ def _decision_fields_from_payload(direction: str, payload: dict[str, Any], decis
             "trend_evidence_score": evidence, "trend_snapshot_age_seconds": trend_age, "decision_reason": reason}
 
 
+def _optional_positive_price(value: Any) -> float | None:
+    """Return a positive finite reference price, or None when it is unavailable."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _optional_nonnegative_seconds(value: Any) -> int | None:
+    """Normalize known remaining time; preserve unknown time as NULL instead of zero."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return int(number) if math.isfinite(number) and number >= 0 else None
+
+
 def _record_signal_log(conn, *, created_at: str, ticker: str | None, direction: str, score: int,
-                       btc_price: float, strike: float, seconds_remaining: int,
+                       btc_price: float | None, strike: float | None, seconds_remaining: int | None,
                        max_entry_cents: float | None, payload: dict[str, Any]) -> int | None:
-    """Persist an evaluation, normalized decision fields, and an audit event."""
+    """Persist an evaluation, preserving unavailable market values as SQL NULL."""
     fields = _decision_fields_from_payload(direction, payload, created_at)
+    btc_value = _optional_positive_price(btc_price)
+    strike_value = _optional_positive_price(strike)
+    seconds_value = _optional_nonnegative_seconds(seconds_remaining)
     encoded = json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)
     cur = conn.execute(
         """INSERT INTO signal_log (created_at,market_ticker,direction,score,btc_price,strike_price,
            seconds_remaining,max_entry_cents,payload_json,external_signal_id,decision_status,proposed_direction,
            entry_ask_cents,spread_cents,trend_bias,trend_evidence_score,trend_snapshot_age_seconds)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (created_at, ticker, direction, int(score), float(btc_price), float(strike), int(seconds_remaining),
+        (created_at, ticker, direction, int(score), btc_value, strike_value, seconds_value,
          max_entry_cents, encoded, fields["external_signal_id"], fields["decision_status"], fields["proposed_direction"],
          fields["entry_ask_cents"], fields["spread_cents"], fields["trend_bias"], fields["trend_evidence_score"],
          fields["trend_snapshot_age_seconds"]),
@@ -602,12 +623,15 @@ def _log_wait(conn, reason: str, *, ticker: str | None = None, external: dict | 
     """Keep a visible audit entry when an alert is received but no trade is opened."""
     external = external or {}
     internal_payload = internal_payload or {}
-    btc = float(internal_payload.get("btc_price") or 0.01)
-    strike = float(internal_payload.get("strike_price") or btc)
-    seconds = int(internal_payload.get("seconds_remaining") or 0)
+    # Missing data stays missing. Do not invent a $0.01 BTC price, copy the
+    # strike into the BTC field, or show unknown time remaining as zero.
+    btc = _optional_positive_price(internal_payload.get("btc_price"))
+    strike = _optional_positive_price(internal_payload.get("strike_price"))
+    seconds = _optional_nonnegative_seconds(internal_payload.get("seconds_remaining"))
     score = int(internal_payload.get("score") or 0)
     payload = {
         **internal_payload,
+        "btc_price": btc, "strike_price": strike, "seconds_remaining": seconds,
         "direction": "WAIT", "score": score,
         "source": "hybrid" if external else internal_payload.get("source", "internal"),
         "external_signal": {k: external.get(k) for k in ("id", "created_at", "direction", "symbol", "timeframe", "age_seconds")},
@@ -1336,7 +1360,7 @@ def run_once() -> dict[str, Any]:
                 }
                 wait_payload["entry_price_gate"].update({"hard_cap_cents": hard_max_entry, "preferred_target_cents": max_entry})
                 _record_signal_log(conn, created_at=_utcnow().isoformat(), ticker=market["ticker"], direction="WAIT",
-                                   score=0, btc_price=float((trend_snapshot or {}).get("btc_price") or market["strike"]),
+                                   score=0, btc_price=_optional_positive_price((trend_snapshot or {}).get("btc_price")),
                                    strike=market["strike"], seconds_remaining=market["seconds"],
                                    max_entry_cents=hard_max_entry, payload=wait_payload)
                 return {"action": "wait_for_better_price", "reason": note, "ticker": market["ticker"],

@@ -12,6 +12,7 @@ import zipfile
 import json
 import hashlib
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -425,6 +426,19 @@ def _aggregate_strategy_performance(rows: list[tuple[Any, ...]]) -> list[dict[st
     return result
 
 
+def _dashboard_btc_reference_price(value: Any) -> float | None:
+    """Reject absent, invalid, and implausibly sub-dollar BTC reference values.
+
+    Earlier WAIT records used 0.01 as a display placeholder. Do not let those
+    historical artifacts masquerade as observed BTC or strike prices.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number >= 1.0 else None
+
+
 def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | None:
     """Normalize a persisted signal row for history/position-context display."""
     if not row:
@@ -432,6 +446,12 @@ def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | 
     (signal_id, created_at, ticker, raw_direction, score, btc_price, strike, seconds_remaining,
      max_entry, decision_status, proposed_direction, entry_ask, spread, trend_bias,
      trend_score, trend_age, payload_json) = row
+    btc_price_value = _dashboard_btc_reference_price(btc_price)
+    strike_price_value = _dashboard_btc_reference_price(strike)
+    # Legacy fallback rows wrote 0.01 into both price fields and zero seconds.
+    # Once both references are recognized as placeholders, display all three as unknown.
+    if btc_price_value is None and strike_price_value is None:
+        seconds_remaining = None
     try:
         payload = json.loads(payload_json or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -478,7 +498,7 @@ def _dashboard_signal_from_row(row: tuple[Any, ...] | None) -> dict[str, Any] | 
         "external_signal_id": external_signal_id,
         "direction": chosen_direction or "WAIT", "logged_direction": raw_direction,
         "proposed_direction": proposed_text or None, "decision_status": decision_status or payload.get("decision_status"),
-        "score": score_value, "btc_price": btc_price, "strike_price": strike,
+        "score": score_value, "btc_price": btc_price_value, "strike_price": strike_price_value,
         "seconds_remaining": seconds_remaining, "max_entry_cents": max_entry,
         "distance_from_strike": payload.get("distance_from_strike"),
         "source": payload.get("source"),

@@ -176,7 +176,7 @@ def _table_ddl(name: str, backend: str) -> str:
         column_type = "DOUBLE PRECISION" if backend == "postgresql" and typ == "REAL" else typ
         # Required fields in the original journal retain NOT NULL requirements.
         required = {
-            "signal_log": {"created_at", "direction", "score", "btc_price", "strike_price", "seconds_remaining", "payload_json"},
+            "signal_log": {"created_at", "direction", "score", "payload_json"},
             "paper_trades": {"created_at", "market_ticker", "direction", "contracts", "entry_cents", "fee_cents_per_contract"},
             "gainzalgo_signals": {"created_at", "direction", "payload_json"},
             "webhook_events": {"received_at", "status_code", "status", "reason"},
@@ -198,6 +198,48 @@ def _existing_columns(conn: DatabaseConnection, table: str) -> set[str]:
         (table,),
     ).fetchall()
     return {str(row[0]) for row in rows}
+
+
+def _make_signal_reference_columns_nullable(conn: DatabaseConnection) -> None:
+    """Allow unknown BTC/strike/time values without overwriting historical records."""
+    columns = ("btc_price", "strike_price", "seconds_remaining")
+    if conn.backend == "postgresql":
+        for column in columns:
+            conn.execute(f"ALTER TABLE signal_log ALTER COLUMN {column} DROP NOT NULL")
+        return
+
+    info = conn.execute("PRAGMA table_info(signal_log)").fetchall()
+    if not info or not any(str(row[1]) in columns and int(row[3] or 0) for row in info):
+        return
+
+    # SQLite cannot DROP NOT NULL in older deployed versions. Rebuild only this
+    # journal table while preserving every column, row, primary key, default, and
+    # all unrelated NOT NULL constraints.
+    definitions: list[str] = []
+    names: list[str] = []
+    for _cid, name, column_type, not_null, default_value, primary_key in info:
+        name = str(name)
+        names.append(name)
+        quoted = '"' + name.replace('"', '""') + '"'
+        if name == "id" and int(primary_key or 0):
+            definitions.append(f"{quoted} INTEGER PRIMARY KEY AUTOINCREMENT")
+            continue
+        definition = f"{quoted} {column_type or 'BLOB'}"
+        if int(not_null or 0) and name not in columns:
+            definition += " NOT NULL"
+        if default_value is not None:
+            definition += f" DEFAULT {default_value}"
+        if int(primary_key or 0):
+            definition += " PRIMARY KEY"
+        definitions.append(definition)
+
+    temporary_table = "signal_log_nullable_migration"
+    conn.execute(f"DROP TABLE IF EXISTS {temporary_table}")
+    conn.execute(f"CREATE TABLE {temporary_table} ({', '.join(definitions)})")
+    quoted_names = ", ".join('"' + name.replace('"', '""') + '"' for name in names)
+    conn.execute(f"INSERT INTO {temporary_table} ({quoted_names}) SELECT {quoted_names} FROM signal_log")
+    conn.execute("DROP TABLE signal_log")
+    conn.execute(f"ALTER TABLE {temporary_table} RENAME TO signal_log")
 
 
 def ensure_schema(conn: DatabaseConnection) -> None:
@@ -223,6 +265,7 @@ def ensure_schema(conn: DatabaseConnection) -> None:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}")
                     else:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        _make_signal_reference_columns_nullable(conn)
         # Encrypted, per-environment Kalshi credentials. Only ciphertext and a non-secret
         # key hint are stored here; the Fernet encryption key stays in Render secrets.
         conn.execute("""CREATE TABLE IF NOT EXISTS kalshi_credentials (
