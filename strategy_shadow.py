@@ -342,6 +342,24 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
         reverse=True,
     )
 
+    prospective_actual_metrics = _metrics(prospective_actual)
+    prospective_shadow_metrics = _metrics(prospective_shadow)
+    prospective_net_delta = (
+        round(prospective_shadow_metrics["net_pnl_cents"] - prospective_actual_metrics["net_pnl_cents"], 2)
+        if prospective_actual else None
+    )
+    prospective_rate_delta = (
+        round(prospective_shadow_metrics["positive_net_rate_percent"] - prospective_actual_metrics["positive_net_rate_percent"], 2)
+        if prospective_actual else None
+    )
+    prospective_target_supported = bool(
+        len(prospective_shadow) >= 20
+        and prospective_baseline_settled_count >= 20
+        and prospective_pending_after_baseline_settlement == 0
+        and prospective_shadow_metrics["positive_net_rate_percent"] is not None
+        and prospective_shadow_metrics["positive_net_rate_percent"] >= float(target_positive_net_rate_percent)
+        and prospective_shadow_metrics["net_pnl_cents"] > 0
+    )
     actual_metrics = _metrics(paired_actual)
     shadow_metrics = _metrics(paired_shadow)
     net_delta = (
@@ -393,15 +411,29 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
             "hold_to_settlement_candidate": shadow_metrics,
             "positive_net_rate_difference_percentage_points": rate_delta,
             "net_pnl_difference_cents": net_delta,
-            "target_met_by_candidate": bool(
-                shadow_metrics["positive_net_rate_percent"] is not None
-                and shadow_metrics["settled_trades"] >= 20
-                and shadow_metrics["positive_net_rate_percent"] >= float(target_positive_net_rate_percent)
-                and shadow_metrics["net_pnl_cents"] > 0
-            ),
+            "target_supported_out_of_sample": False,
             "interpretation": (
                 "This is a paired, same-entry comparison. The candidate is not a separately proven entry strategy; it tests whether early exits help or hurt. "
                 "A high historical hold-to-settlement rate is subject to selection bias because stopped trades have to be included using their later official outcomes."
+            ),
+        },
+        "prospective_comparison": {
+            "prospective_entries_seen": prospective_entries_seen,
+            "baseline_settled_trades": prospective_baseline_settled_count,
+            "paired_resolved_trades": len(prospective_actual),
+            "baseline_settled_but_shadow_pending": prospective_pending_after_baseline_settlement,
+            "baseline_positions_still_open": prospective_baseline_open_count,
+            "current_engine": prospective_actual_metrics,
+            "hold_to_settlement_candidate": prospective_shadow_metrics,
+            "positive_net_rate_difference_percentage_points": prospective_rate_delta,
+            "net_pnl_difference_cents": prospective_net_delta,
+            "target_supported_out_of_sample": prospective_target_supported,
+            "gate_requirements": (
+                f"At least 20 prospective paired results, no missing candidate result for a settled baseline trade, "
+                f"at least {float(target_positive_net_rate_percent):.1f}% positive-net rate, and positive net P&L."
+            ),
+            "interpretation": (
+                "Only entries opened at or after PAPER_STRATEGY_SHADOW_START_AT count in this forward test. Historical backfills and incomplete/unresolved outcomes do not qualify."
             ),
         },
         "shadow_journal": {
