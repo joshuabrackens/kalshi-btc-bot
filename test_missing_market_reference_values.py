@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -99,6 +100,50 @@ class MissingMarketReferenceTests(unittest.TestCase):
         self.assertEqual(signal["btc_price"], 65000.25)
         self.assertEqual(signal["strike_price"], 65000.0)
         self.assertEqual(signal["seconds_remaining"], 120)
+
+    def test_existing_sqlite_schema_becomes_nullable_without_losing_old_rows(self):
+        legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
+        raw = sqlite3.connect(str(legacy_path))
+        try:
+            raw.execute("""CREATE TABLE signal_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                market_ticker TEXT,
+                direction TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                btc_price REAL NOT NULL,
+                strike_price REAL NOT NULL,
+                seconds_remaining INTEGER NOT NULL,
+                max_entry_cents REAL,
+                payload_json TEXT NOT NULL
+            )""")
+            raw.execute(
+                "INSERT INTO signal_log (id,created_at,direction,score,btc_price,strike_price,seconds_remaining,payload_json) "
+                "VALUES (7,?,?,?,?,?,?,?)",
+                ("2026-10-24T18:00:00+00:00", "WAIT", 0, 0.01, 0.01, 0, "{}"),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        original_path = os.environ["BOT_DB_PATH"]
+        os.environ["BOT_DB_PATH"] = str(legacy_path)
+        conn = w._connect()
+        try:
+            info = {str(row[1]): int(row[3] or 0) for row in conn.execute("PRAGMA table_info(signal_log)").fetchall()}
+            self.assertEqual(info["btc_price"], 0)
+            self.assertEqual(info["strike_price"], 0)
+            self.assertEqual(info["seconds_remaining"], 0)
+            old = conn.execute("SELECT id,btc_price,strike_price,seconds_remaining FROM signal_log WHERE id=7").fetchone()
+            self.assertEqual(old, (7, 0.01, 0.01, 0))
+            w._log_wait(conn, "A new missing-data wait.", internal_payload={})
+            latest = conn.execute(
+                "SELECT btc_price,strike_price,seconds_remaining FROM signal_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(latest, (None, None, None))
+        finally:
+            conn.close()
+            os.environ["BOT_DB_PATH"] = original_path
 
 
 if __name__ == "__main__":
