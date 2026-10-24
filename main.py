@@ -1883,12 +1883,14 @@ def api_market_analysis() -> dict[str, Any]:
                 })
             result["research_paper_trades"] = research_paper_trades
             result["open_research_paper_positions"] = [item for item in research_paper_trades if item["status"] == "open"]
+            settlement_monitor = market_decision_pipeline.settlement_monitor_status()
+            result["research_paper_settlement_monitor"] = settlement_monitor
             result["research_paper_position_note"] = (
                 "One simulated research position is allowed open at a time. Entry is recorded at the selected-side ask; "
-                "estimated fee and slippage are deducted from final net P&L. A settlement-only monitor checks final market "
-                "results on a bounded cadence even while the master autopilot is OFF. No live order is sent."
+                "estimated fee and slippage are deducted from final net P&L. The settlement-only monitor checks every "
+                f"{settlement_monitor['interval_seconds']} seconds while its scheduler is running, including when the master "
+                "autopilot is OFF; it does not call the model/evidence provider. No live order is sent."
             )
-            result["research_paper_settlement_monitor"] = market_decision_pipeline.settlement_monitor_status()
             category_rows = conn.execute(
                 """SELECT category,status,settled_at,pnl_cents,source_snapshot_json,market_ticker
                    FROM market_research_paper_trades ORDER BY id DESC LIMIT 10000"""
