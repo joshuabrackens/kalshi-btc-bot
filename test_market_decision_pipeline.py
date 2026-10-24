@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import db_store
+from market_analysis_provider import MarketAnalysisProviderError
 from market_decision_pipeline import MarketDecisionPipeline
 
 
@@ -83,6 +84,50 @@ def test_pipeline_without_provider_never_fetches_book_or_creates_trade(tmp_path)
         assert result["paper_entries_created"] == 0
         assert result["live_orders_submitted"] == 0
         assert result["decisions"][0]["eligible"] is False
+
+
+def test_pipeline_persists_safe_provider_http_error_code(tmp_path, caplog):
+    db_path = tmp_path / "provider-error-code.sqlite3"
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        def failed_model(*_args, **_kwargs):
+            raise MarketAnalysisProviderError("probability_provider_http_429")
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": [
+                {"ticker": "KXSPORTS-ERR", "title": "Provider error test", "category": "sports"}
+            ]},
+            lambda _ticker: {"market": _market(ticker="KXSPORTS-ERR")},
+            lambda _ticker: _book(),
+            failed_model,
+        )
+        result = pipeline.run_once_for_tests()
+        assert result["paper_entries_created"] == 0
+        assert result["live_orders_submitted"] == 0
+        assert result["decisions"][0]["reasons"] == [
+            "market_analysis_unavailable", "probability_provider_http_429"
+        ]
+        assert "probability_provider_http_429" in caplog.text
+        assert "test-provider-token" not in caplog.text
+
+        conn = db_store.connect_database()
+        try:
+            row = conn.execute(
+                "SELECT payload_json FROM market_research_decisions WHERE decision='analysis_error' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert row is not None
+            saved = json.loads(row[0])
+            assert saved["reasons"] == ["market_analysis_unavailable", "probability_provider_http_429"]
+            assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades").fetchone()[0] == 0
+        finally:
+            conn.close()
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(db_path) + suffix).unlink(missing_ok=True)
 
 
 def test_pipeline_does_not_create_paper_trade_if_runtime_is_not_safe_paper(tmp_path):
