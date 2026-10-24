@@ -84,14 +84,16 @@ class WorkerSafetyTests(unittest.TestCase):
         self.assertEqual(w.run_once()["action"], "blocked")
         os.environ["LIVE_TRADING_ENABLED"] = "false"
 
-    def test_market_without_explicit_strike_rejected(self):
+    def test_market_without_explicit_strike_rejected_with_diagnostic(self):
         m = {"market": {
             "ticker": "KXBTC15M-TEST", "status": "active",
             "title": "BTC price up in next 15 mins?",
             "close_time": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
             "yes_ask": 50, "no_ask": 50,
         }}
-        self.assertIsNone(w._extract_market(m))
+        rejection_counts = {}
+        self.assertIsNone(w._extract_market(m, rejection_counts))
+        self.assertEqual(rejection_counts, {"missing_or_invalid_strike": 1})
 
     def test_market_explicit_strike_accepted(self):
         m = {"market": {
@@ -103,6 +105,17 @@ class WorkerSafetyTests(unittest.TestCase):
         parsed = w._extract_market(m)
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["strike"], 65000)
+
+    def test_btc_title_accepts_target_price_dollars_without_literal_up(self):
+        m = {"market": {
+            "ticker": "KXBTC15M-TEST", "status": "active",
+            "title": "Bitcoin above $80,500 at 4:00 PM ET",
+            "close_time": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            "target_price_dollars": 80500.0,
+        }}
+        parsed = w._extract_market(m)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["strike"], 80500.0)
 
     def test_top_bid_levels(self):
         self.assertEqual(
