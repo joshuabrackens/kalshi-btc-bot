@@ -652,6 +652,15 @@ class MarketDecisionPipeline:
         if float(daily_row[0] or 0) <= -daily_loss_limit:
             return False, "research_paper_daily_loss_limit_reached"
 
+        # Persist the successful entry state, not the pre-insert candidate state.
+        # The caller updates its in-memory decision after this function returns, so
+        # serializing result directly here would falsely leave paper_trade_created=false.
+        saved_decision = dict(result)
+        saved_decision.update({
+            "paper_trade_created": True,
+            "paper_selection_status": "paper_position_opened",
+            "paper_trade_block_reason": None,
+        })
         cursor = conn.execute(
             """INSERT INTO market_research_paper_trades
                (created_at,market_ticker,category,side,contracts,entry_cents,estimated_fee_cents,estimated_slippage_cents,
@@ -660,7 +669,7 @@ class MarketDecisionPipeline:
             (_stamp(), ticker, result.get("category"), side, 1, float(entry), fee, slippage,
              _num(result.get("model_probability_yes_pct"), 0) / 100, model_id, model_version,
              _num(result.get("expected_net_edge_cents"), 0), "open",
-             json.dumps({"decision": dict(result)}, ensure_ascii=False, default=str, allow_nan=False)[:100_000]),
+             json.dumps({"decision": saved_decision}, ensure_ascii=False, default=str, allow_nan=False)[:100_000]),
         )
         if cursor.rowcount <= 0:
             return False, "duplicate_market_model_paper_trade"
