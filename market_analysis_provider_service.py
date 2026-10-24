@@ -97,6 +97,42 @@ def _load_registry() -> dict[str, Any]:
 _VALIDATION_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 _VALIDATION_CACHE_LOCK = threading.Lock()
 
+# A permanent upstream quota/billing failure should not trigger repeated paid calls
+# on every scanner cycle. This breaker is fail-closed and affects research analysis only.
+_QUOTA_COOLDOWN_LOCK = threading.Lock()
+_QUOTA_COOLDOWN_UNTIL = 0.0
+
+
+def _quota_cooldown_duration_seconds() -> int:
+    try:
+        configured = int(os.getenv("OPENAI_QUOTA_COOLDOWN_SECONDS", "3600"))
+    except (TypeError, ValueError, OverflowError):
+        configured = 3600
+    return max(60, min(86400, configured))
+
+
+def _quota_cooldown_remaining_seconds() -> int:
+    with _QUOTA_COOLDOWN_LOCK:
+        remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
+    return max(0, int(remaining + 0.999))
+
+
+def _activate_quota_cooldown() -> int:
+    global _QUOTA_COOLDOWN_UNTIL
+    duration = _quota_cooldown_duration_seconds()
+    with _QUOTA_COOLDOWN_LOCK:
+        _QUOTA_COOLDOWN_UNTIL = max(_QUOTA_COOLDOWN_UNTIL, time.monotonic() + duration)
+        remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
+    return max(1, int(remaining + 0.999))
+
+
+def _clear_quota_cooldown() -> None:
+    """Reset the process-local breaker for isolated offline tests only."""
+    global _QUOTA_COOLDOWN_UNTIL
+    with _QUOTA_COOLDOWN_LOCK:
+        _QUOTA_COOLDOWN_UNTIL = 0.0
+
+
 
 def _validation_from_shared_database(category: str, model_id: str, model_version: str) -> dict[str, Any]:
     """Compute chronological, realized-outcome calibration from shared PostgreSQL.
@@ -369,6 +405,13 @@ async def analyze(request: Request) -> dict[str, Any]:
         "max_output_tokens": 2500,
         "store": False,
     }
+    cooldown_remaining = _quota_cooldown_remaining_seconds()
+    if cooldown_remaining:
+        raise HTTPException(
+            status_code=503,
+            detail="Research provider is paused after an upstream quota/billing error.",
+            headers={"Retry-After": str(cooldown_remaining)},
+        )
     try:
         response = requests.post("https://api.openai.com/v1/responses", json=request_payload,
                                  headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -387,6 +430,17 @@ async def analyze(request: Request) -> dict[str, Any]:
             "OpenAI provider returned status %s (classification=%s, code=%s, type=%s)",
             response.status_code, classification, error_code or "unavailable", error_type or "unavailable",
         )
+        if classification == "quota_or_billing":
+            cooldown_seconds = _activate_quota_cooldown()
+            logger.warning(
+                "OpenAI quota/billing circuit breaker activated for %s seconds; future upstream calls paused",
+                cooldown_seconds,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Research provider paused after an upstream quota/billing error.",
+                headers={"Retry-After": str(cooldown_seconds)},
+            )
         raise HTTPException(status_code=502, detail=f"Research provider returned HTTP {response.status_code}.")
     try:
         response_data = response.json()
