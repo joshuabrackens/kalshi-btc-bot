@@ -13,7 +13,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from math import log1p
+from math import isfinite, log1p
 from typing import Any, Callable, Mapping
 
 from db_store import connect_database, ensure_schema
@@ -73,6 +73,34 @@ def _safe_market_analysis_error(exc: Exception) -> str:
 def _retryable_database_error(exc: Exception) -> bool:
     """Retry only transient PostgreSQL transaction conflicts; never repeat provider calls."""
     return type(exc).__name__ in {"DeadlockDetected", "SerializationFailure"}
+
+
+def _provider_quota_cooldown_status(conn: Any) -> tuple[int, str | None]:
+    """Read the provider's shared quota breaker before starting a market-analysis batch.
+
+    A missing setting means no persisted cooldown. An unreadable or malformed setting
+    fails closed briefly rather than allowing the scanner to probe a paid provider
+    while it cannot verify the breaker state.
+    """
+    try:
+        row = conn.execute(
+            "SELECT setting_value FROM runtime_settings WHERE setting_key=?",
+            ("openai_quota_cooldown_until_epoch",),
+        ).fetchone()
+    except Exception as exc:
+        log.warning("Research provider cooldown state unavailable; batch paused fail-closed (%s).",
+                    type(exc).__name__)
+        return 60, "provider_cooldown_state_unavailable"
+    if not row:
+        return 0, None
+    try:
+        deadline = float(row[0])
+    except (TypeError, ValueError, OverflowError):
+        return 60, "provider_cooldown_state_invalid"
+    if not isfinite(deadline):
+        return 60, "provider_cooldown_state_invalid"
+    remaining = max(0, int(deadline - time.time() + 0.999))
+    return (remaining, "openai_quota_billing_cooldown") if remaining else (0, None)
 
 
 def _paper_candidate_rank(result: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
@@ -351,6 +379,25 @@ class MarketDecisionPipeline:
                     conn.commit()
                 self._collect_resolved_predictions(conn)
                 conn.commit()
+                cooldown_seconds, cooldown_reason = _provider_quota_cooldown_status(conn)
+                if cooldown_seconds:
+                    message = (
+                        f"Research provider cooldown active ({cooldown_reason}); "
+                        f"analysis paused for {cooldown_seconds}s. No model requests or paper entries were attempted."
+                    )
+                    log.warning("%s", message)
+                    with self._lock:
+                        self._state.update(
+                            status="provider_cooldown", updated_at=_stamp(),
+                            candidate_pool_size=pool_size, analyzed_count=0,
+                            blocked_count=len(selected), paper_entries_created=0,
+                            decisions=[], last_error=message,
+                            catalog_snapshot_status=catalog_status,
+                            catalog_snapshot_partial=catalog_status != "complete",
+                            live_orders_submitted=0,
+                        )
+                    return
+                provider_failure_code: str | None = None
                 for row in selected:
                     ticker = row["ticker"]
                     try:
@@ -418,6 +465,37 @@ class MarketDecisionPipeline:
                         decision_id = self._record_decision_with_retry(conn, failed_result)
                         decisions.append(failed_result)
                         decision_ids.append(decision_id)
+                        # A service-level authentication, rate-limit, network, or 5xx
+                        # failure is not market-specific. Stop instead of repeating the
+                        # same failed request for every remaining candidate.
+                        if (
+                            error_code in {
+                                "probability_provider_http_401",
+                                "probability_provider_http_403",
+                                "probability_provider_http_429",
+                            }
+                            or re.fullmatch(r"probability_provider_http_5\\d{2}", error_code)
+                            or error_code.startswith("probability_provider_network_error:")
+                        ):
+                            provider_failure_code = error_code
+                            break
+                if provider_failure_code:
+                    # Do not enter a candidate from an incomplete ranking batch.
+                    # Successful forecasts remain auditable, but none is selected
+                    # until a complete candidate set can be ranked.
+                    for item in eligible_for_entry:
+                        item["paper_trade_created"] = False
+                        item["paper_selection_status"] = "batch_aborted_provider_unavailable"
+                        item["paper_trade_block_reason"] = "provider_unavailable_batch_incomplete"
+                        reasons = item.setdefault("reasons", [])
+                        if "provider_unavailable_batch_incomplete" not in reasons:
+                            reasons.append("provider_unavailable_batch_incomplete")
+                    blocked += len(eligible_for_entry)
+                    eligible_for_entry = []
+                    log.warning(
+                        "Research batch stopped after provider-level failure (%s); incomplete ranking will not open paper entries.",
+                        provider_failure_code,
+                    )
                 # Rank all fully eligible results from this analyzed batch before opening anything.
                 # This prevents the first market returned by the scanner from winning merely by order.
                 eligible_for_entry = [
@@ -556,9 +634,15 @@ class MarketDecisionPipeline:
             finally:
                 conn.close()
             with self._lock:
-                self._state.update(status="complete", updated_at=_stamp(), candidate_pool_size=pool_size,
+                self._state.update(
+                                   status="provider_unavailable" if provider_failure_code else "complete",
+                                   updated_at=_stamp(), candidate_pool_size=pool_size,
                                    analyzed_count=len(decisions), blocked_count=blocked,
-                                   paper_entries_created=entered, decisions=decisions, last_error=None,
+                                   paper_entries_created=entered, decisions=decisions,
+                                   last_error=(
+                                       f"Research provider unavailable ({provider_failure_code}); remaining requests were stopped and no entries were opened from an incomplete ranking batch."
+                                       if provider_failure_code else None
+                                   ),
                                    catalog_snapshot_status=catalog_status,
                                    catalog_snapshot_partial=catalog_status != "complete",
                                    live_orders_submitted=0,
