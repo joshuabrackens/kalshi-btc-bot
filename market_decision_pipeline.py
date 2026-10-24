@@ -69,11 +69,11 @@ def _paper_candidate_rank(result: Mapping[str, Any]) -> tuple[float, dict[str, A
     odds_score = max(0.0, min(selected_probability / 100.0, 1.0))
     spread_score = max(0.0, 1.0 - min(spread, 5.0) / 5.0)
     components = {
-        "net_edge": round(edge_score * 50.0, 3),
-        "selected_side_ask_depth": round(depth_score * 20.0, 3),
-        "volume_24h": round(volume_score * 15.0, 3),
-        "model_estimated_selected_side_probability": round(odds_score * 10.0, 3),
-        "spread_efficiency": round(spread_score * 5.0, 3),
+        "net_edge": round(edge_score * 60.0, 3),
+        "selected_side_ask_depth": round(depth_score * 18.0, 3),
+        "volume_24h": round(volume_score * 12.0, 3),
+        "model_estimated_selected_side_probability": round(odds_score * 7.0, 3),
+        "spread_efficiency": round(spread_score * 3.0, 3),
     }
     score = round(sum(components.values()), 3)
     return score, {
@@ -86,7 +86,7 @@ def _paper_candidate_rank(result: Mapping[str, Any]) -> tuple[float, dict[str, A
         "volume_24h": round(volume, 3),
         "selected_side_spread_cents": round(spread, 3),
         "entry_ask_cents": round(entry, 3),
-        "method": "50% net edge, 20% selected-side depth, 15% 24h volume, 10% model-estimated selected-side probability, 5% spread efficiency",
+        "method": "60% net edge, 18% selected-side depth, 12% 24h volume, 7% model-estimated selected-side probability, 3% spread efficiency",
     }
 
 
@@ -544,8 +544,10 @@ class MarketDecisionPipeline:
             or _bool_env("LIVE_TRADING_ENABLED", False)
         ):
             return False, "runtime_is_not_safe_paper_mode"
-        fee = max(0.0, _num(os.getenv("MARKET_ESTIMATED_FEE_CENTS", "2"), 2))
-        slippage = max(0.0, _num(os.getenv("MARKET_ESTIMATED_SLIPPAGE_CENTS", "1"), 1))
+        # Match the minimum costs used by assess_market_opportunity so the saved
+        # simulated entry/P&L cannot understate fees or slippage versus its edge gate.
+        fee = max(2.0, _num(os.getenv("MARKET_ESTIMATED_FEE_CENTS", "2"), 2))
+        slippage = max(1.0, _num(os.getenv("MARKET_ESTIMATED_SLIPPAGE_CENTS", "1"), 1))
         model_id = str(model.get("model_id") or "")[:100]
         model_version = str(model.get("model_version") or "")[:100]
         if not model_id or not model_version:
