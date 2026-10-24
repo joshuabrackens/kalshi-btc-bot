@@ -179,8 +179,8 @@ def process_hold_to_settlement_shadow(
             if not isinstance(market, Mapping):
                 market = {}
             status = str(market.get("status") or "").strip().lower()
-            outcome = _official_outcome(market.get("result"))
-            if status in {"settled", "finalized"} and outcome:
+            outcome = _official_outcome(market.get("result") or market.get("settlement_result"))
+            if status in {"settled", "finalized", "resolved", "closed"} and outcome:
                 pnl = _settlement_pnl(str(direction), outcome, int(contracts), _finite_number(entry), _finite_number(fee))
                 conn.execute(
                     """UPDATE strategy_shadow_trades
@@ -195,7 +195,7 @@ def process_hold_to_settlement_shadow(
                 settled += 1
             else:
                 detail = None
-                if status in {"settled", "finalized"} and not outcome:
+                if status in {"settled", "finalized", "resolved", "closed"} and not outcome:
                     detail = "Market status is final but the official result is missing or unrecognized."
                 conn.execute(
                     """UPDATE strategy_shadow_trades
