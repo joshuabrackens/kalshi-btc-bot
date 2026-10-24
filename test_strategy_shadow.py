@@ -36,7 +36,7 @@ def _insert_trade(conn, *, ticker, direction, entry, fee, pnl, outcome, settled_
 
 def test_hold_to_settlement_shadow_compares_same_entry_without_mutating_baseline():
     with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "shadow.sqlite3")}):
+        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "shadow.sqlite3"), "PAPER_STRATEGY_SHADOW_START_AT": "2026-10-24T07:00:00+00:00"}):
             conn = _new_db(tmp)
             try:
                 stopped_id = _insert_trade(
@@ -91,7 +91,8 @@ def test_hold_to_settlement_shadow_compares_same_entry_without_mutating_baseline
                 assert paired["current_engine"]["positive_net_rate_percent"] == 50.0
                 assert paired["hold_to_settlement_candidate"]["positive_net_rate_percent"] == 100.0
                 assert paired["net_pnl_difference_cents"] == 48.0
-                assert paired["target_met_by_candidate"] is False, "two wins are not enough to claim the 90% target"
+                assert report["prospective_comparison"]["paired_resolved_trades"] == 2
+                assert report["prospective_comparison"]["target_supported_out_of_sample"] is False, "two wins are not enough to claim the 90% target"
                 assert report["automatic_strategy_changes_enabled"] is False
             finally:
                 conn.close()
