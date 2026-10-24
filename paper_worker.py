@@ -113,6 +113,10 @@ def _extract_market(raw: dict, rejection_counts: dict[str, int] | None = None) -
     # absent or use "Bitcoin above $X" wording without the word "up".
     if not ticker or not str(ticker).upper().startswith("KXBTC15M-"):
         return reject("wrong_series_ticker")
+    # Keep the BTC/Bitcoin identity check, but do not require the literal word
+    # "up": current official titles commonly say "Bitcoin above $X".
+    if "btc" not in title and "bitcoin" not in title:
+        return reject("title_not_btc")
     strike = None
     for key in (
         "floor_strike", "floor_strike_dollars", "strike_price", "strike_price_dollars",
