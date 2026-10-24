@@ -544,6 +544,12 @@
       <div class="mini"><div class="label">Settled research win rate</div><div class="value" id="market-analysis-winrate">—</div><div class="help" id="market-analysis-pnl">Separate hold-to-settlement results</div></div>
     </div>
     <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Configure a validated HTTPS provider and turn autopilot ON to start scheduled analysis and eligible paper-only entries automatically.</td></tr></tbody></table></div>
+    <div style="margin-top:18px">
+      <h3>Separate paper results by market category</h3>
+      <p class="small">Research placements and their outcomes are isolated from the BTC 15-minute win rate. NFL, NBA, WNBA, NHL, MLB and NCAA labels are inferred only for reporting; every sports opportunity still uses the validated sports model/evidence gates. Empty categories show no win rate until a trade actually settles.</p>
+      <div class="table-wrap"><table style="min-width:1050px" aria-label="Paper performance by market category"><thead><tr><th>Market group</th><th>Research category</th><th>Total</th><th>Settled</th><th>Wins / losses / breakeven</th><th>Win rate</th><th>Net P&amp;L</th><th>Average / settled</th><th>Sample status</th></tr></thead><tbody id="market-category-performance"><tr><td colspan="9" class="empty">Waiting for category performance…</td></tr></tbody></table></div>
+      <p class="small" id="market-category-performance-note">A separate research journal is used. No cross-category results are mixed into BTC strategy performance.</p>
+    </div>
     <p class="small" style="margin-top:10px">Source and model gates: at least 100 out-of-sample calibration observations by default, Brier score ≤ 0.22, fresh source timestamps, category-required evidence types, ≥5 contracts at the best displayed ask, ≤5¢ spread, and ≥5¢ estimated net edge after fees/slippage. These are conservative defaults, not a guarantee of profitability.</p>
   </section>
 
@@ -1345,7 +1351,28 @@
     finally{if(button)button.disabled=false;}
   }
 
+  function renderCategoryPerformance(items, note){
+    const rows=$('market-category-performance');if(!rows)return;rows.replaceChildren();
+    const groups=Array.isArray(items)?items:[];
+    if(!groups.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=9;td.className='empty';td.textContent='No category performance payload is available yet.';tr.appendChild(td);rows.appendChild(tr);}
+    for(const item of groups){
+      const tr=document.createElement('tr');
+      addCell(tr,item.display_group||'Other / Unclassified');
+      addCell(tr,item.category||'—');
+      addCell(tr,nfmt(item.total_trades??0,0));
+      addCell(tr,nfmt(item.settled_trades??0,0));
+      addCell(tr,`${nfmt(item.wins??0,0)} / ${nfmt(item.losses??0,0)} / ${nfmt(item.break_even??0,0)}`);
+      addCell(tr,hasNum(item.win_rate_percent)?`${nfmt(item.win_rate_percent,1)}%`:'—');
+      addCell(tr,hasNum(item.net_pnl_dollars)?usd(item.net_pnl_dollars):'—');
+      addCell(tr,hasNum(item.average_net_pnl_cents)?`${nfmt(item.average_net_pnl_cents,2)}¢`:'—');
+      addCell(tr,item.sample_status||'Descriptive only');
+      rows.appendChild(tr);
+    }
+    write('market-category-performance-note',note||'A separate research journal is used. No cross-category results are mixed into BTC strategy performance.');
+  }
+
   function renderMarketAnalysis(data){
+    renderCategoryPerformance(data?.category_performance,data?.category_performance_note);
     const status=String(data?.status||'idle');
     write('market-analysis-pool',data?.candidate_pool_size??'—');
     write('market-analysis-count',data?.analyzed_count??'—');

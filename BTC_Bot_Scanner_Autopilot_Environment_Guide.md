@@ -44,6 +44,16 @@ Use the exact same `DATABASE_URL`, `KALSHI_BASE_URL`, and `KALSHI_CREDENTIALS_EN
 - `MARKET_LIVE_EXECUTION_ENABLED=false`
 - `PAPER_SIGNAL_SOURCE=hybrid` only if that matches the validated existing configuration.
 
+| Variable | Value | Behavior |
+|---|---|---|
+| `PAPER_TAKE_PROFIT_ENABLED` | `true` | Turns on fee-aware simulated take-profit for BTC paper positions only |
+| `PAPER_TAKE_PROFIT_PERCENT` | `10` | Requested net ROI target; impossible targets are capped at Kalshi's 100¢ bid ceiling and logged |
+| `PAPER_TAKE_PROFIT_TRAIL_PERCENT` | `5` | Trailing giveback after the profit target activates |
+| `PAPER_TAKE_PROFIT_REVERSAL_EXIT_ENABLED` | `true` | Allows a major opposing setup to exit an armed simulated position |
+| `PAPER_TAKE_PROFIT_PROFIT_PROTECTION_ENABLED` | `true` | Enables the configured major adverse-move protection after take-profit activation |
+| `PAPER_CONSECUTIVE_LOSS_LIMIT` | `4` | After four consecutive negative net BTC paper trades, pause new entries |
+| `PAPER_LOSS_STREAK_COOLDOWN_MINUTES` | `60` | Cooldown duration; existing positions continue to be managed and exited |
+
 If paper work runs in a separate Background Worker, leave `PAPER_WORKER_ENABLED=false` on the Web Service.
 
 ## Separate analysis provider service

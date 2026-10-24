@@ -2,7 +2,7 @@ name: Kalshi Bot Safety Tests
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "feature/continuous-learning-2026-10-24"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -22,14 +22,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-      - name: Install dependencies
+      - name: Install runtime and test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt pytest pyyaml httpx
 
-      - name: Run paper worker safety tests
-        run: python -m unittest -v test_paper_worker.py test_trend_stop.py
+      - name: Compile Python modules
+        run: python -m compileall -q .
 
-      - name: Run trend fusion gate tests
-        run: python -m unittest -v test_signal_fusion_trend_gate
+      - name: Run full offline safety and regression test suite
+        run: python -m pytest -q
+
+      - name: Validate dashboard JavaScript syntax
+        run: python validate_dashboard_js.py
+
+      - name: Run deterministic offline readiness stress tests
+        run: python stress_phase456_readiness.py
+
+      - name: Run randomized market-decision property tests
+        run: python stress_market_decision_engine.py
+
+      - name: Run webhook-to-worker integration smoke test with offline stubs
+        run: python smoke_shared_alert_flow.py

@@ -33,6 +33,7 @@ from performance_analytics import build_performance_analytics
 from trade_learning import build_learning_report, sync_settled_trade_learning
 from payload_safety import sanitize_sensitive_payload
 from market_category_registry import category_profiles, classify_market
+from market_category_reporting import build_research_category_performance
 from market_router import scan_market_catalog
 from trading_mode import LiveModeLocked, live_readiness_report, request_mode, trading_mode_status
 from multi_user_security import multi_user_readiness
@@ -1826,6 +1827,15 @@ def api_market_analysis() -> dict[str, Any]:
                 "net_pnl_cents": round(float(row[5] or 0), 3),
                 "note": "Separate research-only hold-to-settlement paper journal; not merged into the BTC 15-minute strategy stats.",
             }
+            category_rows = conn.execute(
+                """SELECT category,status,settled_at,pnl_cents,source_snapshot_json,market_ticker
+                   FROM market_research_paper_trades ORDER BY id DESC LIMIT 10000"""
+            ).fetchall()
+            result["category_performance"] = build_research_category_performance(category_rows)
+            result["category_performance_note"] = (
+                "Each display group has its own segregated research-paper counts. Empty groups have no invented win rate. "
+                "Sports league labels are reporting-only; all opportunities still pass the base sports evidence and calibration gates."
+            )
     except Exception:
         result["research_paper_performance"] = {"available": False, "note": "Research-paper statistics are temporarily unavailable."}
     return result

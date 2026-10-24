@@ -203,6 +203,10 @@ class TakeProfitTests(unittest.TestCase):
         # 20% net ROI on a 50c entry plus 2c entry fee; 2c exit fee included.
         self.assertAlmostEqual(w._take_profit_target_cents(50, 2, 2, 20), 64.4)
 
+    def test_take_profit_target_caps_unreachable_return_at_contract_maximum(self):
+        # A 95c entry cannot achieve a 10% net ROI after fees on a 100c maximum bid.
+        self.assertEqual(w._take_profit_target_cents(95, 2, 2, 10), 100.0)
+
     def test_invalid_take_profit_percent_fails_closed(self):
         with self.assertRaises(ValueError):
             w._take_profit_target_cents(50, 2, 2, 0)

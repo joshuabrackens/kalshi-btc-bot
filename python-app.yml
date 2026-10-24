@@ -2,7 +2,7 @@ name: Kalshi Bot Safety Tests
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "feature/continuous-learning-2026-10-24"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -33,125 +33,17 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q .
 
-      - name: Run paper worker safety tests
-        run: python -m unittest -v test_paper_worker.py
+      - name: Run full offline safety and regression test suite
+        run: python -m pytest -q
 
-      - name: Run trend stop tests
-        run: python -m unittest -v test_trend_stop.py
-
-      - name: Run hybrid take-profit and fusion regression tests
-        run: python -m unittest -v test_hybrid_take_profit.py
-
-      - name: Run legacy bot-fix regression tests
-        run: python -m unittest -v test_paper_bot_fixes.py
-
-      - name: Run trend fusion gate tests
-        run: python -m unittest -v test_signal_fusion_trend_gate.py
-
-      - name: Run UTC session and market-regime context tests
-        run: python -m pytest -q test_market_context.py
-
-      - name: Run BTC trend monitor tests
-        run: python -m unittest -v test_btc_trend_monitor.py
-
-      - name: Run trend-monitor worker persistence tests
-        run: python -m unittest -v test_trend_monitor_worker.py
-
-      - name: Run signal engine tests
-        run: python -m unittest -v test_signal_engine.py
-
-      - name: Run Kalshi API retry tests
-        run: python -m unittest -v test_kalshi_api.py
-
-      - name: Run order-book quote tests
-        run: python -m unittest -v test_orderbook_quote_pricing.py
-
-      - name: Run entry-quality tests
-        run: python -m unittest -v test_entry_quality.py
-
-      - name: Run current-signal freshness tests
-        run: python -m unittest -v test_current_signal.py
-
-      - name: Run current-window fallback tests
-        run: python -m unittest -v test_current_window_wait.py
-
-      - name: Run wait-alert tests
-        run: python -m unittest -v test_wait_alerts.py
-
-      - name: Run market-data diagnostics tests
-        run: python -m unittest -v test_market_data_diagnostics.py
-
-      - name: Run strategy performance audit tests
-        run: python -m unittest -v test_performance_audit.py
-
-      - name: Run decision audit schema tests
-        run: python -m pytest -q test_decision_audit.py
-
-      - name: Run performance analytics tests
-        run: python -m pytest -q test_performance_analytics.py
-
-      - name: Run per-trade learning feedback tests
-        run: python -m pytest -q test_trade_learning.py
-
-      - name: Run analytics API integration tests
-        run: python -m pytest -q test_analytics_api.py
-
-      - name: Run rejected-signal counterfactual tests
-        run: python -m pytest -q test_counterfactual_audit.py
-
-      - name: Run recursive webhook payload-safety tests
-        run: python -m pytest -q test_payload_safety.py
-
-      - name: Run webhook idempotency and schema migration tests
-        run: python -m pytest -q test_webhook_idempotency.py
-
-      - name: Run multi-category readiness scaffold tests
-        run: python -m pytest -q test_category_registry.py
-
-      - name: Run manual API write-security tests
-        run: python -m pytest -q test_manual_api_security.py
-
-      - name: Run HTTP surface integration tests
-        run: python -m pytest -q test_app_http_surface.py
-
-      - name: Run dashboard active-position context regression tests
-        run: python -m pytest -q test_dashboard_context.py
-
-      - name: Run fail-closed trading-mode and live-readiness tests
-        run: python -m pytest -q test_trading_mode.py test_phase456_http.py
-
-      - name: Run market-router isolation tests
-        run: python -m pytest -q test_market_router.py
-
-      - name: Run market opportunity, provider, and paper-pipeline tests
-        run: python -m pytest -q test_market_decision_engine.py test_market_analysis_provider.py test_market_decision_pipeline.py
-
-      - name: Run multi-user security primitive tests
-        run: python -m pytest -q test_multi_user_security.py
-
-      - name: Run encrypted Kalshi credential-vault and session tests
-        run: python -m pytest -q test_kalshi_credentials.py
-
-      - name: Run dashboard mode-selector and market-scanner checks
-        run: python -m pytest -q test_phase456_dashboard.py
-
-      - name: Run public Kalshi catalog pagination diagnostic tests
-        run: python -m pytest -q test_market_catalog_diagnostics.py
-
-      - name: Run open-market catalog status filtering tests
-        run: python -m pytest -q test_market_catalog_status.py
-
-      - name: Run market-analysis provider service security tests
-        run: python -m pytest -q test_market_analysis_provider_service.py
-
-      - name: Validate dashboard JavaScript syntax when Node.js is available
+      - name: Validate dashboard JavaScript syntax
         run: python validate_dashboard_js.py
 
-      - name: Run deterministic offline Phase 4–6 stress checks
+      - name: Run deterministic offline readiness stress tests
         run: python stress_phase456_readiness.py
 
-      - name: Run randomized market-decision property stress checks
+      - name: Run randomized market-decision property tests
         run: python stress_market_decision_engine.py
 
-      - name: Run shared alert-flow smoke test (offline stubs)
+      - name: Run webhook-to-worker integration smoke test with offline stubs
         run: python smoke_shared_alert_flow.py

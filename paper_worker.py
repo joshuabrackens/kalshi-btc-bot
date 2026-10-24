@@ -267,6 +267,13 @@ def _limits(conn, max_trade_dollars: float, max_daily_loss_dollars: float):
 
 
 def _take_profit_target_cents(entry: float, entry_fee: float, exit_fee: float, target_return_percent: float) -> float:
+    """Return a fee-aware take-profit bid target inside Kalshi's 0-100c contract range.
+
+    When the requested net ROI is impossible at the entered price (the raw target
+    exceeds 100c), cap the target at 100c rather than persisting an unreachable
+    target that can never activate. Callers log this cap so the smaller achievable
+    return is visible. This never implies that a bid at 100c is guaranteed to fill.
+    """
     if not 0 < float(entry) < 100:
         raise ValueError("take-profit entry price must be between 0 and 100 cents")
     if float(entry_fee) < 0 or float(exit_fee) < 0:
@@ -274,7 +281,51 @@ def _take_profit_target_cents(entry: float, entry_fee: float, exit_fee: float, t
     if not 0 < float(target_return_percent) <= 200:
         raise ValueError("PAPER_TAKE_PROFIT_PERCENT must be greater than 0 and at most 200")
     entry_cost = float(entry) + float(entry_fee)
-    return round(float(entry) + float(entry_fee) + float(exit_fee) + entry_cost * float(target_return_percent) / 100, 2)
+    raw_target = round(float(entry) + float(entry_fee) + float(exit_fee) + entry_cost * float(target_return_percent) / 100, 2)
+    return min(100.0, raw_target)
+
+
+def _loss_streak_cooldown_status(
+    settled_rows, *, limit: int, cooldown_minutes: int, now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Pause new paper entries after a configurable consecutive net-loss streak.
+
+    settled_rows must be ordered newest first and contain (settled_at, pnl_cents).
+    This guard only pauses new entries; open-position management still runs first.
+    """
+    if limit <= 0 or cooldown_minutes <= 0:
+        return None
+    rows = list(settled_rows or [])[:limit]
+    if len(rows) < limit:
+        return None
+    streak = 0
+    for settled_at, pnl_cents in rows:
+        try:
+            pnl = float(pnl_cents)
+        except (TypeError, ValueError, OverflowError):
+            break
+        if not math.isfinite(pnl) or pnl >= 0:
+            break
+        streak += 1
+    if streak < limit:
+        return None
+    last_settled = _parse_time(rows[0][0])
+    if last_settled is None:
+        return None
+    current = now or _utcnow()
+    elapsed_seconds = max(0.0, (current - last_settled).total_seconds())
+    remaining_seconds = cooldown_minutes * 60 - elapsed_seconds
+    if remaining_seconds <= 0:
+        return None
+    until = current + timedelta(seconds=remaining_seconds)
+    return {
+        "blocked": True,
+        "consecutive_losses": streak,
+        "cooldown_minutes": int(cooldown_minutes),
+        "seconds_remaining": int(remaining_seconds),
+        "cooldown_until": until.isoformat(),
+        "reason": f"paper entry circuit breaker: {streak} consecutive net-loss trades; pausing new entries for {int(remaining_seconds // 60) + 1} more minute(s)",
+    }
 
 
 def _take_profit_trailing_floor(target_cents: float, peak_bid_cents: float, trail_percent: float) -> float:
@@ -798,6 +849,8 @@ def _manage_open(conn) -> None:
                     tp_target = _take_profit_target_cents(float(entry), float(entry_fee), exit_fee, tp_pct)
                     conn.execute("UPDATE paper_trades SET take_profit_target_cents=? WHERE id=?", (tp_target, trade_id))
                     conn.commit()
+                    if tp_target >= 100:
+                        log.warning("Paper trade %s take-profit target capped at Kalshi maximum 100c; requested %.1f%% net ROI may be unattainable after fees", trade_id, tp_pct)
                 if tp_target <= 100 and not tp_armed and float(bid) >= tp_target:
                     tp_armed = True
                     tp_peak = float(bid)
@@ -1043,6 +1096,20 @@ def run_once() -> dict[str, Any]:
                 # Learning analytics are fail-safe: a policy error does not alter
                 # the user's configured 80c target or any other gate.
                 log.warning("Adaptive entry policy unavailable; using configured target %.2fc: %s", max_entry, adaptive_exc)
+        # An independent paper-only circuit breaker prevents repeated new entries
+        # during a loss cluster. Open positions were already managed above.
+        streak_limit = max(0, min(20, int(_safe_float(os.getenv("PAPER_CONSECUTIVE_LOSS_LIMIT", "4"), 4))))
+        cooldown_minutes = max(0, min(1440, int(_safe_float(os.getenv("PAPER_LOSS_STREAK_COOLDOWN_MINUTES", "60"), 60))))
+        if streak_limit and cooldown_minutes:
+            recent_settled = conn.execute(
+                "SELECT settled_at,pnl_cents FROM paper_trades WHERE settled_at IS NOT NULL ORDER BY id DESC LIMIT ?",
+                (streak_limit,),
+            ).fetchall()
+            cooldown = _loss_streak_cooldown_status(recent_settled, limit=streak_limit, cooldown_minutes=cooldown_minutes)
+            if cooldown:
+                log.warning("Paper entry circuit breaker active: %s", cooldown["reason"])
+                return {"action": "risk_cooldown", **cooldown, "mode": "SIMULATION_ONLY", "trade_placed": False}
+
         # Keep chart trends precomputed even when no TradingView alert is waiting.
         # Retain this exact snapshot for the entry decision later in this cycle.
         trend_snapshot = _refresh_btc_trend_monitor(conn)
@@ -1402,6 +1469,8 @@ def run_once() -> dict[str, Any]:
 
         stop = max(1.0, float(entry) * (1 - stop_pct / 100)) if _truthy("PAPER_STOP_LOSS_ENABLED", False) else None
         tp_target = _take_profit_target_cents(float(entry), fee, exit_fee, tp_pct) if tp_enabled else None
+        if tp_enabled and tp_target is not None and tp_target >= 100:
+            log.warning("New paper trade take-profit target capped at 100c; requested %.1f%% net ROI may be unattainable after fees", tp_pct)
         signal_source = "hybrid" if source == "hybrid" else ("TradingView" if use_external else "internal")
         external_id = queued["id"] if queued else None
         note = (f"TradingView-primary hybrid paper entry; signal_id={external_id}" if source == "hybrid" else
