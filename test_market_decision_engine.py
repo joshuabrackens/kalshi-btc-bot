@@ -48,6 +48,32 @@ def _orderbook(yes_bid=49, no_bid=49, yes_qty=15, no_qty=15):
                            "no": [[no_bid, no_qty], [no_bid - 1, 10]]}}
 
 
+
+
+def test_official_kalshi_orderbook_fp_dollar_schema_is_parsed_for_depth_and_spread():
+    from market_decision_engine import _orderbook_summary
+    book = {"orderbook_fp": {
+        "yes_dollars": [["0.4900", "15.00"], ["0.4800", "10.00"]],
+        "no_dollars": [["0.4900", "15.00"], ["0.4800", "10.00"]],
+    }}
+    summary = _orderbook_summary(book, _market())
+    assert summary["yes_bid_cents"] == 49
+    assert summary["no_bid_cents"] == 49
+    assert summary["yes_ask_cents"] == 51
+    assert summary["no_ask_cents"] == 51
+    assert summary["yes_spread_cents"] == 2
+    assert summary["no_spread_cents"] == 2
+    assert summary["yes_ask_depth_contracts"] == 15
+    assert summary["no_ask_depth_contracts"] == 15
+
+
+def test_unknown_orderbook_shape_does_not_invent_depth():
+    from market_decision_engine import _orderbook_summary
+    summary = _orderbook_summary({"unexpected": {"yes_dollars": [["0.49", "100"]]}}, _market())
+    assert summary["yes_ask_depth_contracts"] is None
+    assert summary["no_ask_depth_contracts"] is None
+
+
 def test_fresh_calibrated_model_with_required_evidence_and_liquid_book_can_be_paper_candidate():
     result = assess_market_opportunity(_market(), _orderbook(), _valid_sports_model())
     assert result["eligible"] is True

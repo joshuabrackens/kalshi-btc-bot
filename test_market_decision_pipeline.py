@@ -43,7 +43,7 @@ def _book():
 def test_pipeline_creates_separate_paper_trade_only_after_all_gates_and_deduplicates(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "pipeline.sqlite3"),
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_AUTOPAPER_ENABLED": "true",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token", "MARKET_AUTOPAPER_ENABLED": "true",
         "MARKET_PAPER_ENABLED_CATEGORIES": "sports", "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
         "MARKET_ANALYSIS_MAX_PER_CYCLE": "10",
     }, clear=False):
@@ -87,7 +87,7 @@ def test_pipeline_without_provider_never_fetches_book_or_creates_trade(tmp_path)
 def test_pipeline_does_not_create_paper_trade_if_runtime_is_not_safe_paper(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "pipeline-block.sqlite3"),
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_AUTOPAPER_ENABLED": "true",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token", "MARKET_AUTOPAPER_ENABLED": "true",
         "MARKET_PAPER_ENABLED_CATEGORIES": "sports", "TRADING_MODE": "real", "LIVE_TRADING_ENABLED": "false",
     }, clear=False):
         pipeline = MarketDecisionPipeline(lambda: {"status": "complete", "analysis_candidates": [{"ticker": "KXSPORTS-TEST", "category": "sports"}]}, lambda _t: {"market": _market()}, lambda _t: _book(), _model)
@@ -108,7 +108,7 @@ def test_pipeline_does_not_create_paper_trade_if_runtime_is_not_safe_paper(tmp_p
 def test_pipeline_does_not_create_paper_trade_when_live_flag_is_true(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "live-flag.sqlite3"),
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
         "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
         "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "true",
     }, clear=False):
@@ -125,7 +125,7 @@ def test_pipeline_does_not_create_paper_trade_when_live_flag_is_true(tmp_path):
 def test_pipeline_category_allowlist_is_required_for_research_paper(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "category.sqlite3"),
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
         "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "politics",
         "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
     }, clear=False):
@@ -137,3 +137,59 @@ def test_pipeline_category_allowlist_is_required_for_research_paper(tmp_path):
         assert result["paper_entries_created"] == 0
         assert result["decisions"][0]["eligible"] is False
         assert result["decisions"][0]["status"] == "category_paper_disabled"
+
+
+def test_end_to_end_catalog_scan_to_automatic_research_paper_entry(tmp_path):
+    """The autopilot pipeline consumes a paginated inventory result and records a paper entry only after gates pass."""
+    from market_catalog_scanner import MarketCatalogScanner
+    from runtime_controls import set_market_autopilot_enabled
+
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "scan-to-paper.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+        "MARKET_ANALYSIS_MAX_PER_CYCLE": "10", "MARKET_RESEARCH_MAX_NEW_TRADES_PER_RUN": "5",
+    }, clear=False):
+        markets = [{
+            "ticker": "KXSPORTS-AUTO-TEST", "title": "Will team A win?", "category": "Sports",
+            "status": "open", "volume_24h_fp": "1000", "open_interest_fp": "200",
+        }]
+        scanner = MarketCatalogScanner(lambda **kwargs: {"markets": markets, "cursor": ""})
+        scanner._page_delay = 0
+        try:
+            scanner.start(force=True)
+            deadline = __import__("time").monotonic() + 3
+            while __import__("time").monotonic() < deadline and scanner.snapshot()["status"] == "running":
+                __import__("time").sleep(0.005)
+            catalog = scanner.analysis_snapshot()
+            assert catalog["status"] == "complete"
+            assert catalog["candidate_count"] == 1
+            set_market_autopilot_enabled(True)
+            pipeline = MarketDecisionPipeline(
+                catalog_snapshot=scanner.analysis_snapshot,
+                market_fetcher=lambda ticker: {"market": _market(ticker=ticker)},
+                orderbook_fetcher=lambda _ticker: _book(),
+                model_provider=_model,
+            )
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "complete"
+            assert result["analyzed_count"] == 1
+            assert result["paper_entries_created"] == 1
+            assert result["live_orders_submitted"] == 0
+            conn = db_store.connect_database()
+            try:
+                row = conn.execute("SELECT market_ticker,status FROM market_research_paper_trades").fetchone()
+                assert row[0] == "KXSPORTS-AUTO-TEST"
+                assert row[1] == "open"
+            finally:
+                conn.close()
+        finally:
+            scanner.reset_for_tests()
+            # Restore the runtime switch to OFF after the isolated test.
+            try:
+                set_market_autopilot_enabled(False)
+            except Exception:
+                pass
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_path / "scan-to-paper.sqlite3") + suffix).unlink(missing_ok=True)

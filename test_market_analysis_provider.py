@@ -25,9 +25,18 @@ def test_missing_provider_disables_external_model():
             analyze_market({"ticker": "M"}, {}, [])
 
 
+def test_provider_is_not_configured_without_url_or_shared_bearer_token():
+    with patch.dict(os.environ, {"MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": ""}, clear=False):
+        assert provider_configured() is False
+        with pytest.raises(MarketAnalysisProviderError, match="auth_not_configured"):
+            analyze_market({"ticker": "M"}, {}, [])
+    with patch.dict(os.environ, {"MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "provider-token"}, clear=False):
+        assert provider_configured() is True
+
+
 def test_provider_rejects_insecure_nonlocal_url_and_url_credentials():
     for url in ("http://example.com/analyze", "https://user:pass@example.com/analyze", "https://example.com/analyze?token=x"):
-        with patch.dict(os.environ, {"MARKET_ANALYSIS_PROVIDER_URL": url}, clear=False):
+        with patch.dict(os.environ, {"MARKET_ANALYSIS_PROVIDER_URL": url, "MARKET_ANALYSIS_PROVIDER_API_KEY": "provider-token"}, clear=False):
             with pytest.raises(MarketAnalysisProviderError):
                 analyze_market({"ticker": "M"}, {}, [])
 

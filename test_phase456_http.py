@@ -60,7 +60,7 @@ def test_concurrent_scan_start_requests_are_coalesced():
     def slow_provider(**kwargs):
         time.sleep(0.04)
         return {"markets": markets, "cursor": ""}
-    with patch.object(main, "get_markets", side_effect=slow_provider) as provider:
+    with patch.object(main, "get_events", side_effect=slow_provider) as provider:
         with ThreadPoolExecutor(max_workers=12) as pool:
             starts = list(pool.map(lambda _index: main.market_scanner.start(force=True), range(24)))
         final = wait_until_terminal(main.market_scanner)
@@ -75,7 +75,7 @@ def test_full_catalog_scan_follows_multiple_pages_and_classifies_all_rows():
     setup_scanner()
     first = [{"ticker": "KXBTC15M-TEST", "title": "BTC price up next 15 minutes", "category": "Crypto"}]
     second = [{"ticker": "KXSPORTS-TEST", "title": "Who wins?", "category": "Sports"}, {"ticker": "UNK-TEST", "title": "Mystery event"}]
-    with patch.object(main, "get_markets", side_effect=[{"markets": first, "cursor": "page-2"}, {"markets": second, "cursor": ""}]) as provider:
+    with patch.object(main, "get_events", side_effect=[{"markets": first, "cursor": "page-2"}, {"markets": second, "cursor": ""}]) as provider:
         main.market_scanner.start(force=True)
         result = wait_until_terminal(main.market_scanner)
     assert result["status"] == "complete"
@@ -90,10 +90,80 @@ def test_full_catalog_scan_follows_multiple_pages_and_classifies_all_rows():
     main._clear_market_scan_cache_for_tests()
 
 
+
+def test_scanner_flattens_official_events_into_markets_with_category_metadata():
+    setup_scanner()
+    event_page = {
+        "events": [
+            {
+                "event_ticker": "KXNBA-26OCT24-LALBOS",
+                "series_ticker": "KXNBA",
+                "title": "Lakers at Celtics",
+                "category": "Sports",
+                "status": "open",
+                "markets": [
+                    {"ticker": "KXNBA-26OCT24-LALBOS-LAL", "event_ticker": "KXNBA-26OCT24-LALBOS",
+                     "title": "Will the Lakers win?", "category": "Politics", "status": "active", "volume_24h_fp": "125.0",
+                     "yes_ask_dollars": "0.4300", "no_ask_dollars": "0.5800"},
+                    {"ticker": "KXNBA-26OCT24-LALBOS-BOS", "event_ticker": "KXNBA-26OCT24-LALBOS",
+                     "title": "Will the Celtics win?", "status": "active", "volume_24h_fp": "100.0"},
+                    {"ticker": "KXNBA-26OCT24-LALBOS-PAUSED", "event_ticker": "KXNBA-26OCT24-LALBOS",
+                     "title": "Paused market", "status": "paused", "volume_24h_fp": "1000.0"},
+                ],
+            },
+        ],
+        "cursor": "",
+    }
+    with patch.object(main, "get_events", return_value=event_page) as provider, \
+         patch.object(main, "get_multivariate_events", return_value={"events": [], "cursor": ""}) as multivariate:
+        main.market_scanner.start(force=True)
+        result = wait_until_terminal(main.market_scanner)
+    assert result["status"] == "complete"
+    assert provider.call_args.kwargs["with_nested_markets"] is True
+    assert multivariate.call_count == 1
+    assert result["candidate_count"] == 2
+    assert result["events_scanned"] == 1
+    assert result["category_counts"]["sports"] == 2
+    sample = {row["ticker"]: row for row in result["markets"]}
+    assert sample["KXNBA-26OCT24-LALBOS-LAL"]["category_source"] == "kalshi_events_api"
+    assert sample["KXNBA-26OCT24-LALBOS-LAL"]["event_title"] == "Lakers at Celtics"
+    assert sample["KXNBA-26OCT24-LALBOS-LAL"]["route_status"] == "research_only"
+    assert "injury/lineup/stat provider" in sample["KXNBA-26OCT24-LALBOS-LAL"]["context_status"]
+    main._clear_market_scan_cache_for_tests()
+
+def test_catalog_provider_paginates_standard_and_multivariate_event_feeds():
+    standard_pages = [
+        {"events": [{"event_ticker": "EVT-A", "category": "Sports", "markets": []}], "cursor": "standard-page-2"},
+        {"events": [{"event_ticker": "EVT-B", "category": "Companies", "markets": []}], "cursor": ""},
+    ]
+    multi_pages = [
+        {"events": [{"event_ticker": "MVE-A", "category": "Entertainment", "markets": []}], "cursor": "multi-page-2"},
+        {"events": [], "cursor": ""},
+    ]
+    with patch.object(main, "get_events", side_effect=standard_pages) as standard, \
+         patch.object(main, "get_multivariate_events", side_effect=multi_pages) as multivariate:
+        p1 = main._get_market_catalog_page(status="open", limit=200, cursor=None)
+        assert p1["_catalog_source"] == "events"
+        assert p1["cursor"].startswith(main._CATALOG_EVENTS_PREFIX)
+        p2 = main._get_market_catalog_page(status="open", limit=200, cursor=p1["cursor"])
+        assert p2["_catalog_source"] == "events"
+        assert p2["cursor"] == main._CATALOG_MVE_START
+        p3 = main._get_market_catalog_page(status="open", limit=200, cursor=p2["cursor"])
+        assert p3["_catalog_source"] == "multivariate_events"
+        assert p3["cursor"].startswith(main._CATALOG_MVE_PREFIX)
+        p4 = main._get_market_catalog_page(status="open", limit=200, cursor=p3["cursor"])
+        assert p4["_catalog_source"] == "multivariate_events"
+        assert p4["cursor"] == ""
+    assert standard.call_count == 2
+    assert multivariate.call_count == 2
+    assert all(call.kwargs.get("with_nested_markets") is True for call in standard.call_args_list)
+    assert all(call.kwargs.get("with_nested_markets") is True for call in multivariate.call_args_list)
+
+
 def test_scan_stops_on_repeated_cursor_and_can_be_restarted():
     setup_scanner()
     page = {"markets": [{"ticker": "UNKNOWN-PAGE", "title": "Example"}], "cursor": "same-cursor"}
-    with patch.object(main, "get_markets", return_value=page) as provider:
+    with patch.object(main, "get_events", return_value=page) as provider:
         main.market_scanner.start(force=True)
         result = wait_until_terminal(main.market_scanner)
     assert result["status"] == "partial"
@@ -105,20 +175,20 @@ def test_scan_stops_on_repeated_cursor_and_can_be_restarted():
 
 def test_scan_stops_at_overlong_cursor():
     setup_scanner()
-    first_page = {"markets": [{"ticker": "UNKNOWN-LONG-CURSOR", "title": "Example"}], "cursor": "x" * 513}
-    with patch.object(main, "get_markets", return_value=first_page) as provider:
+    first_page = {"markets": [{"ticker": "UNKNOWN-LONG-CURSOR", "title": "Example"}], "cursor": "x" * 2049}
+    with patch.object(main, "get_events", return_value=first_page) as provider:
         main.market_scanner.start(force=True)
         result = wait_until_terminal(main.market_scanner)
     assert provider.call_count == 1
     assert result["status"] == "partial"
-    assert "512 characters" in result["pagination_warning"]
+    assert "2048 characters" in result["pagination_warning"]
     main._clear_market_scan_cache_for_tests()
 
 
 def test_scan_failure_is_fail_safe_and_retry_resumes():
     setup_scanner()
     rows = [{"ticker": "UNKNOWN-RECOVERED", "title": "Recovery example"}]
-    with patch.object(main, "get_markets", side_effect=[{"markets": [], "cursor": "next"}, KalshiAPIError("upstream private detail"), {"markets": rows, "cursor": ""}]) as provider:
+    with patch.object(main, "get_events", side_effect=[{"markets": [], "cursor": "next"}, KalshiAPIError("upstream private detail"), {"markets": rows, "cursor": ""}]) as provider:
         main.market_scanner.start(force=True)
         failed = wait_until_terminal(main.market_scanner)
         assert failed["status"] == "failed"
@@ -131,6 +201,76 @@ def test_scan_failure_is_fail_safe_and_retry_resumes():
     assert recovered["candidate_count"] == 1
     assert recovered["markets"][0]["ticker"] == "UNKNOWN-RECOVERED"
     main._clear_market_scan_cache_for_tests()
+
+
+
+
+def test_scanner_retries_transient_rate_limit_and_exposes_safe_status():
+    setup_scanner()
+    main.market_scanner._page_retries = 1
+    rows = [{"ticker": "UNKNOWN-AFTER-429", "title": "Example"}]
+    with patch.object(main, "get_events", side_effect=[
+        KalshiAPIError("rate limited", status_code=429, retryable=True),
+        {"markets": rows, "cursor": ""},
+    ]) as provider, patch("market_catalog_scanner.time.sleep"):
+        main.market_scanner.start(force=True)
+        result = wait_until_terminal(main.market_scanner)
+    assert provider.call_count == 2
+    assert result["status"] == "complete"
+    assert result["candidate_count"] == 1
+    assert result["page_retries"] == 1
+    assert result["error_message"] is None
+    main._clear_market_scan_cache_for_tests()
+
+
+def test_scanner_restarts_once_after_kalshi_rejects_continuation_cursor():
+    setup_scanner()
+    first_page = {"markets": [{"ticker": "UNKNOWN-FIRST-PASS", "title": "First page"}], "cursor": "stale-cursor"}
+    restarted_first_page = {"markets": [{"ticker": "UNKNOWN-RESTARTED", "title": "Fresh first page"}], "cursor": ""}
+    with patch.object(main, "get_events", side_effect=[
+        first_page,
+        KalshiAPIError("cursor rejected", status_code=400, retryable=False),
+        restarted_first_page,
+    ]) as provider:
+        main.market_scanner.start(force=True)
+        result = wait_until_terminal(main.market_scanner)
+    assert provider.call_count == 3
+    assert result["status"] == "complete"
+    assert result["candidate_count"] == 1
+    assert result["markets"][0]["ticker"] == "UNKNOWN-RESTARTED"
+    assert result["pagination_warning"] is None
+    main._clear_market_scan_cache_for_tests()
+
+
+def test_scanner_failure_exposes_upstream_http_status_and_page_number():
+    setup_scanner()
+    with patch.object(main, "get_events", side_effect=KalshiAPIError("bad request", status_code=400, retryable=False)):
+        main.market_scanner.start(force=True)
+        result = wait_until_terminal(main.market_scanner)
+    assert result["status"] == "failed"
+    assert result["upstream_status_code"] == 400
+    assert result["failed_page_number"] == 1
+    assert result["error_code"] == "kalshi_catalog_http_error"
+    assert "HTTP 400" in result["error_message"]
+    main._clear_market_scan_cache_for_tests()
+
+
+
+
+def test_lifespan_restores_schedulers_when_persistent_autopilot_is_already_on(tmp_path):
+    env = {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp_path) / "restart.sqlite3"),
+        "PAPER_WORKER_ENABLED": "false", "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+        "MARKET_SCANNER_AUTO_START": "false", "MARKET_ANALYSIS_AUTO_START": "false",
+    }
+    with patch.dict(os.environ, env, clear=False), \
+         patch.object(main, "market_autopilot_enabled", return_value=True), \
+         patch.object(main.market_scanner, "start_scheduler") as scan_scheduler, \
+         patch.object(main.market_decision_pipeline, "start_scheduler") as analysis_scheduler:
+        with TestClient(main.app):
+            pass
+    scan_scheduler.assert_called_once_with(enabled=True)
+    analysis_scheduler.assert_called_once_with(enabled=True)
 
 
 def test_live_readiness_and_multiuser_readiness_remain_blocked():
@@ -150,7 +290,7 @@ def test_live_readiness_and_multiuser_readiness_remain_blocked():
 
 def test_public_scan_routes_only_inventory_no_trade_calls():
     setup_scanner()
-    with patch.object(main, "get_markets", return_value={"markets": [{"ticker": "KXBTC15M-TEST", "title": "BTC price up next 15 minutes", "category": "Crypto"}], "cursor": ""}):
+    with patch.object(main, "get_events", return_value={"markets": [{"ticker": "KXBTC15M-TEST", "title": "BTC price up next 15 minutes", "category": "Crypto"}], "cursor": ""}):
         with TestClient(main.app) as client:
             started = client.post("/api/market-scan").json()
             assert started["status"] in {"running", "complete"}
@@ -169,7 +309,7 @@ def test_public_scan_routes_only_inventory_no_trade_calls():
 
 def test_catalog_start_endpoint_returns_progress_not_upstream_502():
     setup_scanner()
-    with patch.object(main, "get_markets", side_effect=KalshiAPIError("temporary outage")):
+    with patch.object(main, "get_events", side_effect=KalshiAPIError("temporary outage")):
         with TestClient(main.app) as client:
             response = client.post("/api/market-scan")
             assert response.status_code == 200
@@ -188,10 +328,11 @@ def test_catalog_start_endpoint_returns_progress_not_upstream_502():
 def test_scanner_retains_bounded_top_activity_analysis_pool():
     setup_scanner(max_pages=20)
     rows = [
-        {"ticker": f"UNK-{i}", "title": "Example", "volume_24h_fp": str(i), "open_interest_fp": str(i * 2)}
+        {"ticker": f"KXNBA-TEST-{i}", "title": "Who wins this basketball game?", "category": "Sports",
+         "status": "active", "volume_24h_fp": str(i), "open_interest_fp": str(i * 2)}
         for i in range(1, 80)
     ]
-    with patch.object(main, "get_markets", return_value={"markets": rows, "cursor": ""}):
+    with patch.object(main, "get_events", return_value={"markets": rows, "cursor": ""}):
         main.market_scanner.start(force=True)
         result = wait_until_terminal(main.market_scanner)
     pool = main.market_scanner.analysis_snapshot()["analysis_candidates"]
@@ -245,7 +386,7 @@ def test_market_autopilot_enables_only_paper_research_when_every_gate_passes(tmp
     env = {
         "DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp_path) / "auto-on.sqlite3"),
         "KALSHI_VAULT_ADMIN_SECRET": admin_secret,
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
         "MARKET_AUTOPAPER_ENABLED": "true", "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
         "MARKET_SCANNER_AUTO_START": "false", "MARKET_ANALYSIS_AUTO_START": "false",
     }
@@ -275,7 +416,7 @@ def test_market_autopilot_refuses_un_safe_mode_and_invalid_payload(tmp_path):
     env = {
         "DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp_path) / "auto-unsafe.sqlite3"),
         "KALSHI_VAULT_ADMIN_SECRET": admin_secret,
-        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
         "MARKET_AUTOPAPER_ENABLED": "true", "TRADING_MODE": "real", "LIVE_TRADING_ENABLED": "false",
         "MARKET_SCANNER_AUTO_START": "false", "MARKET_ANALYSIS_AUTO_START": "false",
     }

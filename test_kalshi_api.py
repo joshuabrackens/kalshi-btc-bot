@@ -61,6 +61,54 @@ class KalshiApiRetryTests(unittest.TestCase):
                 kalshi_api.get_market("KXBTC15M-test")
         self.assertEqual(get.call_count, 1)
 
+
+    def test_http_error_exposes_status_without_echoing_url_or_cursor(self):
+        long_cursor = "super-secret-looking-cursor"
+        with patch.object(kalshi_api._SESSION, "get", return_value=FakeResponse(400, {"message": long_cursor})) as get, \
+             patch.object(kalshi_api.time, "sleep"):
+            with self.assertRaises(kalshi_api.KalshiAPIError) as caught:
+                kalshi_api.get_markets(cursor=long_cursor)
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertFalse(caught.exception.retryable)
+        self.assertNotIn(long_cursor, str(caught.exception))
+        self.assertEqual(get.call_count, 1)
+
+    def test_retries_transient_5xx_then_succeeds(self):
+        with patch.object(kalshi_api._SESSION, "get", side_effect=[FakeResponse(503), FakeResponse(200, {"markets": []})]) as get, \
+             patch.object(kalshi_api.time, "sleep"):
+            result = kalshi_api.get_markets()
+        self.assertEqual(result, {"markets": []})
+        self.assertEqual(get.call_count, 2)
+
+    def test_get_events_uses_nested_market_metadata_and_caps_page_size(self):
+        payload = {"events": [{"event_ticker": "EVT-1", "category": "Sports", "markets": []}], "cursor": "next"}
+        with patch.object(kalshi_api._SESSION, "get", return_value=FakeResponse(200, payload)) as get:
+            result = kalshi_api.get_events(status="open", limit=999, cursor="next-cursor", with_nested_markets=True)
+        self.assertEqual(result, payload)
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(params["limit"], 200)
+        self.assertEqual(params["status"], "open")
+        self.assertEqual(params["cursor"], "next-cursor")
+        self.assertEqual(params["with_nested_markets"], "true")
+
+    def test_get_multivariate_events_uses_separate_endpoint_and_caps_page_size(self):
+        payload = {"events": [], "cursor": "next"}
+        with patch.object(kalshi_api._SESSION, "get", return_value=FakeResponse(200, payload)) as get:
+            result = kalshi_api.get_multivariate_events(limit=500, cursor="mve-cursor", with_nested_markets=True)
+        self.assertEqual(result, payload)
+        self.assertTrue(get.call_args.args[0].endswith("/events/multivariate"))
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(params["limit"], 200)
+        self.assertEqual(params["cursor"], "mve-cursor")
+        self.assertEqual(params["with_nested_markets"], "true")
+
+    def test_get_events_tickering_filter_is_bounded(self):
+        ids = [f"EVT-{i}" for i in range(100)]
+        with patch.object(kalshi_api._SESSION, "get", return_value=FakeResponse(200, {"events": [], "cursor": ""})) as get:
+            kalshi_api.get_events(tickers=ids)
+        tickers = get.call_args.kwargs["params"]["tickers"].split(",")
+        self.assertEqual(len(tickers), 40)
+
     def test_request_spacing_helper_respects_disabled_interval(self):
         with patch.object(kalshi_api.time, "sleep") as sleep:
             kalshi_api._wait_for_request_slot()
