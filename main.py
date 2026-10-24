@@ -1827,6 +1827,66 @@ def api_market_analysis() -> dict[str, Any]:
                 "net_pnl_cents": round(float(row[5] or 0), 3),
                 "note": "Separate research-only hold-to-settlement paper journal; not merged into the BTC 15-minute strategy stats.",
             }
+            # The full recent ledger makes virtual entry, costs and official settlement visible
+            # so an open paper position cannot be confused with a hypothetical forecast.
+            position_rows = conn.execute(
+                """SELECT id,created_at,settled_at,market_ticker,category,side,contracts,entry_cents,
+                          estimated_fee_cents,estimated_slippage_cents,model_probability_yes,
+                          expected_net_edge_cents,status,result,pnl_cents,source_snapshot_json,
+                          model_id,model_version
+                   FROM market_research_paper_trades ORDER BY id DESC LIMIT 50"""
+            ).fetchall()
+            research_paper_trades: list[dict[str, Any]] = []
+            for position in position_rows:
+                (trade_id, opened_at, settled_at, ticker, category, side, contracts, entry_cents,
+                 fee_cents, slippage_cents, p_yes, edge, status, outcome, pnl, snapshot_json,
+                 model_id, model_version) = position
+                try:
+                    saved = json.loads(snapshot_json or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    saved = {}
+                decision = saved.get("decision") if isinstance(saved, dict) and isinstance(saved.get("decision"), dict) else {}
+                selection = decision.get("paper_selection") if isinstance(decision.get("paper_selection"), dict) else {}
+                selected_probability = None
+                if p_yes is not None:
+                    selected_probability = float(p_yes) * 100 if str(side).upper() == "YES" else (1.0 - float(p_yes)) * 100
+                contracts_count = int(contracts or 0)
+                entry = float(entry_cents or 0)
+                fee = float(fee_cents or 0)
+                slippage = float(slippage_cents or 0)
+                research_paper_trades.append({
+                    "id": int(trade_id),
+                    "opened_at": opened_at,
+                    "settled_at": settled_at,
+                    "market_ticker": ticker,
+                    "category": category,
+                    "side": side,
+                    "contracts": contracts_count,
+                    "entry_cents": round(entry, 3),
+                    "estimated_fee_cents": round(fee, 3),
+                    "estimated_slippage_cents": round(slippage, 3),
+                    "estimated_total_entry_cost_cents": round(contracts_count * (entry + fee + slippage), 3),
+                    "model_probability_yes_percent": round(float(p_yes) * 100, 3) if p_yes is not None else None,
+                    "selected_side_probability_percent": round(selected_probability, 3) if selected_probability is not None else None,
+                    "expected_net_edge_cents": round(float(edge), 3) if edge is not None else None,
+                    "selection_rank_score": selection.get("rank_score"),
+                    "selection_rank_score_is_probability": False,
+                    "selection_rank": selection.get("rank"),
+                    "selection_status": decision.get("paper_selection_status"),
+                    "model_id": model_id,
+                    "model_version": model_version,
+                    "status": status,
+                    "result": outcome,
+                    "net_pnl_cents": round(float(pnl), 3) if pnl is not None else None,
+                    "pnl_is_final": str(status).lower() == "settled" and outcome in {"YES", "NO"},
+                })
+            result["research_paper_trades"] = research_paper_trades
+            result["open_research_paper_positions"] = [item for item in research_paper_trades if item["status"] == "open"]
+            result["research_paper_position_note"] = (
+                "One simulated research position is allowed open at a time. Entry is recorded at the selected-side ask; "
+                "estimated fee and slippage are deducted from final net P&L. The worker records a result only after the "
+                "market API reports final settlement. No live order is sent."
+            )
             category_rows = conn.execute(
                 """SELECT category,status,settled_at,pnl_cents,source_snapshot_json,market_ticker
                    FROM market_research_paper_trades ORDER BY id DESC LIMIT 10000"""
@@ -1843,9 +1903,12 @@ def api_market_analysis() -> dict[str, Any]:
 
 @app.post("/api/market-analysis/run")
 def api_run_market_analysis(request: Request) -> dict[str, Any]:
-    """Start one bounded market-model/evidence batch; admin auth prevents provider-cost abuse."""
+    """Start one bounded authenticated research batch with at most one best-candidate paper entry."""
     _require_admin_session(request)
-    return market_decision_pipeline.start(force=True)
+    # A manual click is explicit, one-shot authorization to open the best eligible
+    # research-paper position for this batch. Environment safety gates still apply;
+    # the master autopilot setting is not changed and no live order is possible.
+    return market_decision_pipeline.start(force=True, paper_entry_once=True)
 
 
 def _clear_market_scan_cache_for_tests() -> None:
