@@ -557,7 +557,7 @@
 
   <section class="card section" id="market-decision-section" aria-label="Market research and paper opportunity engine">
     <div class="section-head">
-      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed evidence. Each batch ranks all eligible candidates it actually analyzed and can open at most one best-ranked paper position. No probability is invented if the provider is missing.</p></div>
+      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed evidence. Each batch ranks all eligible candidates it actually analyzed and can open at most one best-ranked paper position. The engine will not invent probabilities when the provider is missing.</p></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-analysis-badge">NOT RUN</span><button type="button" class="mode-button" id="market-analysis-button" disabled>Run research batch · unlock admin first</button></div>
     </div>
     <p id="market-analysis-status" class="small" role="status" aria-live="polite">Waiting for scanner and validated evidence provider configuration. This pipeline can only create separate hold-to-settlement paper simulations; it cannot place live orders.</p>
