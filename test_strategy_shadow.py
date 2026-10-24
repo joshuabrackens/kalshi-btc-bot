@@ -108,6 +108,37 @@ def test_hold_to_settlement_shadow_compares_same_entry_without_mutating_baseline
                 conn.close()
 
 
+def test_shadow_target_gate_uses_slippage_adjusted_results(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "",
+        "BOT_DB_PATH": str(Path(tmp_path) / "slippage-gate.sqlite3"),
+        "PAPER_STRATEGY_SHADOW_START_AT": "2026-10-24T07:00:00+00:00",
+        "PAPER_STRATEGY_SHADOW_SLIPPAGE_CENTS_PER_CONTRACT": "1",
+    }):
+        conn = _new_db(str(tmp_path))
+        try:
+            for index in range(20):
+                _insert_trade(
+                    conn,
+                    ticker=f"KXBTC15M-SLIPPAGE-{index}",
+                    direction="UP", entry=97, fee=2, pnl=1, outcome="UP",
+                    settled_at="2026-10-24T07:05:00+00:00",
+                    notes="TradingView-primary hybrid paper entry; official result",
+                )
+            ensure_hold_to_settlement_shadow_rows(conn)
+            report = build_strategy_comparison_report(conn)
+            prospective = report["prospective_comparison"]
+            assert prospective["paired_resolved_trades"] == 20
+            assert prospective["hold_to_settlement_candidate"]["positive_net_rate_percent"] == 100.0
+            assert prospective["hold_to_settlement_candidate"]["net_pnl_cents"] == 20.0
+            adjusted = prospective["slippage_adjusted_comparison"]["hold_to_settlement_candidate"]
+            assert adjusted["positive_net_rate_percent"] == 0.0
+            assert adjusted["net_pnl_cents"] == 0.0
+            assert prospective["target_supported_out_of_sample"] is False
+        finally:
+            conn.close()
+
+
 def test_shadow_rate_limits_retries_for_unsettled_market_and_is_idempotent():
     with tempfile.TemporaryDirectory() as tmp:
         with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "shadow-retry.sqlite3")}):
