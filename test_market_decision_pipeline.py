@@ -290,6 +290,62 @@ def test_only_best_eligible_candidate_opens_and_settlement_pnl_is_recorded(tmp_p
                 Path(str(tmp_path / "best-market.sqlite3") + suffix).unlink(missing_ok=True)
 
 
+def test_settlement_only_monitor_resolves_open_position_with_autopilot_off(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "settlement-monitor.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "", "MARKET_AUTOPAPER_ENABLED": "true",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        from runtime_controls import set_market_autopilot_enabled
+        set_market_autopilot_enabled(False)
+        conn = db_store.connect_database()
+        db_store.ensure_schema(conn)
+        conn.execute(
+            """INSERT INTO market_research_paper_trades
+               (created_at,market_ticker,category,side,contracts,entry_cents,estimated_fee_cents,
+                estimated_slippage_cents,model_probability_yes,model_id,model_version,
+                expected_net_edge_cents,status,source_snapshot_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("2026-10-24T08:00:00+00:00", "KXSPORTS-SETTLE-MONITOR", "sports", "YES", 1,
+             52.0, 2.0, 1.0, 0.8, "test-model", "test-v1", 20.0, "open", "{}"),
+        )
+        conn.commit()
+        conn.close()
+
+        def final_market(ticker):
+            assert ticker == "KXSPORTS-SETTLE-MONITOR"
+            return {"market": {"ticker": ticker, "status": "settled", "result": "YES"}}
+
+        def no_model(*_args, **_kwargs):
+            raise AssertionError("settlement-only monitoring must not invoke the model/evidence provider")
+
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "complete", "analysis_candidates": []},
+            final_market,
+            lambda _ticker: {},
+            no_model,
+        )
+        try:
+            result = pipeline.settle_open_positions_only()
+            assert result == {"checked": 1, "settled": 1, "open_before": 1, "open_after": 0, "errors": 0}
+            conn = db_store.connect_database()
+            try:
+                row = conn.execute(
+                    """SELECT status,result,pnl_cents,settled_at
+                       FROM market_research_paper_trades WHERE market_ticker='KXSPORTS-SETTLE-MONITOR'"""
+                ).fetchone()
+                assert row[0] == "settled"
+                assert row[1] == "YES"
+                assert row[2] == 45.0  # 100¢ payout - 52¢ entry - 2¢ fee - 1¢ slippage
+                assert row[3]
+            finally:
+                conn.close()
+        finally:
+            set_market_autopilot_enabled(False)
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_path / "settlement-monitor.sqlite3") + suffix).unlink(missing_ok=True)
+
+
 def test_manual_research_batch_can_open_one_paper_position_with_autopilot_off(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "manual-one-shot.sqlite3"),
