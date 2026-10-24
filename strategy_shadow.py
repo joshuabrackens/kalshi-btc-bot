@@ -134,8 +134,12 @@ def process_hold_to_settlement_shadow(
     cutoff = (current - timedelta(seconds=max(1, int(retry_seconds)))).isoformat()
     limit = max(0, min(10, int(max_market_checks)))
     if limit == 0:
+        pending_count = conn.execute(
+            "SELECT COUNT(*) FROM strategy_shadow_trades WHERE strategy_key=? AND state='pending'",
+            (HOLD_TO_SETTLEMENT_KEY,),
+        ).fetchone()[0]
         return {"created": backfill["created"], "already_resolved": backfill["already_resolved"],
-                "checked": 0, "newly_settled": 0, "pending": 0, "errors": 0}
+                "checked": 0, "newly_settled": 0, "pending": int(pending_count or 0), "errors": 0}
 
     pending = conn.execute(
         """SELECT sh.id,sh.market_ticker,sh.direction,sh.contracts,sh.entry_cents,
