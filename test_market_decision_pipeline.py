@@ -539,3 +539,13 @@ def test_exploratory_paper_mode_still_rejects_closed_or_unsafe_markets(tmp_path)
             for suffix in ("", "-wal", "-shm"):
                 Path(str(db_path) + suffix).unlink(missing_ok=True)
 
+def test_market_analysis_error_diagnostics_are_allowlisted_and_secret_safe():
+    from market_analysis_provider import MarketAnalysisProviderError
+    from market_decision_pipeline import _safe_market_analysis_error
+
+    assert _safe_market_analysis_error(MarketAnalysisProviderError("probability_provider_http_429")) == "probability_provider_http_429"
+    assert _safe_market_analysis_error(MarketAnalysisProviderError("probability_provider_http_401")) == "probability_provider_http_401"
+    assert _safe_market_analysis_error(MarketAnalysisProviderError("probability_provider_network_error:ConnectionError")) == "probability_provider_network_error:ConnectionError"
+    assert _safe_market_analysis_error(MarketAnalysisProviderError("Authorization: Bearer do-not-log-this")) == "MarketAnalysisProviderError"
+    assert _safe_market_analysis_error(RuntimeError("api_key=do-not-log-this")) == "RuntimeError"
+
