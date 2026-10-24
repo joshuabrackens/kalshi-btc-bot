@@ -47,9 +47,13 @@ def analyze_market(market: Mapping[str, Any], orderbook_summary: Mapping[str, An
         raise MarketAnalysisProviderError("probability_provider_auth_not_configured")
     headers = {"Accept": "application/json", "Content-Type": "application/json",
                "Authorization": f"Bearer {api_key}"}
-    timeout = 8.0
+    # The hosted provider's default upstream Responses timeout is 35s. Give it
+    # a bounded 40s read budget so a slow-but-valid web-search response is not
+    # abandoned by this caller first. This changes waiting only: no retries or
+    # additional provider requests are made.
+    timeout = 40.0
     try:
-        timeout = max(2.0, min(float(os.getenv("MARKET_ANALYSIS_PROVIDER_TIMEOUT_SECONDS", "8")), 15.0))
+        timeout = max(4.0, min(float(os.getenv("MARKET_ANALYSIS_PROVIDER_TIMEOUT_SECONDS", "40")), 65.0))
     except (TypeError, ValueError, OverflowError):
         pass
     payload = {
@@ -59,7 +63,7 @@ def analyze_market(market: Mapping[str, Any], orderbook_summary: Mapping[str, An
         "contract": "kalshi-market-model-v1",
     }
     try:
-        response = requests.post(raw_url, json=payload, headers=headers, timeout=timeout, allow_redirects=False)
+        response = requests.post(raw_url, json=payload, headers=headers, timeout=(4.0, timeout), allow_redirects=False)
     except requests.RequestException as exc:
         raise MarketAnalysisProviderError(f"probability_provider_network_error:{type(exc).__name__}") from None
     if response.is_redirect:
