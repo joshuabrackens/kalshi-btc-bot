@@ -117,6 +117,7 @@ class MarketDecisionPipeline:
         self._job_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._scheduler_started = False
+        self._manual_entry_once_pending = False
         self._cursor = 0
         self._state: dict[str, Any] = self._empty()
 
@@ -145,6 +146,8 @@ class MarketDecisionPipeline:
         with self._job_lock:
             with self._lock:
                 if self._state.get("status") == "running":
+                    if paper_entry_once:
+                        self._manual_entry_once_pending = True
                     return self.snapshot()
                 if not force and not provider_configured():
                     self._state.update(status="provider_not_configured", updated_at=_stamp(), provider_configured=False,
@@ -335,6 +338,12 @@ class MarketDecisionPipeline:
                     }
 
                 from runtime_controls import market_autopilot_enabled
+                if self._manual_entry_once_pending:
+                    # If the user clicks "Run research batch" while an automatic
+                    # batch is already in progress, let that in-flight batch honour
+                    # the single manual paper-entry request once it finishes ranking.
+                    paper_entry_once = True
+                    self._manual_entry_once_pending = False
                 autopilot_on = bool(market_autopilot_enabled(conn))
                 paper_environment_safe = (
                     _bool_env("MARKET_AUTOPAPER_ENABLED", False)
@@ -357,17 +366,28 @@ class MarketDecisionPipeline:
                         reason = "an_open_research_position_must_settle_before_another_position_can_open"
                     else:
                         best, score, details = ranked_candidates[0]
+                        # Persist a truthful selection record with the simulated
+                        # position when it is opened; a failed attempt is reset below.
+                        best["paper_trade_created"] = True
+                        best["paper_selection_status"] = "best_candidate_position_opened"
+                        best["paper_trade_block_reason"] = None
+                        best.setdefault("paper_selection", {})["selected_for_attempt"] = True
+                        best["paper_entry_gate"] = {
+                            "authorized_for_this_batch": entry_authorized,
+                            "autopilot_enabled": autopilot_on,
+                            "manual_one_shot_requested": bool(paper_entry_once),
+                            "environment_safe": paper_environment_safe,
+                            "open_position_count_before_entry": open_count,
+                        }
                         created, risk_reason = self._create_paper_trade(
                             conn, best,
                             allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
                         )
                         if created:
                             entered = 1
-                            best["paper_trade_created"] = True
-                            best["paper_selection_status"] = "best_candidate_position_opened"
-                            best["paper_trade_block_reason"] = None
                         else:
                             reason = risk_reason or "paper_position_not_created"
+                            best["paper_trade_created"] = False
                             best["paper_trade_block_reason"] = reason
                             best["paper_selection_status"] = "best_candidate_blocked_by_risk_or_duplicate"
                             best.setdefault("reasons", []).append(reason)
@@ -645,4 +665,5 @@ class MarketDecisionPipeline:
     def reset_for_tests(self) -> None:
         with self._job_lock, self._lock:
             self._cursor = 0
+            self._manual_entry_once_pending = False
             self._state = self._empty()
