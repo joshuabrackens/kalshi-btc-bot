@@ -8,6 +8,7 @@ module places live orders.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import re
 from typing import Any
 
 
@@ -150,3 +151,49 @@ def classify_market(ticker: str | None, title: str | None = None, explicit_categ
         "market_ticker": ticker_text or None,
         "reason": profile.notes if profile.paper_strategy_enabled else "Category-specific model and validation requirements are not complete; no paper entries allowed.",
     }
+
+
+_DISPLAY_GROUPS = {
+    "politics": "Politics",
+    "economics": "Economics",
+    "weather": "Weather",
+    "crypto_event": "Crypto Events",
+    "financial_markets": "Financial Markets",
+    "entertainment": "Entertainment",
+    "companies": "Companies",
+    "world": "World Events",
+    "science_technology": "Science & Tech",
+    "btc_15m": "BTC 15-minute",
+}
+
+
+def market_display_group(
+    category: str | None,
+    ticker: str | None = None,
+    title: str | None = None,
+    event_title: str | None = None,
+    event_ticker: str | None = None,
+    event_sub_title: str | None = None,
+) -> str:
+    """Choose a reporting label without changing the validated base category.
+
+    Sports leagues are split for analytics only. They still use the base sports
+    model/evidence gates; a label never grants trade eligibility.
+    """
+    raw = str(category or "").strip().lower().replace(" ", "_")
+    key = _ALIASES.get(raw, raw)
+    if key == "sports":
+        corpus = " ".join(str(x or "")[:600] for x in (ticker, title, event_title, event_ticker, event_sub_title)).upper()
+        tests = (
+            ("WNBA", r"\bWNBA\b|KXWNBA"),
+            ("NFL", r"\bNFL\b|KXNFL|SUPER BOWL|PRO FOOTBALL"),
+            ("NBA", r"\bNBA\b|KXNBA|PRO BASKETBALL"),
+            ("NHL", r"\bNHL\b|KXNHL|PRO HOCKEY|STANLEY CUP"),
+            ("MLB", r"\bMLB\b|KXMLB|MAJOR LEAGUE BASEBALL"),
+            ("NCAA Sports", r"\bNCAA\b|NCAAF|NCAAB|COLLEGE FOOTBALL|COLLEGE BASKETBALL|MARCH MADNESS"),
+        )
+        for label, pattern in tests:
+            if re.search(pattern, corpus):
+                return label
+        return "Other Sports"
+    return _DISPLAY_GROUPS.get(key, "Other / Unclassified")

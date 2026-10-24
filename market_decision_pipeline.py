@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping
 from db_store import connect_database, ensure_schema
 from market_analysis_provider import analyze_market, provider_configured, MarketAnalysisProviderError
 from market_decision_engine import assess_market_opportunity, _orderbook_summary, _REQUIRED_EVIDENCE
+from market_category_registry import market_display_group
 
 log = logging.getLogger("market_decision_pipeline")
 
@@ -205,6 +206,10 @@ class MarketDecisionPipeline:
                             max_entry_cents=_num(os.getenv("MARKET_MAX_ENTRY_CENTS", "90"), 90),
                             min_validation_samples=_int_env("MARKET_MODEL_MIN_VALIDATION_SAMPLES", 100, 30, 10000),
                             max_brier_score=_num(os.getenv("MARKET_MODEL_MAX_BRIER_SCORE", "0.22"), 0.22),
+                        )
+                        result["display_group"] = market_display_group(
+                            category, ticker, market.get("title"), market.get("event_title"),
+                            market.get("event_ticker"), market.get("event_sub_title"),
                         )
                         result["provider_configured"] = True
                         result["trade_submitted"] = False
