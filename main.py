@@ -1885,9 +1885,10 @@ def api_market_analysis() -> dict[str, Any]:
             result["open_research_paper_positions"] = [item for item in research_paper_trades if item["status"] == "open"]
             result["research_paper_position_note"] = (
                 "One simulated research position is allowed open at a time. Entry is recorded at the selected-side ask; "
-                "estimated fee and slippage are deducted from final net P&L. The worker records a result only after the "
-                "market API reports final settlement. No live order is sent."
+                "estimated fee and slippage are deducted from final net P&L. A settlement-only monitor checks final market "
+                "results on a bounded cadence even while the master autopilot is OFF. No live order is sent."
             )
+            result["research_paper_settlement_monitor"] = market_decision_pipeline.settlement_monitor_status()
             category_rows = conn.execute(
                 """SELECT category,status,settled_at,pnl_cents,source_snapshot_json,market_ticker
                    FROM market_research_paper_trades ORDER BY id DESC LIMIT 10000"""
@@ -1906,9 +1907,12 @@ def api_market_analysis() -> dict[str, Any]:
 def api_run_market_analysis(request: Request) -> dict[str, Any]:
     """Start one bounded authenticated research batch with at most one best-candidate paper entry."""
     _require_admin_session(request)
-    # A manual click is explicit, one-shot authorization to open the best eligible
-    # research-paper position for this batch. Environment safety gates still apply;
-    # the master autopilot setting is not changed and no live order is possible.
+    # Start the settlement-only monitor as part of this explicit research workflow.
+    # It keeps tracking this and later paper positions even after the master autopilot
+    # remains OFF; that setting is never changed by this route.
+    market_decision_pipeline.start_scheduler(enabled=True)
+    # A manual click is one-shot authorization to open at most the best eligible
+    # research-paper position for this batch. Environment safety gates still apply.
     return market_decision_pipeline.start(force=True, paper_entry_once=True)
 
 
