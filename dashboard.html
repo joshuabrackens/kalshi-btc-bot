@@ -755,11 +755,11 @@
     write('historical-probability-help',`${stats.wins||0} wins from ${stats.settled_trades||0} settled trades; all settled trades mixed together.`);
     write('score-probability-note',hasNum(modelProbability)?'Model probability is displayed as supplied with the saved record; it is not a guarantee.':'The bot does not currently provide a calibrated per-signal win probability. The score is not probability; historical win rate summarizes previous settled trades.');
 
-    const decisionText=hasCurrentEvaluation?side:(currentAlert?`${side} alert received — evaluation pending`:isHistorical?`${side} · historical proposal${decisionStatus?` (${decisionStatus})`:''}`:waitingLabel);
+    const decisionText=hasCurrentEvaluation?side:(currentAlertPending?`${side} alert received — evaluation pending`:currentAlert?`${side} alert · ${currentProcessingStatus.replaceAll('_',' ')}`:isHistorical?`${side} · historical proposal${decisionStatus?` (${decisionStatus})`:''}`:waitingLabel);
     write('decision-current',decisionText);
     write('decision-age',hasDisplayedEvaluation?age(ageSeconds):(currentAlert&&alertAge!==null?age(alertAge):'No fresh current alert'));
     write('decision-score',score===null?'Not available':`${nfmt(score,0)}/100`);
-    setBadge('decision-badge',hasCurrentEvaluation?'Current signal analyzed':currentAlert?'Evaluation pending':isHistorical?'Historical details retained':waitingLabel,hasCurrentEvaluation?'blue':currentAlert?'green':isHistorical?'amber':'amber');
+    setBadge('decision-badge',hasCurrentEvaluation?'Current signal analyzed':currentAlertPending?'Evaluation pending':currentAlert?'Worker status recorded':isHistorical?'Historical details retained':waitingLabel,hasCurrentEvaluation?'blue':currentAlertPending?'green':currentAlert?'amber':isHistorical?'amber':'amber');
     setList('signal-reasons',hasDisplayedEvaluation?(Array.isArray(s.reasons)?s.reasons.map(formatReason):[]):[],hasDisplayedEvaluation?'No reasons were recorded.':currentAlertPending?'Current alert received; waiting for evaluation details.':currentAlert?'Worker status was recorded; matching evaluation reasons are unavailable in the dashboard response.':'No directional evaluation has been recorded yet.');
     setList('signal-warnings',hasDisplayedEvaluation?(s.warnings||[]):[],hasDisplayedEvaluation?'No warnings were recorded.':currentAlertPending?'Current evaluation warnings will appear when available.':currentAlert?'The worker status is available, but no matching evaluation warnings were returned.':'No directional-evaluation warnings are available yet.');
     if(hasCurrentEvaluation) write('decision-summary',s.disclaimer||'Current-window evaluation; not a measured probability of winning.');
@@ -803,7 +803,8 @@
     nextSignalCountdownState.entryAsk=hasNum(latest.entry_ask_cents)?Number(latest.entry_ask_cents):null;
     nextSignalCountdownState.targetAsk=hasNum(dataForCountdown.risk?.configured_hard_max_entry_cents)?Number(dataForCountdown.risk.configured_hard_max_entry_cents):
       (hasNum(latest.max_entry_cents)?Number(latest.max_entry_cents):null);
-    window.__btcLatestDecisionStatus=(phase==='signal_received'&&matching)?latestStatus:'';
+    window.__btcLatestDecisionStatus=(phase==='signal_received'&&matching)?latestStatus:
+      (phase==='signal_received'&&Boolean(cw.processed_at)?String(cw.processing_status||'processed').toLowerCase():'');
     updateNextSignalCountdown();
   }
   function nextQuarterBoundaryMs(nowMs){return (Math.floor(nowMs/900000)+1)*900000;}
@@ -909,8 +910,21 @@
         badge='Alert received',badgeTone='green';
       }
     }else if(alreadyEvaluated){
-      summary=`The current-window ${directionNow} alert has already been evaluated (${evaluatedStatus.replaceAll('_',' ')}). No position is currently open; the bot is waiting for the next fresh eligible signal and will not reuse this alert.`;
-      badge='Signal already evaluated',badgeTone='amber';
+      const workerStatus=String(cw.processing_status||evaluatedStatus||'evaluated').toLowerCase();
+      const workerNote=String(cw.processing_note||cw.reason||'').trim();
+      if(workerStatus==='processed'&&/paper trade opened/i.test(workerNote)){
+        status=`${directionNow} · PAPER TRADE OPENED`;
+        summary=workerNote;
+        badge='Paper trade opened',badgeTone='green';
+      }else if(['skipped','blocked','ignored','vetoed','wait'].includes(workerStatus)){
+        status=`${directionNow} · NOT TRADED (${workerStatus.replaceAll('_',' ').toUpperCase()})`;
+        summary=workerNote||`The current-window alert was marked ${workerStatus.replaceAll('_',' ')}. The alert will not be replayed; the next entry requires a fresh signal and all safety checks.`;
+        badge=workerStatus==='vetoed'?'Strategy veto':'No trade placed',badgeTone='amber';
+      }else{
+        status=`${directionNow} · ALERT EVALUATED`;
+        summary=workerNote||`The current-window ${directionNow} alert has already been evaluated (${evaluatedStatus.replaceAll('_',' ')}). No position is currently open; the bot is waiting for the next fresh eligible signal and will not reuse this alert.`;
+        badge='Signal already evaluated',badgeTone='amber';
+      }
     }else if(phase==='indicator_wait'){
       summary='The indicator explicitly returned WAIT for this window. No paper entry should open from that instruction; the countdown shows when the next 15-minute window begins.';
       badge='Indicator says WAIT',badgeTone='amber';
