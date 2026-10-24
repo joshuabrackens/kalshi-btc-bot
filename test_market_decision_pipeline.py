@@ -134,6 +134,46 @@ def test_pipeline_waits_safely_when_catalog_running_without_candidates(tmp_path)
         assert result["live_orders_submitted"] == 0
 
 
+def test_evaluated_decision_is_committed_before_later_ranking_failure(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "checkpoint.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "false", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "running", "analysis_candidates": [
+                {"ticker": "KXSPORTS-CHECKPOINT", "category": "sports", "route_status": "research_only"}
+            ]},
+            lambda ticker: {"market": _market(ticker=ticker)},
+            lambda _ticker: _book(),
+            _model,
+        )
+        try:
+            with patch("market_decision_pipeline._paper_candidate_rank", side_effect=RuntimeError("simulated post-evaluation failure")):
+                result = pipeline.run_once_for_tests()
+            assert result["status"] == "failed"
+            assert result["paper_entries_created"] == 0
+            assert result["live_orders_submitted"] == 0
+            conn = db_store.connect_database()
+            try:
+                rows = conn.execute(
+                    "SELECT market_ticker,decision,model_probability_yes,payload_json FROM market_research_decisions"
+                ).fetchall()
+                assert len(rows) == 1
+                assert rows[0][0] == "KXSPORTS-CHECKPOINT"
+                assert rows[0][2] == 0.75
+                payload = json.loads(rows[0][3])
+                assert payload["batch_persistence_phase"] == "candidate_evaluated_pre_rank"
+                assert payload["model_validation_status"] == "VALIDATED"
+            finally:
+                conn.close()
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_path / "checkpoint.sqlite3") + suffix).unlink(missing_ok=True)
+
+
 def test_pipeline_without_provider_never_fetches_book_or_creates_trade(tmp_path):
     with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "no-provider.sqlite3"), "MARKET_ANALYSIS_PROVIDER_URL": "", "MARKET_AUTOPAPER_ENABLED": "true", "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false"}, clear=False):
         def fail(_ticker):
