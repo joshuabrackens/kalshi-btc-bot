@@ -356,62 +356,62 @@ class MarketDecisionPipeline:
                 open_count = int(conn.execute(
                     "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
                 ).fetchone()[0] or 0)
+                max_open_positions = _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 5, 1, 20)
+                max_entries_per_cycle = _int_env("MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE", 3, 1, 10)
+                if paper_entry_once and not autopilot_on:
+                    max_entries_per_cycle = 1
 
                 if ranked_candidates:
-                    best = ranked_candidates[0][0]
-                    best["paper_selection_status"] = "best_eligible_candidate_not_opened"
-                    if not paper_environment_safe:
-                        reason = "paper_entry_environment_gate_off_or_unsafe_mode"
-                    elif not (autopilot_on or paper_entry_once):
-                        reason = "master_autopilot_off; candidate ranked for research only"
-                    elif open_count >= 1:
-                        reason = "an_open_research_position_must_settle_before_another_position_can_open"
-                    else:
-                        best, score, details = ranked_candidates[0]
-                        # Persist a truthful selection record with the simulated
-                        # position when it is opened; a failed attempt is reset below.
-                        best["paper_trade_created"] = True
-                        best["paper_selection_status"] = "best_candidate_position_opened"
-                        best["paper_trade_block_reason"] = None
-                        best.setdefault("paper_selection", {})["selected_for_attempt"] = True
-                        best["paper_entry_gate"] = {
+                    for candidate, _score, _details in ranked_candidates:
+                        candidate["paper_trade_created"] = False
+                        candidate["paper_entry_gate"] = {
                             "authorized_for_this_batch": entry_authorized,
                             "autopilot_enabled": autopilot_on,
                             "manual_one_shot_requested": bool(paper_entry_once),
                             "environment_safe": paper_environment_safe,
                             "open_position_count_before_entry": open_count,
+                            "max_open_positions": max_open_positions,
+                            "max_entries_per_cycle": max_entries_per_cycle,
                         }
-                        created, risk_reason = self._create_paper_trade(
-                            conn, best,
-                            allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
-                        )
-                        if created:
-                            entered = 1
+                        if not paper_environment_safe:
+                            reason = "paper_entry_environment_gate_off_or_unsafe_mode"
+                            candidate["paper_selection_status"] = "best_eligible_candidate_not_opened"
+                        elif not (autopilot_on or paper_entry_once):
+                            reason = "master_autopilot_off; candidate ranked for research only"
+                            candidate["paper_selection_status"] = "best_candidate_ranked_autopilot_off"
+                        elif open_count >= max_open_positions:
+                            reason = "max_open_research_paper_trades_reached"
+                            candidate["paper_selection_status"] = "eligible_candidate_waiting_for_open_position"
+                        elif entered >= max_entries_per_cycle:
+                            reason = "max_entries_per_research_cycle_reached"
+                            candidate["paper_selection_status"] = "eligible_candidate_not_selected_this_cycle"
                         else:
-                            reason = risk_reason or "paper_position_not_created"
-                            best["paper_trade_created"] = False
-                            best["paper_trade_block_reason"] = reason
-                            best["paper_selection_status"] = "best_candidate_blocked_by_risk_or_duplicate"
-                            best.setdefault("reasons", []).append(reason)
-                    if not best.get("paper_trade_created"):
-                        best["paper_trade_block_reason"] = reason
-                        if reason not in best.setdefault("reasons", []):
-                            best["reasons"].append(reason)
-                    best["paper_trade_created"] = bool(best.get("paper_trade_created"))
-                    best["paper_entry_gate"] = {
-                        "authorized_for_this_batch": entry_authorized,
-                        "autopilot_enabled": autopilot_on,
-                        "manual_one_shot_requested": bool(paper_entry_once),
-                        "environment_safe": paper_environment_safe,
-                        "open_position_count_before_entry": open_count,
-                    }
-                    if not entry_authorized and paper_environment_safe and not autopilot_on:
-                        best["paper_selection_status"] = "best_candidate_ranked_autopilot_off"
-                    elif open_count >= 1 and entry_authorized:
-                        best["paper_selection_status"] = "best_candidate_waiting_for_open_position_to_settle"
-                    best.setdefault("paper_selection", {})["selected_for_attempt"] = True
-                    for other, _, _ in ranked_candidates[1:]:
-                        other["paper_selection"].update(selected_for_attempt=False)
+                            candidate.setdefault("paper_selection", {})["selected_for_attempt"] = True
+                            created, risk_reason = self._create_paper_trade(
+                                conn, candidate,
+                                allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
+                            )
+                            if created:
+                                entered += 1
+                                open_count += 1
+                                candidate["paper_trade_created"] = True
+                                candidate["paper_selection_status"] = "paper_position_opened"
+                                candidate["paper_trade_block_reason"] = None
+                                reason = None
+                            else:
+                                reason = risk_reason or "paper_position_not_created"
+                                candidate["paper_selection_status"] = "best_candidate_blocked_by_risk_or_duplicate"
+                        if reason:
+                            candidate["paper_trade_block_reason"] = reason
+                            if reason not in candidate.setdefault("reasons", []):
+                                candidate["reasons"].append(reason)
+                    for index, (candidate, _score, _details) in enumerate(ranked_candidates, start=1):
+                        candidate.setdefault("paper_selection", {}).update({
+                            "rank": index,
+                            "eligible_candidate_count": len(ranked_candidates),
+                            "is_best_candidate": index == 1,
+                            "selected_for_attempt": bool(candidate.get("paper_selection", {}).get("selected_for_attempt", False)),
+                        })
                 for item in decisions:
                     self._record_decision(conn, item)
                 conn.commit()
@@ -575,8 +575,8 @@ class MarketDecisionPipeline:
         if not model_id or not model_version:
             return False, "model_identity_missing"
 
-        # One research position at a time ensures the journal tests the single best eligible candidate.
-        max_open = 1
+        # Multiple isolated paper positions allow prospective measurement across the best ranked markets.
+        max_open = _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 5, 1, 20)
         max_open_cost = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_OPEN_COST_CENTS", "2000"), 2000))
         daily_loss_limit = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_DAILY_LOSS_CENTS", "500"), 500))
         open_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(contracts*(entry_cents+estimated_fee_cents+estimated_slippage_cents)),0) FROM market_research_paper_trades WHERE status='open'").fetchone()
