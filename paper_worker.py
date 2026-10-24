@@ -1141,7 +1141,7 @@ def run_once() -> dict[str, Any]:
         # An independent paper-only circuit breaker prevents repeated new entries
         # during a loss cluster. Open positions were already managed above.
         streak_limit = max(0, min(20, int(_safe_float(os.getenv("PAPER_CONSECUTIVE_LOSS_LIMIT", "4"), 4))))
-        cooldown_minutes = max(0, min(1440, int(_safe_float(os.getenv("PAPER_LOSS_STREAK_COOLDOWN_MINUTES", "60"), 60))))
+        cooldown_minutes = max(0, min(1440, int(_safe_float(os.getenv("PAPER_LOSS_STREAK_COOLDOWN_MINUTES", "15"), 15))))
         if streak_limit and cooldown_minutes:
             recent_settled = conn.execute(
                 "SELECT settled_at,pnl_cents FROM paper_trades WHERE settled_at IS NOT NULL ORDER BY id DESC LIMIT ?",
