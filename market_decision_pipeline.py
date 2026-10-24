@@ -102,7 +102,7 @@ class MarketDecisionPipeline:
                     return self.snapshot()
                 if not force and not provider_configured():
                     self._state.update(status="provider_not_configured", updated_at=_stamp(), provider_configured=False,
-                                       last_error="Configure MARKET_ANALYSIS_PROVIDER_URL to provide calibrated probabilities and source-attributed current evidence.")
+                                       last_error="Configure MARKET_ANALYSIS_PROVIDER_URL and MARKET_ANALYSIS_PROVIDER_API_KEY to provide calibrated probabilities and source-attributed current evidence.")
                     return self.snapshot()
                 self._state.update(status="running", updated_at=_stamp(), last_error=None)
             self._thread = threading.Thread(target=self._run, name="market-research-decision-pipeline", daemon=True)
@@ -119,15 +119,22 @@ class MarketDecisionPipeline:
             catalog_status = catalog.get("status") if isinstance(catalog, dict) else "unavailable"
             if catalog_status not in {"complete", "partial"}:
                 raise RuntimeError("market_catalog_not_ready")
-            candidates = catalog.get("analysis_candidates") if isinstance(catalog.get("analysis_candidates"), list) else catalog.get("markets", [])
-            candidates = [row for row in candidates if isinstance(row, dict) and isinstance(row.get("ticker"), str) and row.get("ticker")]
+            raw_candidates = catalog.get("analysis_candidates") if isinstance(catalog.get("analysis_candidates"), list) else catalog.get("markets", [])
+            raw_candidates = [row for row in raw_candidates if isinstance(row, dict) and isinstance(row.get("ticker"), str) and row.get("ticker")]
+            raw_pool_size = len(raw_candidates)
+            enabled_categories = {x.strip().lower() for x in os.getenv("MARKET_PAPER_ENABLED_CATEGORIES", "sports,politics,economics,weather,crypto_event,financial_markets,entertainment,companies,world,science_technology").split(",") if x.strip()}
+            # Don't spend model tokens on unknown categories, BTC markets that belong
+            # to the separate BTC engine, or research categories not explicitly allowed.
+            candidates = [row for row in raw_candidates
+                          if str(row.get("category") or "unclassified").lower() in _REQUIRED_EVIDENCE
+                          and row.get("route_status") in (None, "research_only")]
             pool_size = len(candidates)
-            enabled_categories = {x.strip().lower() for x in os.getenv("MARKET_PAPER_ENABLED_CATEGORIES", "sports,politics,economics,weather,crypto_event,financial_markets,entertainment").split(",") if x.strip()}
             max_per_cycle = _int_env("MARKET_ANALYSIS_MAX_PER_CYCLE", 10, 1, 50)
             if not candidates:
                 with self._lock:
-                    self._state.update(status="complete", candidate_pool_size=0, updated_at=_stamp(),
-                                       last_error="No catalog candidates are available yet.")
+                    self._state.update(status="complete", candidate_pool_size=raw_pool_size, updated_at=_stamp(),
+                                       analyzed_count=0, blocked_count=raw_pool_size, decisions=[],
+                                       last_error="No recognized, allowlisted research-category markets are available in the bounded candidate pool.")
                 return
             start = self._cursor % len(candidates)
             selected = [candidates[(start + i) % len(candidates)] for i in range(min(max_per_cycle, len(candidates)))]
@@ -162,7 +169,7 @@ class MarketDecisionPipeline:
                 with self._lock:
                     self._state.update(status="provider_not_configured", updated_at=_stamp(),
                                        candidate_pool_size=pool_size, analyzed_count=0, blocked_count=blocked,
-                                       decisions=decisions, last_error="Configure MARKET_ANALYSIS_PROVIDER_URL and validate a model/evidence response before opportunities can be considered.")
+                                       decisions=decisions, last_error="Configure MARKET_ANALYSIS_PROVIDER_URL plus MARKET_ANALYSIS_PROVIDER_API_KEY, then validate the model/evidence response before opportunities can be considered.")
                 return
 
             conn = connect_database()
@@ -176,11 +183,15 @@ class MarketDecisionPipeline:
                         market = _normalize_market(self._market_fetcher(ticker))
                         if not market:
                             raise ValueError("market_detail_unavailable")
-                        market.setdefault("ticker", ticker)
-                        market.setdefault("category", row.get("category"))
+                        # The scanner's parent-event category is the source of truth.
+                        # Detail-market endpoints may omit category or return a stale field.
+                        market["ticker"] = ticker
+                        category = str(row.get("category") or "unclassified").strip().lower()
+                        market["category"] = category
+                        if not (isinstance(market.get("title"), str) and market.get("title").strip()):
+                            market["title"] = str(row.get("title") or row.get("event_title") or "")[:800]
                         orderbook_payload = self._orderbook_fetcher(ticker)
                         orderbook_summary = _orderbook_summary(orderbook_payload, market)
-                        category = str(row.get("category") or "unclassified")
                         required = sorted(_REQUIRED_EVIDENCE.get(category, set()))
                         model = self._model_provider(market, orderbook_summary, required)
                         result = assess_market_opportunity(
@@ -444,7 +455,7 @@ class MarketDecisionPipeline:
         threading.Thread(target=self._scheduler_loop, name="market-decision-scheduler", daemon=True).start()
 
     def _scheduler_loop(self) -> None:
-        interval = _int_env("MARKET_ANALYSIS_INTERVAL_SECONDS", 600, 60, 86400)
+        interval = _int_env("MARKET_ANALYSIS_INTERVAL_SECONDS", 300, 60, 86400)
         last_scheduled_run = 0.0
         from runtime_controls import market_autopilot_enabled
         while True:
@@ -463,7 +474,7 @@ class MarketDecisionPipeline:
                     with self._lock:
                         if self._state.get("status") != "running":
                             self._state.update(status="provider_not_configured", updated_at=_stamp(), provider_configured=False,
-                                               last_error="Configure MARKET_ANALYSIS_PROVIDER_URL to return calibrated probabilities and fresh, source-attributed evidence before research decisions can be made.")
+                                               last_error="Configure MARKET_ANALYSIS_PROVIDER_URL and MARKET_ANALYSIS_PROVIDER_API_KEY to return calibrated probabilities and fresh, source-attributed evidence before research decisions can be made.")
             except Exception as exc:
                 log.debug("Market analysis scheduler iteration failed (%s).", type(exc).__name__)
             time.sleep(5)

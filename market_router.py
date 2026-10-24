@@ -24,7 +24,10 @@ def classify_and_route(market: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(market, dict):
         market = {}
     ticker = _bounded_text(market.get("ticker") or market.get("market_ticker"), 120)
-    title = " ".join(_bounded_text(market.get(key), 600) for key in ("title", "subtitle", "yes_sub_title", "no_sub_title"))[:600]
+    title_parts = [_bounded_text(market.get(key), 600) for key in ("title", "subtitle", "yes_sub_title", "no_sub_title")]
+    if not any(title_parts):
+        title_parts.extend(_bounded_text(market.get(key), 600) for key in ("event_title", "event_sub_title"))
+    title = " ".join(part for part in title_parts if part)[:600]
     category_hint = _bounded_text(market.get("category") or market.get("market_category"), 80)
     classification = classify_market(ticker, title, category_hint or None)
 

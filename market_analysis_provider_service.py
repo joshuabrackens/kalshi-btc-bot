@@ -287,7 +287,7 @@ async def analyze(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="A valid market ticker is required.")
     if not isinstance(title, str) or not title.strip() or len(title) > 800:
         raise HTTPException(status_code=422, detail="A market title is required and must be at most 800 characters.")
-    if category not in {"sports", "politics", "economics", "weather", "crypto_event", "financial_markets", "entertainment", "btc_15m"}:
+    if category not in {"sports", "politics", "economics", "weather", "crypto_event", "financial_markets", "entertainment", "companies", "world", "science_technology", "btc_15m"}:
         raise HTTPException(status_code=422, detail="Market category is not supported by this provider.")
     required_types = request_data.get("required_evidence_types")
     if not isinstance(required_types, list) or len(required_types) > 10 or any(not isinstance(x, str) or len(x) > 60 for x in required_types):

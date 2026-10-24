@@ -517,10 +517,10 @@
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-scan-badge">NOT SCANNED</span><button type="button" class="mode-button" id="market-scan-button">Scan all open markets</button></div>
     </div>
     <div class="autopilot-control" id="market-autopilot-control">
-      <div style="min-width:0;flex:1"><div class="statusline"><span class="badge amber" id="market-autopilot-badge">AUTOPILOT OFF</span><strong>Automatic market scanning + paper research trades</strong></div><p class="small" id="market-autopilot-status" style="margin-top:6px">Off by default. Unlock secure controls and configure a validated analysis provider before turning this on. This toggle can only enable automated paper research trades, never live orders.</p></div>
+      <div style="min-width:0;flex:1"><div class="statusline"><span class="badge amber" id="market-autopilot-badge">AUTOPILOT OFF</span><strong>Automatic market scanning + paper research trades</strong></div><p class="small" id="market-autopilot-status" style="margin-top:6px">Off by default. Unlock secure controls and configure a validated analysis provider before turning this on. When ON, it automatically scans open markets and rotates through the research pool for eligible paper entries; it can never send live orders.</p></div>
       <button type="button" class="mode-button autopilot-toggle" id="market-autopilot-toggle" aria-pressed="false">Start autopilot</button>
     </div>
-    <p class="small" id="market-scan-status" role="status" aria-live="polite">Waiting for the background catalog scanner. Open markets are inventoried page by page; no orders are placed by the scanner.</p>
+    <p class="small" id="market-scan-status" role="status" aria-live="polite">When autopilot is ON, the catalog is scanned automatically page by page. The catalog scanner inventories and classifies markets; the separate research pipeline can create eligible paper-only entries.</p>
     <div class="mini-grid" style="margin-top:12px">
       <div class="mini"><div class="label">Candidates inventoried</div><div class="value" id="market-scan-total">—</div><div class="help">All open-market pages are scanned up to a hard safety cap</div></div>
       <div class="mini"><div class="label">BTC 15-minute candidates</div><div class="value" id="market-scan-btc">—</div><div class="help">Still subject to normal BTC trade gates</div></div>
@@ -543,7 +543,7 @@
       <div class="mini"><div class="label">Paper entries created</div><div class="value" id="market-analysis-entered">—</div><div class="help">Separate research journal; no live orders</div></div>
       <div class="mini"><div class="label">Settled research win rate</div><div class="value" id="market-analysis-winrate">—</div><div class="help" id="market-analysis-pnl">Separate hold-to-settlement results</div></div>
     </div>
-    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Unlock admin controls, then run a batch; automatic scheduled analysis requires provider configuration.</td></tr></tbody></table></div>
+    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Configure a validated HTTPS provider and turn autopilot ON to start scheduled analysis and eligible paper-only entries automatically.</td></tr></tbody></table></div>
     <p class="small" style="margin-top:10px">Source and model gates: at least 100 out-of-sample calibration observations by default, Brier score ≤ 0.22, fresh source timestamps, category-required evidence types, ≥5 contracts at the best displayed ask, ≤5¢ spread, and ≥5¢ estimated net edge after fees/slippage. These are conservative defaults, not a guarantee of profitability.</p>
   </section>
 
@@ -1290,19 +1290,19 @@
     const state=String(data?.status||'idle');
     if(state==='running'){
       setBadge('market-scan-badge',`SCANNING · ${nfmt(data?.pages_scanned,0)} PAGES`,'amber');
-      write('market-scan-status',`Full catalog scan in progress: ${nfmt(data?.candidate_count,0)} distinct open markets classified across ${nfmt(data?.pages_scanned,0)} pages. This is metadata/probability inventory only; no order was submitted.`);
+      write('market-scan-status',`Full catalog scan in progress: ${nfmt(data?.candidate_count,0)} distinct market contracts across ${nfmt(data?.events_scanned,0)} events / ${nfmt(data?.pages_scanned,0)} pages. Official event categories are included. This is inventory only; paper decisions run in the separate autopilot panel.`);
     }else if(state==='failed'){
       setBadge('market-scan-badge','SCAN FAILED','red');
-      write('market-scan-status',data?.error_message||'The public market catalog scan failed. No trade was attempted. Check Render logs and try again.');
+      write('market-scan-status',`${data?.error_message||'The public market catalog scan failed.'} · HTTP ${data?.upstream_status_code??'—'} · page ${data?.failed_page_number??'—'} · retries ${data?.page_retries??0}. No trade was attempted; inspect this diagnostic before retrying.`);
     }else if(state==='partial'){
       setBadge('market-scan-badge','PARTIAL SCAN','amber');
-      write('market-scan-status',`Scanned ${nfmt(data?.candidate_count,0)} distinct markets across ${nfmt(data?.pages_scanned,0)} pages, but the scan is incomplete. ${data?.pagination_warning||''} Click Scan all open markets to resume. No trades were attempted.`);
+      write('market-scan-status',`Scanned ${nfmt(data?.candidate_count,0)} distinct market contracts from ${nfmt(data?.events_scanned,0)} events across ${nfmt(data?.pages_scanned,0)} pages, but the catalog is incomplete. ${data?.pagination_warning||''} Autopilot retries automatically when enabled. No trade was attempted by the inventory scanner.`);
     }else if(state==='complete'){
       setBadge('market-scan-badge',`COMPLETE · ${nfmt(data?.candidate_count,0)} MARKETS`,'green');
-      write('market-scan-status',`Complete open-market inventory from ${data?.source||'Kalshi public catalog'}: ${nfmt(data?.candidate_count,0)} distinct markets across ${nfmt(data?.pages_scanned,0)} pages; showing ${nfmt(data?.returned_count,0)} examples. Completed ${time(data?.last_completed_at)}. Market-implied prices are not model probabilities. No trades were attempted.`);
+      write('market-scan-status',`Complete open-event inventory from ${data?.source||'Kalshi public catalog'}: ${nfmt(data?.candidate_count,0)} distinct market contracts across ${nfmt(data?.events_scanned,0)} events / ${nfmt(data?.pages_scanned,0)} pages; showing ${nfmt(data?.returned_count,0)} examples. Completed ${time(data?.last_completed_at)}. Market-implied prices are not model probabilities. Turn on the separate autopilot toggle to analyze the ranked pool and create eligible paper entries once provider/calibration gates pass.`);
     }else{
       setBadge('market-scan-badge','NOT SCANNED','blue');
-      write('market-scan-status','The catalog scanner is idle. Press Scan all open markets to begin a complete paginated scan.');
+      write('market-scan-status','The scanner is idle. The master autopilot toggle starts recurring catalog scans plus research-paper analysis. The manual scan button only inventories markets; it does not place orders.')
     }
     const rows=$('market-scan-rows');
     if(rows){

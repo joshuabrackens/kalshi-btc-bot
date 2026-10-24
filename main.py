@@ -37,17 +37,12 @@ from market_router import scan_market_catalog
 from trading_mode import LiveModeLocked, live_readiness_report, request_mode, trading_mode_status
 from multi_user_security import multi_user_readiness
 from market_discovery import discover
-from kalshi_api import get_market, get_orderbook, KalshiAPIError
+from kalshi_api import get_market, get_orderbook, get_events, get_multivariate_events, KalshiAPIError
 from market_catalog_scanner import MarketCatalogScanner
 from market_decision_pipeline import MarketDecisionPipeline
 from admin_session import COOKIE_NAME, SESSION_TTL_SECONDS, create_admin_cookie, validate_admin_cookie
 from kalshi_credentials import (CredentialVaultError, credential_status, save_credentials, load_credentials, delete_credentials, verify_credentials_read_only, normalize_environment)
 from runtime_controls import market_autopilot_enabled, set_market_autopilot_enabled
-try:
-    from kalshi_api import get_markets
-except ImportError:  # Offline tests may inject a minimal public-data stub.
-    def get_markets(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise KalshiAPIError("Public market-catalog function is unavailable in the configured provider.")
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("BOT_DB_PATH", str(APP_DIR / "bot_journal.sqlite3"))).expanduser()
@@ -77,10 +72,47 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 86400) ->
     return max(minimum, min(maximum, value))
 
 
-# One scanner instance per web-service process. On Render it crawls all open catalog
-# pages in a background thread and publishes progress to the dashboard. It inventories
-# markets only; it never places orders or routes unvalidated categories to BTC strategy.
-market_scanner = MarketCatalogScanner(lambda **kwargs: get_markets(**kwargs))
+# Use explicit feed-prefixed cursors so the inventory includes both ordinary events and
+# dynamically created multivariate/combo events. Cursor values are treated as opaque and
+# never logged. The standard-event endpoint supplies official category metadata.
+_CATALOG_MVE_START = "__kalshi_catalog_mve_start__"
+_CATALOG_EVENTS_PREFIX = "__kalshi_catalog_events__:"
+_CATALOG_MVE_PREFIX = "__kalshi_catalog_mve__:"
+
+
+def _get_market_catalog_page(*, status: str = "open", limit: int = 200, cursor: str | None = None) -> dict[str, Any]:
+    if cursor == _CATALOG_MVE_START or (isinstance(cursor, str) and cursor.startswith(_CATALOG_MVE_PREFIX)):
+        upstream_cursor = None if cursor == _CATALOG_MVE_START else cursor[len(_CATALOG_MVE_PREFIX):]
+        payload = get_multivariate_events(limit=limit, cursor=upstream_cursor, with_nested_markets=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+            raise KalshiAPIError("Kalshi multivariate event catalog returned an invalid response.")
+        result = dict(payload)
+        result["_catalog_source"] = "multivariate_events"
+        raw_cursor = payload.get("cursor")
+        result["cursor"] = _CATALOG_MVE_PREFIX + raw_cursor if isinstance(raw_cursor, str) and raw_cursor else ""
+        return result
+
+    upstream_cursor = cursor[len(_CATALOG_EVENTS_PREFIX):] if isinstance(cursor, str) and cursor.startswith(_CATALOG_EVENTS_PREFIX) else cursor
+    payload = get_events(status=status, limit=limit, cursor=upstream_cursor, with_nested_markets=True)
+    # Retain compatibility with injectable providers and legacy test pages that return
+    # direct market rows. Real production GET /events returns an `events` array.
+    if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+        return payload
+    result = dict(payload)
+    result["_catalog_source"] = "events"
+    raw_cursor = payload.get("cursor")
+    if isinstance(raw_cursor, str) and raw_cursor:
+        result["cursor"] = _CATALOG_EVENTS_PREFIX + raw_cursor
+    else:
+        # The standard feed is exhausted; switch to the independent multivariate feed.
+        # This sentinel has no secret and cannot be confused with a server-issued cursor.
+        result["cursor"] = _CATALOG_MVE_START
+    return result
+
+
+# The scanner inventories standard and multivariate open-event markets. Its separate
+# research pipeline evaluates a bounded rotating pool; inventory itself never orders.
+market_scanner = MarketCatalogScanner(_get_market_catalog_page)
 market_decision_pipeline = MarketDecisionPipeline(
     catalog_snapshot=market_scanner.analysis_snapshot,
     market_fetcher=get_market,
@@ -108,8 +140,13 @@ async def app_lifespan(_app: FastAPI):
     """Initialize storage and optional background services using FastAPI lifespan."""
     startup()
     auto_scan_default = os.getenv("RENDER", "").strip().lower() == "true"
-    market_scanner.start_scheduler(enabled=_env_bool("MARKET_SCANNER_AUTO_START", auto_scan_default))
-    market_decision_pipeline.start_scheduler(enabled=_env_bool("MARKET_ANALYSIS_AUTO_START", auto_scan_default))
+    # The admin dashboard switch is persisted in the shared DB. Restore scheduler
+    # threads on service restart if that switch is already ON, even when optional
+    # environment auto-start flags are false. Each scheduler still checks the master
+    # switch every loop, so this does not activate trading by itself.
+    saved_autopilot = market_autopilot_enabled()
+    market_scanner.start_scheduler(enabled=_env_bool("MARKET_SCANNER_AUTO_START", auto_scan_default) or saved_autopilot)
+    market_decision_pipeline.start_scheduler(enabled=_env_bool("MARKET_ANALYSIS_AUTO_START", auto_scan_default) or saved_autopilot)
     yield
 
 
@@ -1745,7 +1782,7 @@ async def api_set_market_automation(request: Request) -> dict[str, Any]:
     if enabled:
         provider_ok = bool(market_decision_pipeline.snapshot().get("provider_configured"))
         if not provider_ok:
-            raise HTTPException(status_code=409, detail="Autopilot remains off: configure the HTTPS probability/evidence provider first.")
+            raise HTTPException(status_code=409, detail="Autopilot remains off: configure the HTTPS probability/evidence provider URL and shared bearer token first.")
         if not _env_bool("MARKET_AUTOPAPER_ENABLED", False):
             raise HTTPException(status_code=409, detail="Autopilot remains off: MARKET_AUTOPAPER_ENABLED must be true as a deployment safety gate after provider validation.")
         if os.getenv("TRADING_MODE", "paper").strip().lower() != "paper" or _env_bool("LIVE_TRADING_ENABLED", False):

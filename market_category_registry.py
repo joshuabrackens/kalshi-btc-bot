@@ -72,14 +72,39 @@ _PROFILES: dict[str, CategoryProfile] = {
         validation_gaps=("Domain-specific evidence model", "Rumor/source reliability scoring", "Historical validation"),
         notes="Research-only profile; no BTC logic is reused.",
     ),
+    "companies": CategoryProfile(
+        key="companies", label="Companies and corporate events", paper_strategy_enabled=False, market_identifiers=(),
+        required_evidence=("official company or regulatory filings", "dated reputable reporting", "exact resolution criteria"),
+        validation_gaps=("Company/event-specific probability calibration", "Primary-source confirmation", "Corporate-action and resolution-rule tests"),
+        notes="Research-only profile; corporate event markets need their own calibration and verified sources.",
+    ),
+    "world": CategoryProfile(
+        key="world", label="World events", paper_strategy_enabled=False, market_identifiers=(),
+        required_evidence=("primary official source", "reputable current reporting", "exact event and settlement definition"),
+        validation_gaps=("Country/event-specific model calibration", "Conflict and rumor handling", "Source independence checks"),
+        notes="Research-only profile; geopolitical headlines alone are never sufficient for an entry.",
+    ),
+    "science_technology": CategoryProfile(
+        key="science_technology", label="Science and technology", paper_strategy_enabled=False, market_identifiers=(),
+        required_evidence=("primary research or technical source", "official announcement", "reputable current reporting"),
+        validation_gaps=("Technical milestone definitions", "Publication/announcement-time handling", "Category-specific calibration"),
+        notes="Research-only profile; technical market rules and the primary evidence must match exactly.",
+    ),
 }
 
 _ALIASES = {
     "btc": "btc_15m", "bitcoin": "btc_15m", "crypto": "crypto_event",
     "sports": "sports", "sport": "sports", "politics": "politics", "elections": "politics",
-    "economics": "economics", "economic": "economics", "weather": "weather", "climate": "weather",
-    "financial": "financial_markets", "finance": "financial_markets", "financial_markets": "financial_markets",
+    "economics": "economics", "economic": "economics",
+    "weather": "weather", "climate": "weather", "climate_and_weather": "weather",
+    "financial": "financial_markets", "finance": "financial_markets",
+    "financials": "financial_markets", "financial_markets": "financial_markets",
     "entertainment": "entertainment", "culture": "entertainment",
+    "entertainment_and_culture": "entertainment",
+    "companies": "companies", "company": "companies", "businesses": "companies",
+    "world": "world", "world_events": "world", "international": "world",
+    "science_and_technology": "science_technology", "science_technology": "science_technology",
+    "technology": "science_technology", "science": "science_technology",
 }
 
 

@@ -18,11 +18,15 @@ _REQUIRED_EVIDENCE: dict[str, set[str]] = {
     "crypto_event": {"exchange_data", "official", "recent_news"},
     "financial_markets": {"price_data", "official", "recent_news"},
     "entertainment": {"official", "recent_news"},
+    "companies": {"official", "official_company_release", "recent_news"},
+    "world": {"official", "recent_news"},
+    "science_technology": {"primary_research", "official", "recent_news"},
     "btc_15m": {"exchange_data", "recent_news"},
 }
 _CATEGORY_MAX_AGE_HOURS = {
     "sports": 12, "politics": 48, "economics": 48, "weather": 12,
-    "crypto_event": 6, "financial_markets": 6, "entertainment": 24, "btc_15m": 2,
+    "crypto_event": 6, "financial_markets": 6, "entertainment": 24,
+    "companies": 24, "world": 24, "science_technology": 72, "btc_15m": 2,
 }
 
 
@@ -61,11 +65,33 @@ def _price(market: Mapping[str, Any], side: str, kind: str) -> float | None:
 
 
 def _orderbook_summary(orderbook: Mapping[str, Any] | None, market: Mapping[str, Any]) -> dict[str, float | None]:
-    """Derive executable-ish top-of-book quotes from Kalshi bid-only yes/no books."""
+    """Normalize current Kalshi orderbook_fp dollars and legacy cent books.
+
+    Current Kalshi REST responses use ``orderbook_fp.yes_dollars`` and
+    ``orderbook_fp.no_dollars`` with prices represented in dollars (e.g. "0.4900").
+    Older fixtures and integrations may expose ``orderbook.yes/no`` in cents. Both
+    shapes are handled explicitly; unknown shapes produce unknown depth and therefore
+    fail the liquidity gate rather than inventing liquidity.
+    """
     payload: Mapping[str, Any] = orderbook if isinstance(orderbook, Mapping) else {}
-    nested = payload.get("orderbook")
-    if isinstance(nested, Mapping):
-        payload = nested
+    fixed_point = payload.get("orderbook_fp")
+    legacy = payload.get("orderbook")
+    if isinstance(fixed_point, Mapping):
+        payload = fixed_point
+        price_scale = 100.0
+        yes_key, no_key = "yes_dollars", "no_dollars"
+    elif isinstance(legacy, Mapping):
+        payload = legacy
+        price_scale = 1.0
+        yes_key, no_key = "yes", "no"
+    else:
+        # Allow an already-normalized body only when it contains recognized keys.
+        if isinstance(payload.get("yes_dollars"), list) or isinstance(payload.get("no_dollars"), list):
+            price_scale = 100.0
+            yes_key, no_key = "yes_dollars", "no_dollars"
+        else:
+            price_scale = 1.0
+            yes_key, no_key = "yes", "no"
 
     def levels(key: str) -> list[tuple[float, float]]:
         raw = payload.get(key)
@@ -76,12 +102,13 @@ def _orderbook_summary(orderbook: Mapping[str, Any] | None, market: Mapping[str,
             if not isinstance(item, (list, tuple)) or len(item) < 2:
                 continue
             price, qty = _num(item[0]), _num(item[1])
+            price = price * price_scale if price is not None else None
             if price is None or qty is None or not 0 <= price <= 100 or qty <= 0:
                 continue
             out.append((price, qty))
         return out
 
-    yes_levels, no_levels = levels("yes"), levels("no")
+    yes_levels, no_levels = levels(yes_key), levels(no_key)
     yes_bid = max((p for p, _ in yes_levels), default=_price(market, "yes", "bid"))
     no_bid = max((p for p, _ in no_levels), default=_price(market, "no", "bid"))
     # One side's best bid implies the other side's best ask in a binary orderbook.

@@ -13,12 +13,20 @@ class MarketAnalysisProviderError(RuntimeError):
 
 
 def provider_configured() -> bool:
+    """Return true only when an HTTPS endpoint and a shared bearer token exist.
+
+    The service rejects unauthenticated calls, so treating URL-only configuration as
+    ready would let the dashboard turn on autopilot that can never analyze a market.
+    """
     value = os.getenv("MARKET_ANALYSIS_PROVIDER_URL", "").strip()
-    if not value:
+    token = os.getenv("MARKET_ANALYSIS_PROVIDER_API_KEY", "").strip()
+    if not value or not token or len(value) > 2048 or len(token) > 4096:
         return False
     parsed = urlparse(value)
     is_local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-    return parsed.scheme == "https" or (is_local and parsed.scheme == "http")
+    secure = parsed.scheme == "https" or (is_local and parsed.scheme == "http")
+    return bool(secure and parsed.hostname and not parsed.username and not parsed.password
+                and not parsed.query and not parsed.fragment and parsed.path.startswith("/"))
 
 
 def analyze_market(market: Mapping[str, Any], orderbook_summary: Mapping[str, Any], required_evidence_types: list[str]) -> dict[str, Any]:
@@ -35,9 +43,10 @@ def analyze_market(market: Mapping[str, Any], orderbook_summary: Mapping[str, An
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise MarketAnalysisProviderError("invalid_probability_provider_url")
     api_key = os.getenv("MARKET_ANALYSIS_PROVIDER_API_KEY", "").strip()
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key[:4096]}"
+    if not api_key or len(api_key) > 4096:
+        raise MarketAnalysisProviderError("probability_provider_auth_not_configured")
+    headers = {"Accept": "application/json", "Content-Type": "application/json",
+               "Authorization": f"Bearer {api_key}"}
     timeout = 8.0
     try:
         timeout = max(2.0, min(float(os.getenv("MARKET_ANALYSIS_PROVIDER_TIMEOUT_SECONDS", "8")), 15.0))

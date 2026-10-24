@@ -46,6 +46,10 @@ def main() -> None:
     kalshi = types.ModuleType("kalshi_api")
     kalshi.get_market = lambda _ticker: market
     kalshi.get_orderbook = lambda _ticker: {"orderbook_fp": {"yes": [[48, 10]], "no": [[48, 10]]}}
+    # main.py imports both public catalog sources even when this smoke test only
+    # exercises the existing BTC webhook-to-paper flow. Keep the stub interface complete.
+    kalshi.get_events = lambda **_kwargs: {"events": [], "cursor": ""}
+    kalshi.get_multivariate_events = lambda **_kwargs: {"events": [], "cursor": ""}
     kalshi.KalshiAPIError = type("KalshiAPIError", (Exception,), {})
     sys.modules["kalshi_api"] = kalshi
 

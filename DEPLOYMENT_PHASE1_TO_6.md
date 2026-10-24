@@ -18,8 +18,9 @@
 | `PAPER_ADMIN_API_SECRET` | Leave blank unless manual paper journal/evaluation writes are intentionally needed |
 | `KALSHI_CREDENTIALS_ENCRYPTION_KEY` | A Fernet key generated once; keep it stable |
 | `MARKET_SCANNER_AUTO_START` | `true` |
-| `MARKET_SCAN_MAX_PAGES` | `500` |
-| `MARKET_SCAN_MAX_MARKETS` | `100000` |
+| `MARKET_SCAN_PAGE_SIZE` | `200` | Kalshi events endpoint maximum page size with nested market metadata |
+| `MARKET_SCAN_MAX_PAGES` | `1000` |
+| `MARKET_SCAN_MAX_MARKETS` | `200000` |
 | `MARKET_SCAN_REFRESH_SECONDS` | `600` |
 | `MARKET_SCAN_RETRY_SECONDS` | `60` |
 | `MARKET_RESEARCH_POOL_SIZE` | `500` |
@@ -88,3 +89,8 @@ The provider returns research probabilities and actual cited-source evidence onl
 ### Historical data review
 
 After deploying this version, unlock dashboard admin controls and download `/api/diagnostics/replay-export`. Run `python audit_historical_export.py btc_bot_historical_replay_export.zip`. Review the output before tuning the BTC strategy. The actual Render production journal cannot be simulated from a local source snapshot; use an export from the live database.
+
+
+### Kalshi scanner recovery and diagnostics
+
+The scanner now walks both the standard `/events` feed and the separate `/events/multivariate` feed. On failure, the dashboard reports the upstream HTTP status and failed page number without exposing opaque cursors. Transient 408/425/429/5xx/network failures are retried; a rejected cursor triggers one safe restart, and persistent failures resume from the last safe cursor while autopilot is enabled. Public market inventory does not require a Kalshi private key. If it still fails, run `python diagnose_kalshi_catalog.py --pages 5` in the Render Web Service Shell to test the exact public feeds.

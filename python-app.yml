@@ -135,6 +135,15 @@ jobs:
       - name: Run dashboard mode-selector and market-scanner checks
         run: python -m pytest -q test_phase456_dashboard.py
 
+      - name: Run public Kalshi catalog pagination diagnostic tests
+        run: python -m pytest -q test_market_catalog_diagnostics.py
+
+      - name: Run open-market catalog status filtering tests
+        run: python -m pytest -q test_market_catalog_status.py
+
+      - name: Run market-analysis provider service security tests
+        run: python -m pytest -q test_market_analysis_provider_service.py
+
       - name: Validate dashboard JavaScript syntax when Node.js is available
         run: python validate_dashboard_js.py
 

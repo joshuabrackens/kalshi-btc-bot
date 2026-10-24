@@ -71,14 +71,14 @@ The code checks HTTPS provenance URLs, timestamps, source relevance/reliability 
 Start with:
 
 - `MARKET_SCANNER_AUTO_START=true` — automatically inventory the open catalog.
-- `MARKET_SCAN_MAX_PAGES=500` and `MARKET_SCAN_MAX_MARKETS=100000` — hard inventory safety caps.
+- `MARKET_SCAN_PAGE_SIZE=200`, `MARKET_SCAN_MAX_PAGES=1000`, and `MARKET_SCAN_MAX_MARKETS=200000` — hard inventory safety caps.
 - `MARKET_RESEARCH_POOL_SIZE=500` — top-activity pool for deep analysis.
 - `MARKET_ANALYSIS_PROVIDER_URL=https://...` — required external analysis provider; no default provider exists.
 - `MARKET_ANALYSIS_PROVIDER_API_KEY=...` — only if the provider needs it.
 - `MARKET_ANALYSIS_AUTO_START=true` — periodically run research batches after the catalog is ready.
-- `MARKET_ANALYSIS_INTERVAL_SECONDS=600` and `MARKET_ANALYSIS_MAX_PER_CYCLE=10`.
+- `MARKET_ANALYSIS_INTERVAL_SECONDS=300` and `MARKET_ANALYSIS_MAX_PER_CYCLE=10`.
 - `MARKET_AUTOPAPER_ENABLED=true` — only after provider contract and tests have been verified; defaults false.
-- `MARKET_PAPER_ENABLED_CATEGORIES=sports,politics,economics,weather,crypto_event,financial_markets,entertainment` — each paper entry still needs all evidence/model gates.
+- `MARKET_PAPER_ENABLED_CATEGORIES=sports,politics,economics,weather,crypto_event,financial_markets,entertainment,companies,world,science_technology` — each paper entry still needs all evidence/model gates.
 - `MARKET_MODEL_MIN_VALIDATION_SAMPLES=100`, `MARKET_MODEL_MAX_BRIER_SCORE=0.22`.
 - `MARKET_MIN_VOLUME_24H=50`, `MARKET_MIN_DEPTH_CONTRACTS=5`, `MARKET_MAX_SPREAD_CENTS=5`, `MARKET_MIN_NET_EDGE_CENTS=5`.
 - `MARKET_ESTIMATED_FEE_CENTS=2`, `MARKET_ESTIMATED_SLIPPAGE_CENTS=1`, `MARKET_MAX_ENTRY_CENTS=90`.
@@ -100,3 +100,8 @@ Latest local validation: 215 tests passed; 25,000 market decision properties pas
 ## Live calibration from settled outcomes
 
 The app stores only model forecasts made before settlement, then checks aged markets and writes true outcomes to `market_research_prediction_outcomes`. Model validation is computed per model/version/category in the provider service from that table. When the provider or database is unavailable, validation fails closed. Historical exports are available through the admin-protected `/api/diagnostics/replay-export`; `audit_historical_export.py` computes actual recorded trade results and cohort summaries. This audits available records and is not a complete counterfactual replay if the historical quote/news snapshots were not retained.
+
+
+### Kalshi scanner recovery and diagnostics
+
+The scanner now walks both the standard `/events` feed and the separate `/events/multivariate` feed. On failure, the dashboard reports the upstream HTTP status and failed page number without exposing opaque cursors. Transient 408/425/429/5xx/network failures are retried; a rejected cursor triggers one safe restart, and persistent failures resume from the last safe cursor while autopilot is enabled. Public market inventory does not require a Kalshi private key. If it still fails, run `python diagnose_kalshi_catalog.py --pages 5` in the Render Web Service Shell to test the exact public feeds.

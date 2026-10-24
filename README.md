@@ -82,7 +82,7 @@ Manual APIs that write to the journal (`POST /evaluate`, `POST /paper/open`, `PO
 
 ## Automated multi-market research and win-rate evaluation
 
-The research pipeline is a separate, paper-only experiment; it does not change the existing BTC strategy or place authenticated orders. To make it operate automatically in staging, configure a vetted HTTPS `MARKET_ANALYSIS_PROVIDER_URL` that supplies a category-appropriate probability and source-attributed current evidence as specified in [`MARKET_RESEARCH_PIPELINE_GUIDE.md`](MARKET_RESEARCH_PIPELINE_GUIDE.md). Then set `MARKET_ANALYSIS_AUTO_START=true`; only after the provider contract, data sources and staging responses have been audited should `MARKET_AUTOPAPER_ENABLED=true` be considered. Keep `TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false`. With no provider configured, the pipeline fails closed and does not invent probability or trades.
+The scanner inventories standard and multivariate open-event markets within hard caps. The separate, paper-only research pipeline rotates through an activity-ranked pool (500 by default) and analyzes up to 10 per 300-second cycle; it does not deeply research every contract simultaneously. It needs a vetted HTTPS `MARKET_ANALYSIS_PROVIDER_URL` that returns category-appropriate calibrated probabilities and source-attributed current evidence. After provider and staging validation, set `MARKET_ANALYSIS_AUTO_START=true`; only after reviewing results should `MARKET_AUTOPAPER_ENABLED=true` be considered. Keep `TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false`. Without a provider or passing independent calibration, the pipeline refuses paper entries rather than inventing a probability.
 
 The reported 95-trade / 56% win-rate sample is not large enough to tune thresholds confidently. The analytics response includes a Wilson confidence interval plus average net P&L, profit factor and drawdown. Prefer changes that improve fee-adjusted out-of-sample expectancy and calibration, not just the headline win percentage; increasing win rate by taking low-payout/high-price contracts can worsen overall profitability.
 
@@ -153,3 +153,25 @@ The protected endpoint `GET /api/diagnostics/replay-export` exports curated hist
 
 
 **Live order status:** `kalshi_order_adapter.py` is a low-level signed V2 adapter with Demo-only default and mocked tests. It is not registered as a live execution adapter in `trading_mode.py`; the app-level Real switch intentionally remains blocked until Demo lifecycle testing and reconciliation are complete. Keep `TRADING_MODE=paper`, `LIVE_TRADING_ENABLED=false`, `LIVE_TRADING_APPROVED=false`, and `MARKET_LIVE_EXECUTION_ENABLED=false`.
+
+
+### Kalshi scanner recovery and diagnostics
+
+The scanner inventories both Kalshi's standard event feed and the separate multivariate/combo event feed using feed-prefixed cursors. Event categories from the parent event override inconsistent market-row category fields. It uses bounded retries and a conservative public-data request cadence. On failure, the dashboard reports the upstream HTTP status and failed page number without exposing opaque cursor values. Transient 408/425/429/5xx/network failures are retried; a rejected continuation cursor triggers one clean restart, and persistent failures resume from the last safe cursor while the dashboard autopilot is enabled. Public market inventory does not require a Kalshi private key. If Render still reports a failure, run `python diagnose_kalshi_catalog.py --pages 5` in the Web Service Shell to test both public endpoints safely.
+
+
+## Market scanner and automatic research paper-entry behavior (2026-10-24)
+
+- Inventory requests page through the official `/events` feed and the separate `/events/multivariate` feed, including nested markets and official parent-event category metadata. The latter feed matters for combo markets not present in the standard listing.
+- Upstream status/page diagnostics are exposed without logging cursor values. Transient failures are retried; a rejected cursor causes one clean restart; the dashboard autopilot scheduler retries partial or failed inventories.
+- The scanner is inventory-only. With the secure dashboard Autopilot switch ON, a separately configured HTTPS research provider and the deployment paper gate enabled, a rotating activity-ranked subset is analyzed and may create *separate research paper records* only after liquidity, spread, fee/slippage, net-edge, evidence freshness, exact ticker, category allowlist, model calibration and risk gates pass.
+- Default deep-research budget is 500 ranked research candidates, 10 candidate analyses per 300-second cycle. A full rotation takes roughly 250 minutes at defaults; this avoids uncontrolled provider costs and rate-limit spikes. You can tune the batch/interval after staging evidence.
+- Unknown categories, BTC 15-minute markets, stale/missing evidence and uncalibrated predictions do not enter this research-paper path. The original BTC strategy remains separate.
+- No live orders are enabled by this update.
+- Run `python diagnose_kalshi_catalog.py --pages 5` in a Render Web Service Shell for a read-only check of standard and multivariate endpoints; it prints HTTP status, page shape, counts and cursor length but never the cursor value.
+
+## Current scanner/autopilot fix (2026-10-24)
+
+The current Kalshi order-book parser supports the documented `orderbook_fp.yes_dollars/no_dollars` schema as well as legacy cent-format fixtures. The provider readiness gate requires both an HTTPS `MARKET_ANALYSIS_PROVIDER_URL` and a non-empty `MARKET_ANALYSIS_PROVIDER_API_KEY`. The scanner retains inventory diagnostics for non-open statuses but only places explicitly open/active research candidates into the analysis pool. Use `python diagnose_kalshi_catalog.py --pages 5` to safely test several continuation pages from both public catalog feeds after deploying.
+
+The latest local suite is 233 passing tests; see `BTC_BOT_MARKET_PIPELINE_VALIDATION.md` for the current matrix and limitations. The actual two-hour soak, Render deployment verification after this patch, and the user’s production-journal replay are still pending.
