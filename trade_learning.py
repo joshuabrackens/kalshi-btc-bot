@@ -668,6 +668,120 @@ def _walk_forward_context_validation(rows: Sequence[Mapping[str, Any]]) -> dict[
     }
 
 
+def _build_rejection_feedback_report(conn: Any, *, review_min_samples: int = 20,
+                                    target_positive_net_rate_percent: float = 90.0) -> dict[str, Any]:
+    """Summarize settled counterfactuals for rejected signals; never changes entry rules."""
+    rows = conn.execute(
+        """SELECT id,created_at,market_ticker,proposed_direction,decision_status,entry_ask_cents,
+                  counterfactual_pnl_cents,counterfactual_outcome,counterfactual_settled_at,payload_json
+           FROM signal_log
+           WHERE counterfactual_settled_at IS NOT NULL
+             AND proposed_direction IN ('UP','DOWN')
+             AND decision_status IN ('vetoed','skipped','wait_for_better_price','wait','blocked','ignored')
+             AND counterfactual_pnl_cents IS NOT NULL
+           ORDER BY counterfactual_settled_at DESC,id DESC"""
+    ).fetchall()
+
+    groups: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        (signal_id, created_at, ticker, direction, status, entry_ask, pnl_value,
+         outcome, settled_at, payload_json) = row
+        pnl = _number(pnl_value)
+        if pnl is None:
+            continue
+        payload = _payload(payload_json)
+        fusion = payload.get("fusion") if isinstance(payload.get("fusion"), dict) else {}
+        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+        fusion_reasons = fusion.get("reasons") if isinstance(fusion.get("reasons"), list) else []
+        reason_text = str(payload.get("final_decision_reason") or "; ".join(
+            str(item) for item in (fusion_reasons or reasons)[:8]
+        ))
+        lowered = reason_text.lower()
+        normalized_status = str(status or "unknown").strip().lower()
+        if "risk cooldown" in lowered or "circuit breaker" in lowered:
+            category = "risk_cooldown"
+        elif normalized_status == "vetoed" or "major conflict" in lowered or "vetoed" in lowered:
+            category = "strategy_conflict_veto"
+        elif normalized_status == "wait_for_better_price" or "preferred target" in lowered or "entry cap" in lowered:
+            category = "entry_price_filter"
+        elif "spread" in lowered:
+            category = "spread_filter"
+        elif "stale" in lowered or "freshness" in lowered or "too old" in lowered:
+            category = "alert_freshness_filter"
+        elif "trend monitor" in lowered or "trend snapshot" in lowered:
+            category = "trend_data_filter"
+        elif "orderbook" in lowered or "order-book" in lowered or "quote" in lowered or "market data" in lowered:
+            category = "market_data_filter"
+        else:
+            category = "other_" + normalized_status.replace(" ", "_")
+
+        item = groups.setdefault(category, {
+            "rejection_class": category,
+            "sample_count": 0,
+            "positive_net_count": 0,
+            "negative_net_count": 0,
+            "breakeven_count": 0,
+            "net_pnl_cents": 0.0,
+            "examples": [],
+        })
+        item["sample_count"] += 1
+        if pnl > 0:
+            item["positive_net_count"] += 1
+        elif pnl < 0:
+            item["negative_net_count"] += 1
+        else:
+            item["breakeven_count"] += 1
+        item["net_pnl_cents"] += pnl
+        if len(item["examples"]) < 5:
+            item["examples"].append({
+                "signal_log_id": int(signal_id),
+                "created_at": created_at,
+                "settled_at": settled_at,
+                "market_ticker": ticker,
+                "proposed_direction": direction,
+                "decision_status": status,
+                "entry_ask_cents": _number(entry_ask),
+                "counterfactual_outcome": outcome,
+                "counterfactual_net_pnl_cents": round(pnl, 2),
+                "reason": reason_text[:400],
+            })
+
+    result_groups = []
+    for item in groups.values():
+        n = item["sample_count"]
+        positive_rate = 100.0 * item["positive_net_count"] / n if n else 0.0
+        net_pnl = item["net_pnl_cents"]
+        enough_data = n >= max(1, int(review_min_samples))
+        qualifies = enough_data and positive_rate >= float(target_positive_net_rate_percent) and net_pnl > 0
+        result_groups.append({
+            **item,
+            "net_pnl_cents": round(net_pnl, 2),
+            "average_net_pnl_cents": round(net_pnl / n, 2) if n else None,
+            "positive_net_rate_percent": round(positive_rate, 2) if n else None,
+            "meets_review_gate": bool(qualifies),
+            "automatic_rule_change": False,
+            "review_status": (
+                "candidate_for_out_of_sample_review" if qualifies else
+                "insufficient_sample" if not enough_data else
+                "does_not_meet_target_or_net_pnl_gate"
+            ),
+        })
+    result_groups.sort(key=lambda item: (-item["sample_count"], item["rejection_class"]))
+    return {
+        "target_positive_net_rate_percent": float(target_positive_net_rate_percent),
+        "review_min_samples": max(1, int(review_min_samples)),
+        "settled_rejected_signal_count": sum(item["sample_count"] for item in result_groups),
+        "groups": result_groups,
+        "automatic_strategy_changes_enabled": False,
+        "interpretation": (
+            "These are hypothetical one-contract hold-to-settlement counterfactuals using the recorded entry ask and entry fee; "
+            "they exclude exit/stop behavior and are not actual trades or a guarantee of future results. A group can become a review "
+            "candidate only after the minimum sample, at least the requested positive-net rate, and positive aggregate P&L; it still "
+            "requires out-of-sample validation and never overrides freshness, quote, price-cap, loss-budget, or cooldown safeguards."
+        ),
+    }
+
+
 def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
     """Read the persistent per-trade feedback journal and summarize candidate patterns."""
     limit = max(1, min(10000, int(limit)))
@@ -777,6 +891,7 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         "walk_forward_validation": _walk_forward_context_validation(rows),
         "adaptive_policy": adaptive_policy,
         "policy_change_history": policy_change_history,
+        "rejection_feedback": _build_rejection_feedback_report(conn),
         "policy": "Every settled paper trade is stored once with its entry-time feature snapshot and net outcome. The bounded paper-only adaptation can only tighten the preferred entry target after a minimum sample and repeated negative fee-inclusive outcomes in the high-price cohort. It never loosens the target or changes the hard entry cap, trade budget, daily loss limit, or live-trading permissions. Every target reduction is retained in an append-only history for review and manual reversal if needed.",
         "summary": summary,
         "cohorts": cohorts,
