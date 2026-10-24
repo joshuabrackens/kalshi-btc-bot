@@ -16,6 +16,7 @@ from math import isfinite
 from typing import Any, Mapping, Sequence
 
 from market_context import classify_market_regime, utc_calendar_context
+from strategy_shadow import build_strategy_comparison_report
 
 
 def _number(value: Any) -> float | None:
@@ -899,6 +900,7 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
         "research_notes": _research_notes(cohorts),
         "latest_review": rows[0] if rows else None,
         "recent_reviews": rows[:10],
+        "strategy_comparison": build_strategy_comparison_report(conn),
         "important": (
             "A result is classified by recorded net P&L; this is separate from the official market direction and from exit reason labels. "
             "Entry features are observations, not proven causes. Adaptation requires at least 20 settled hybrid trades, a sufficient high-price cohort, and negative net outcomes; reviews occur no more than once per 10 additional settled hybrid trades. Hypothetical rejected-signal and shadow-exit outcomes remain separate."
