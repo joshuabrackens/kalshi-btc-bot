@@ -44,7 +44,7 @@ def test_provider_rejects_insecure_nonlocal_url_and_url_credentials():
 def test_provider_sends_bounded_contract_and_checks_ticker_match():
     payload = {"market_ticker": "M-1", "model_probability_yes": 0.7}
     response = _Response(payload=payload)
-    with patch.dict(os.environ, {"MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "secret"}, clear=False), \
+    with patch.dict(os.environ, {"MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze", "MARKET_ANALYSIS_PROVIDER_API_KEY": "secret", "MARKET_ANALYSIS_PROVIDER_TIMEOUT_SECONDS": "40"}, clear=False), \
          patch("market_analysis_provider.requests.post", return_value=response) as post:
         result = analyze_market({"ticker": "M-1"}, {"yes_ask_cents": 50}, ["recent_news"])
     assert result["market_ticker"] == "M-1"
@@ -52,8 +52,20 @@ def test_provider_sends_bounded_contract_and_checks_ticker_match():
     assert args[0] == "https://model.example/analyze"
     assert kwargs["headers"]["Authorization"] == "Bearer secret"
     assert kwargs["allow_redirects"] is False
+    assert kwargs["timeout"] == (4.0, 40.0)
     assert kwargs["json"]["contract"] == "kalshi-market-model-v1"
     assert kwargs["json"]["required_evidence_types"] == ["recent_news"]
+
+
+def test_provider_timeout_is_capped_for_configured_values_above_limit():
+    response = _Response(payload={"market_ticker": "M"})
+    with patch.dict(os.environ, {
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "secret",
+        "MARKET_ANALYSIS_PROVIDER_TIMEOUT_SECONDS": "100",
+    }, clear=False), patch("market_analysis_provider.requests.post", return_value=response) as post:
+        analyze_market({"ticker": "M"}, {}, [])
+    assert post.call_args.kwargs["timeout"] == (4.0, 65.0)
 
 
 def test_provider_rejects_redirect_invalid_json_oversize_and_ticker_mismatch():
