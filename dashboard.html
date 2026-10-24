@@ -1123,6 +1123,59 @@
     setList('learning-recent-reviews',[...policyChangeNotes,...recentTradeNotes],'No completed post-trade reviews or adaptive-target changes yet.');
     const research=Array.isArray(report.research_notes)?report.research_notes:[];
     write('learning-caution',`${research.join(' ')} ${report.important||''}`.trim());
+    renderStrategyComparison(report.strategy_comparison||{});
+  }
+
+  function renderStrategyComparison(comparison){
+    const prospective=comparison.prospective_comparison||{};
+    const historical=comparison.paired_comparison||{};
+    const current=prospective.current_engine||{};
+    const candidate=prospective.hold_to_settlement_candidate||{};
+    const journal=comparison.shadow_journal||{};
+    const config=comparison.candidate||{};
+    write('strategy-shadow-paired',`${prospective.paired_resolved_trades||0} paired · ${prospective.baseline_settled_trades||0} baseline settled`);
+    write('strategy-shadow-current-rate',hasNum(current.positive_net_rate_percent)?`${nfmt(current.positive_net_rate_percent,1)}%`:'—');
+    write('strategy-shadow-candidate-rate',hasNum(candidate.positive_net_rate_percent)?`${nfmt(candidate.positive_net_rate_percent,1)}%`:'—');
+    write('strategy-shadow-delta-pnl',hasNum(prospective.net_pnl_difference_cents)?signedMoneyCents(prospective.net_pnl_difference_cents):'—');
+    if($('strategy-shadow-delta-pnl'))$('strategy-shadow-delta-pnl').className='value '+(asNum(prospective.net_pnl_difference_cents)>0?'positive':asNum(prospective.net_pnl_difference_cents)<0?'negative':'');
+    const configured=Boolean(config.configured)||Number(journal.shadow_rows_created)>0;
+    const target=prospective.target_supported_out_of_sample===true
+      ?'The 90% target gate is supported by the resolved prospective shadow sample.'
+      :'The 90% target is not demonstrated by the resolved prospective shadow sample yet.';
+    write('strategy-shadow-status',`${configured?'Shadow journal available':'Shadow test awaiting worker activation'} · ${journal.shadow_results_resolved||0} candidate outcomes resolved · ${journal.stopped_baseline_trades_waiting_for_official_resolution||0} settled baseline trade(s) still need an official candidate result · ${journal.shadow_rows_pending||0} total candidate row(s) pending. ${config.prospective_start_at?'Forward-test start: '+time(config.prospective_start_at)+'.':'No prospective start timestamp configured; historical rows cannot qualify as forward-test evidence.'} ${target}`);
+    const familyBody=$('strategy-family-comparison');
+    if(familyBody){
+      familyBody.replaceChildren();
+      const rows=Array.isArray(comparison.historical_strategy_families)?comparison.historical_strategy_families:[];
+      if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent='No settled strategy-family results are available.';tr.appendChild(td);familyBody.appendChild(tr);}
+      for(const row of rows){
+        const tr=document.createElement('tr');
+        addCell(tr,String(row.strategy_family||'unknown').replaceAll('_',' '));
+        addCell(tr,row.settled_trades??0);
+        addCell(tr,`${row.positive_net_count??0} / ${row.negative_net_count??0}`);
+        addCell(tr,hasNum(row.positive_net_rate_percent)?`${nfmt(row.positive_net_rate_percent,1)}%`:'—');
+        addCell(tr,hasNum(row.net_pnl_cents)?signedMoneyCents(row.net_pnl_cents):'—',asNum(row.net_pnl_cents)>0?'positive':asNum(row.net_pnl_cents)<0?'negative':'');
+        addCell(tr,row.sample_quality||'descriptive',Number(row.settled_trades)<20?'warning-text':'');
+        familyBody.appendChild(tr);
+      }
+    }
+    const exitBody=$('strategy-exit-comparison');
+    if(exitBody){
+      exitBody.replaceChildren();
+      const rows=Array.isArray(comparison.historical_exit_path_cohorts)?comparison.historical_exit_path_cohorts:[];
+      if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent='No historical exit-path results are available.';tr.appendChild(td);exitBody.appendChild(tr);}
+      for(const row of rows){
+        const tr=document.createElement('tr');
+        addCell(tr,String(row.exit_path||'unknown').replaceAll('_',' '));
+        addCell(tr,row.settled_trades??0);
+        addCell(tr,`${row.positive_net_count??0} / ${row.negative_net_count??0}`);
+        addCell(tr,hasNum(row.positive_net_rate_percent)?`${nfmt(row.positive_net_rate_percent,1)}%`:'—');
+        addCell(tr,hasNum(row.net_pnl_cents)?signedMoneyCents(row.net_pnl_cents):'—',asNum(row.net_pnl_cents)>0?'positive':asNum(row.net_pnl_cents)<0?'negative':'');
+        addCell(tr,row.sample_quality||'descriptive',Number(row.settled_trades)<20?'warning-text':'');
+        exitBody.appendChild(tr);
+      }
+    }
+    write('strategy-shadow-note',`${comparison.historical_candidate_note||''} ${comparison.full_strategy_note||''} ${prospective.interpretation||''} ${historical.interpretation||''}`.trim());
   }
 
   function signedMoneyCents(v){ if(!hasNum(v)) return '—'; const n=Number(v)/100; return `${n<0?'-':''}$${Math.abs(n).toFixed(2)}`; }
