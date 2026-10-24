@@ -1859,6 +1859,7 @@ def api_market_analysis() -> dict[str, Any]:
                     "opened_at": opened_at,
                     "settled_at": settled_at,
                     "market_ticker": ticker,
+                    "title": decision.get("title"),
                     "category": category,
                     "side": side,
                     "contracts": contracts_count,
