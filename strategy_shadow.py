@@ -33,6 +33,20 @@ def _finite_number(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
+def _slippage_assumption_cents_per_contract() -> tuple[float, str]:
+    """Return an explicit modeled slippage cost; this is not observed fill-level slippage."""
+    raw = os.getenv("PAPER_STRATEGY_SHADOW_SLIPPAGE_CENTS_PER_CONTRACT", "").strip()
+    if not raw:
+        return 1.0, "default_assumption_1.0_cents_per_contract_not_measured"
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 1.0, "invalid_environment_value_defaulted_to_1.0_cents_per_contract"
+    if not isfinite(value) or value < 0 or value > 100:
+        return 1.0, "invalid_environment_value_defaulted_to_1.0_cents_per_contract"
+    return value, "environment:PAPER_STRATEGY_SHADOW_SLIPPAGE_CENTS_PER_CONTRACT"
+
+
 def _official_outcome(value: Any) -> str | None:
     text = str(value or "").strip().lower()
     if text in {"yes", "up"}:
@@ -279,6 +293,11 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
     paired_shadow: list[float] = []
     prospective_actual: list[float] = []
     prospective_shadow: list[float] = []
+    paired_actual_slippage_adjusted: list[float] = []
+    paired_shadow_slippage_adjusted: list[float] = []
+    prospective_actual_slippage_adjusted: list[float] = []
+    prospective_shadow_slippage_adjusted: list[float] = []
+    slippage_assumption, slippage_assumption_source = _slippage_assumption_cents_per_contract()
     prospective_pending_after_baseline_settlement = 0
     prospective_baseline_settled_count = 0
     prospective_entries_seen = 0
@@ -298,8 +317,13 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
             else:
                 prospective_baseline_settled_count += 1
                 if shadow_state == "settled" and shadow_pnl is not None:
-                    prospective_actual.append(_finite_number(actual_pnl))
-                    prospective_shadow.append(_finite_number(shadow_pnl))
+                    actual_value = _finite_number(actual_pnl)
+                    shadow_value = _finite_number(shadow_pnl)
+                    slippage_cost = slippage_assumption * max(0, int(contracts or 0))
+                    prospective_actual.append(actual_value)
+                    prospective_shadow.append(shadow_value)
+                    prospective_actual_slippage_adjusted.append(actual_value - slippage_cost)
+                    prospective_shadow_slippage_adjusted.append(shadow_value - slippage_cost)
                 else:
                     prospective_pending_after_baseline_settlement += 1
         last_checked_at = max(str(last_checked_at or ""), str(checked_at or "")) or None
@@ -315,8 +339,13 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
         families.setdefault(family, []).append((_finite_number(actual_pnl), str(created_at or ""), str(ticker or "")))
         exit_paths.setdefault(exit_path, []).append((_finite_number(actual_pnl), str(created_at or ""), str(ticker or "")))
         if shadow_state == "settled" and shadow_pnl is not None:
-            paired_actual.append(_finite_number(actual_pnl))
-            paired_shadow.append(_finite_number(shadow_pnl))
+            actual_value = _finite_number(actual_pnl)
+            shadow_value = _finite_number(shadow_pnl)
+            slippage_cost = slippage_assumption * max(0, int(contracts or 0))
+            paired_actual.append(actual_value)
+            paired_shadow.append(shadow_value)
+            paired_actual_slippage_adjusted.append(actual_value - slippage_cost)
+            paired_shadow_slippage_adjusted.append(shadow_value - slippage_cost)
 
     family_results = []
     for key, entries in families.items():
@@ -348,6 +377,8 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
 
     prospective_actual_metrics = _metrics(prospective_actual)
     prospective_shadow_metrics = _metrics(prospective_shadow)
+    prospective_actual_slippage_metrics = _metrics(prospective_actual_slippage_adjusted)
+    prospective_shadow_slippage_metrics = _metrics(prospective_shadow_slippage_adjusted)
     prospective_net_delta = (
         round(prospective_shadow_metrics["net_pnl_cents"] - prospective_actual_metrics["net_pnl_cents"], 2)
         if prospective_actual else None
@@ -366,6 +397,8 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
     )
     actual_metrics = _metrics(paired_actual)
     shadow_metrics = _metrics(paired_shadow)
+    actual_slippage_metrics = _metrics(paired_actual_slippage_adjusted)
+    shadow_slippage_metrics = _metrics(paired_shadow_slippage_adjusted)
     net_delta = (
         round(shadow_metrics["net_pnl_cents"] - actual_metrics["net_pnl_cents"], 2)
         if paired_actual else None
@@ -410,12 +443,31 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
         },
         "historical_strategy_families": family_results,
         "historical_exit_path_cohorts": exit_results,
+        "slippage_assumption": {
+            "modeled_cents_per_contract": round(slippage_assumption, 3),
+            "source": slippage_assumption_source,
+            "measured_from_fills": False,
+            "application": "Additional modeled execution slippage deducted once per contract from both paired paths; stored historical P&L is not changed.",
+        },
         "paired_comparison": {
             "paired_resolved_trades": len(paired_actual),
             "current_engine": actual_metrics,
             "hold_to_settlement_candidate": shadow_metrics,
             "positive_net_rate_difference_percentage_points": rate_delta,
             "net_pnl_difference_cents": net_delta,
+            "slippage_adjusted_comparison": {
+                "paired_resolved_trades": len(paired_actual_slippage_adjusted),
+                "current_engine": actual_slippage_metrics,
+                "hold_to_settlement_candidate": shadow_slippage_metrics,
+                "positive_net_rate_difference_percentage_points": (
+                    round(shadow_slippage_metrics["positive_net_rate_percent"] - actual_slippage_metrics["positive_net_rate_percent"], 2)
+                    if paired_actual_slippage_adjusted else None
+                ),
+                "net_pnl_difference_cents": (
+                    round(shadow_slippage_metrics["net_pnl_cents"] - actual_slippage_metrics["net_pnl_cents"], 2)
+                    if paired_actual_slippage_adjusted else None
+                ),
+            },
             "target_supported_out_of_sample": False,
             "interpretation": (
                 "This is a paired, same-entry comparison. The candidate is not a separately proven entry strategy; it tests whether early exits help or hurt. "
@@ -432,6 +484,19 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
             "hold_to_settlement_candidate": prospective_shadow_metrics,
             "positive_net_rate_difference_percentage_points": prospective_rate_delta,
             "net_pnl_difference_cents": prospective_net_delta,
+            "slippage_adjusted_comparison": {
+                "paired_resolved_trades": len(prospective_actual_slippage_adjusted),
+                "current_engine": prospective_actual_slippage_metrics,
+                "hold_to_settlement_candidate": prospective_shadow_slippage_metrics,
+                "positive_net_rate_difference_percentage_points": (
+                    round(prospective_shadow_slippage_metrics["positive_net_rate_percent"] - prospective_actual_slippage_metrics["positive_net_rate_percent"], 2)
+                    if prospective_actual_slippage_adjusted else None
+                ),
+                "net_pnl_difference_cents": (
+                    round(prospective_shadow_slippage_metrics["net_pnl_cents"] - prospective_actual_slippage_metrics["net_pnl_cents"], 2)
+                    if prospective_actual_slippage_adjusted else None
+                ),
+            },
             "target_supported_out_of_sample": prospective_target_supported,
             "gate_requirements": (
                 f"At least 20 prospective paired results, no missing candidate result for a settled baseline trade, "
