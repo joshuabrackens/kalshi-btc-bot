@@ -115,6 +115,7 @@ class MarketDecisionPipeline:
         self._model_provider = model_provider
         self._lock = threading.RLock()
         self._job_lock = threading.Lock()
+        self._settlement_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._scheduler_started = False
         self._manual_entry_once_pending = False
@@ -227,7 +228,8 @@ class MarketDecisionPipeline:
             conn = connect_database()
             try:
                 ensure_schema(conn)
-                self._settle_open_trades(conn)
+                with self._settlement_lock:
+                    self._settle_open_trades(conn)
                 self._collect_resolved_predictions(conn)
                 for row in selected:
                     ticker = row["ticker"]
@@ -621,6 +623,38 @@ class MarketDecisionPipeline:
             except Exception as exc:
                 log.debug("Paper-market settlement check failed (%s).", type(exc).__name__)
 
+    def settle_open_positions_only(self) -> dict[str, Any]:
+        """Check open research paper positions for official settlement without running any model analysis."""
+        conn = None
+        try:
+            conn = connect_database()
+            ensure_schema(conn)
+            open_before = int(conn.execute(
+                "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
+            ).fetchone()[0] or 0)
+            if open_before <= 0:
+                return {"checked": 0, "settled": 0, "open_before": 0, "open_after": 0, "errors": 0}
+            with self._settlement_lock:
+                self._settle_open_trades(conn)
+            conn.commit()
+            open_after = int(conn.execute(
+                "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
+            ).fetchone()[0] or 0)
+            return {
+                "checked": open_before,
+                "settled": max(0, open_before - open_after),
+                "open_before": open_before,
+                "open_after": open_after,
+                "errors": 0,
+            }
+        except Exception as exc:
+            log.warning("Research paper settlement-only pass failed (%s).", type(exc).__name__)
+            return {"checked": 0, "settled": 0, "open_before": None, "open_after": None,
+                    "errors": 1, "error_type": type(exc).__name__}
+        finally:
+            if conn is not None:
+                conn.close()
+
     def run_once_for_tests(self, *, paper_entry_once: bool = False) -> dict[str, Any]:
         """Synchronous entry point for deterministic tests; uses the same pipeline."""
         with self._lock:
@@ -639,15 +673,26 @@ class MarketDecisionPipeline:
 
     def _scheduler_loop(self) -> None:
         interval = _int_env("MARKET_ANALYSIS_INTERVAL_SECONDS", 300, 60, 86400)
+        settlement_interval = _int_env("MARKET_RESEARCH_SETTLEMENT_INTERVAL_SECONDS", 60, 30, 3600)
         last_scheduled_run = 0.0
+        last_settlement_check = 0.0
         from runtime_controls import market_autopilot_enabled
         while True:
             try:
+                now = time.monotonic()
+                # Settlement tracking stays alive while autopilot is OFF. This pass
+                # performs only official market-detail checks for existing positions;
+                # it does not call the model/evidence provider or open new trades.
+                if now - last_settlement_check >= settlement_interval:
+                    settlement_result = self.settle_open_positions_only()
+                    last_settlement_check = now
+                    if settlement_result.get("settled") or settlement_result.get("errors"):
+                        log.info("Research paper settlement monitor: %s", settlement_result)
+
                 if not market_autopilot_enabled():
                     time.sleep(5)
                     continue
                 catalog = self._catalog_snapshot()
-                now = time.monotonic()
                 ready = isinstance(catalog, dict) and catalog.get("status") in {"complete", "partial"}
                 if ready and provider_configured() and now - last_scheduled_run >= interval:
                     started = self.start(force=True)
