@@ -243,13 +243,14 @@ def test_top_ranked_eligible_candidates_open_and_settlement_pnl_is_recorded(tmp_
             result = pipeline.run_once_for_tests()
             assert result["status"] == "complete"
             assert result["analyzed_count"] == 2
-            assert result["paper_entries_created"] == 2
+            assert result["paper_entries_created"] == 1
             assert result["live_orders_submitted"] == 0
             ranked = {row["ticker"]: row for row in result["decisions"]}
             assert ranked["KXSPORTS-EDGE"]["paper_selection"]["rank"] == 1
             assert ranked["KXSPORTS-EDGE"]["paper_trade_created"] is True
             assert ranked["KXSPORTS-LIQUID"]["paper_selection"]["rank"] == 2
-            assert ranked["KXSPORTS-LIQUID"]["paper_trade_created"] is True
+            assert ranked["KXSPORTS-LIQUID"]["paper_trade_created"] is False
+            assert ranked["KXSPORTS-LIQUID"]["paper_selection_status"] == "eligible_candidate_waiting_for_open_position"
 
             conn = db_store.connect_database()
             try:
@@ -258,7 +259,7 @@ def test_top_ranked_eligible_candidates_open_and_settlement_pnl_is_recorded(tmp_
                               estimated_slippage_cents,expected_net_edge_cents,source_snapshot_json
                        FROM market_research_paper_trades ORDER BY id"""
                 ).fetchall()
-                assert len(rows) == 2
+                assert len(rows) == 1
                 by_ticker = {row[0]: row for row in rows}
                 best = by_ticker["KXSPORTS-EDGE"]
                 assert best[1] == "open"
@@ -269,9 +270,8 @@ def test_top_ranked_eligible_candidates_open_and_settlement_pnl_is_recorded(tmp_
                 saved = json.loads(best[6])["decision"]
                 assert saved["paper_selection"]["rank"] == 1
                 assert saved["paper_selection"]["rank_score_is_probability"] is False
-                assert by_ticker["KXSPORTS-LIQUID"][1] == "open"
 
-                # Only official final statuses/results can settle a research simulation.
+                # Only official final statuses/results can settle the single research simulation.
                 pipeline._market_fetcher = lambda ticker: {
                     "market": {"ticker": ticker, "status": "settled", "result": "YES"}
                 }
@@ -280,7 +280,7 @@ def test_top_ranked_eligible_candidates_open_and_settlement_pnl_is_recorded(tmp_
                     """SELECT status,result,pnl_cents,settled_at
                        FROM market_research_paper_trades ORDER BY id"""
                 ).fetchall()
-                assert len(settled) == 2
+                assert len(settled) == 1
                 assert all(row[0] == "settled" and row[1] == "YES" for row in settled)
                 assert all(row[2] == 46.0 for row in settled)
                 assert all(row[3] for row in settled)
@@ -383,14 +383,15 @@ def test_manual_research_batch_can_open_one_paper_position_with_autopilot_off(tm
             for suffix in ("", "-wal", "-shm"):
                 Path(str(tmp_path / "manual-one-shot.sqlite3") + suffix).unlink(missing_ok=True)
 
-def test_pipeline_opens_multiple_top_ranked_research_paper_positions(tmp_path):
-    db_path = tmp_path / "multi-position.sqlite3"
+def test_pipeline_opens_only_one_top_ranked_research_paper_position(tmp_path):
+    db_path = tmp_path / "single-position.sqlite3"
     tickers = ["KXSPORTS-MULTI-A", "KXSPORTS-MULTI-B", "KXSPORTS-MULTI-C", "KXSPORTS-MULTI-D"]
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(db_path),
         "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
         "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
         "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        # Deliberately request unsafe multi-position settings; the hard cap must win.
         "MARKET_RESEARCH_MAX_OPEN_POSITIONS": "5", "MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE": "3",
         "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
     }, clear=False):
@@ -408,15 +409,17 @@ def test_pipeline_opens_multiple_top_ranked_research_paper_positions(tmp_path):
         try:
             result = pipeline.run_once_for_tests()
             assert result["status"] == "complete"
-            assert result["paper_entries_created"] == 3
+            assert result["paper_entries_created"] == 1
             assert result["live_orders_submitted"] == 0
-            assert sum(bool(row.get("paper_trade_created")) for row in result["decisions"]) == 3
             opened = [row for row in result["decisions"] if row.get("paper_trade_created")]
-            assert all(row["paper_selection"]["selected_for_attempt"] for row in opened)
+            assert len(opened) == 1
+            assert opened[0]["paper_selection"]["rank"] == 1
+            assert opened[0]["paper_selection"]["selected_for_attempt"] is True
+            assert sum(bool(row.get("paper_trade_created")) for row in result["decisions"]) == 1
             conn = db_store.connect_database()
             try:
-                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'").fetchone()[0] == 3
-                assert conn.execute("SELECT COUNT(DISTINCT market_ticker) FROM market_research_paper_trades").fetchone()[0] == 3
+                assert conn.execute("SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'").fetchone()[0] == 1
+                assert conn.execute("SELECT COUNT(DISTINCT market_ticker) FROM market_research_paper_trades").fetchone()[0] == 1
             finally:
                 conn.close()
         finally:
