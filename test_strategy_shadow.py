@@ -57,7 +57,7 @@ def test_hold_to_settlement_shadow_compares_same_entry_without_mutating_baseline
                 def fake_get_market(ticker):
                     calls.append(ticker)
                     if ticker == "KXBTC15M-SHADOW-A":
-                        return {"market": {"status": "finalized", "result": "yes"}}
+                        return {"market": {"status": "closed", "settlement_result": "yes"}}
                     raise AssertionError("the already resolved official result should not be fetched")
 
                 result = process_hold_to_settlement_shadow(
