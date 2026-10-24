@@ -49,6 +49,36 @@ class WorkerSafetyTests(unittest.TestCase):
                 os.environ[key] = value
         self.tmp.cleanup()
 
+    def test_queued_external_alert_is_explicitly_marked_during_risk_cooldown(self):
+        conn = w._connect()
+        try:
+            now = w._utcnow().isoformat()
+            cur = conn.execute(
+                """INSERT INTO gainzalgo_signals
+                   (created_at,direction,symbol,timeframe,payload_json)
+                   VALUES (?,?,?,?,?)""",
+                (now, "UP", "BTCUSDT", "1m", "{}"),
+            )
+            alert_id = cur.lastrowid
+            conn.commit()
+
+            marked = w._mark_queued_alerts_during_cooldown(
+                conn, "hybrid", "paper entry circuit breaker: 4 consecutive net-loss trades",
+            )
+
+            self.assertEqual(marked, 1)
+            row = conn.execute(
+                "SELECT processed_at,processing_status,processing_note FROM gainzalgo_signals WHERE id=?",
+                (alert_id,),
+            ).fetchone()
+            self.assertIsNotNone(row[0])
+            self.assertEqual(row[1], "skipped")
+            self.assertIn("Blocked by paper risk cooldown", row[2])
+            self.assertIn("4 consecutive net-loss trades", row[2])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0], 0)
+        finally:
+            conn.close()
+
     def test_live_mode_fails_closed(self):
         os.environ["LIVE_TRADING_ENABLED"] = "true"
         self.assertEqual(w.run_once()["action"], "blocked")
