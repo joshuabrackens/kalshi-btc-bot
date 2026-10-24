@@ -75,7 +75,7 @@ def test_provider_drops_evidence_url_not_present_in_actual_citations(tmp_path):
         assert response.json()["validation"]["out_of_sample"] is False
 
 
-def test_provider_rejects_mismatched_ticker_and_large_payload():
+def test_provider_rejects_mismatched_ticker_and_large_payload(caplog):
     fake_data = _response(ticker="ANOTHER-MARKET")
     fake = Mock(status_code=200, content=json.dumps(fake_data).encode("utf-8"), is_redirect=False)
     fake.json.return_value = fake_data
@@ -86,6 +86,34 @@ def test_provider_rejects_mismatched_ticker_and_large_payload():
             large = client.post("/analyze", content=b"{" + b" " * 70000 + b"}", headers={"Authorization": "Bearer shared-secret", "Content-Type": "application/json"})
         assert wrong.status_code == 502
         assert large.status_code == 413
+    assert "reason=market_ticker_mismatch" in caplog.text
+    assert "KXSPORTS-TEST" in caplog.text
+
+
+def test_provider_logs_invalid_structured_output_reason_without_raw_model_text(caplog, tmp_path):
+    private_model_text = "do-not-log-this-model-output"
+    response_data = {"output": [{"type": "message", "content": [{"type": "output_text", "text": private_model_text}]}]}
+    fake = Mock(status_code=200, content=json.dumps(response_data).encode("utf-8"), is_redirect=False)
+    fake.json.return_value = response_data
+    with (
+        patch.dict("os.environ", {
+            "MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
+            "OPENAI_API_KEY": "openai-test-secret",
+            "OPENAI_MODEL": "gpt-5.1",
+            "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json"),
+        }, clear=False),
+        patch.object(provider.requests, "post", return_value=fake),
+    ):
+        with TestClient(provider.app) as client:
+            response = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+    assert response.status_code == 502
+    assert "reason=invalid_structured_output" in caplog.text
+    assert "KXSPORTS-TEST" in caplog.text
+    assert private_model_text not in caplog.text
+    assert "openai-test-secret" not in caplog.text
 
 
 def test_provider_classifies_quota_429_without_logging_secret_or_raw_body(caplog, tmp_path):
