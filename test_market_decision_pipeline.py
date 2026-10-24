@@ -73,6 +73,67 @@ def test_pipeline_creates_separate_paper_trade_only_after_all_gates_and_deduplic
             Path(tmp_path / "pipeline.sqlite3-shm").unlink(missing_ok=True)
 
 
+def test_pipeline_uses_nonempty_running_catalog_snapshot_without_waiting_for_full_scan(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "running-catalog.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "false", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
+        "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        calls = {"market": 0, "book": 0, "model": 0}
+        def fetch_market(ticker):
+            calls["market"] += 1
+            return {"market": _market(ticker=ticker)}
+        def fetch_book(ticker):
+            calls["book"] += 1
+            return _book()
+        def model(market, book, required):
+            calls["model"] += 1
+            return _model(market, book, required)
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "running", "analysis_candidates": [
+                {"ticker": "KXSPORTS-PARTIAL", "category": "sports", "route_status": "research_only"}
+            ]},
+            fetch_market, fetch_book, model,
+        )
+        try:
+            result = pipeline.run_once_for_tests()
+            assert result["status"] == "complete"
+            assert result["catalog_snapshot_status"] == "running"
+            assert result["catalog_snapshot_partial"] is True
+            assert result["candidate_pool_size"] == 1
+            assert result["analyzed_count"] == 1
+            assert calls == {"market": 1, "book": 1, "model": 1}
+            assert result["paper_entries_created"] == 0
+            assert result["live_orders_submitted"] == 0
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_path / "running-catalog.sqlite3") + suffix).unlink(missing_ok=True)
+
+
+def test_pipeline_waits_safely_when_catalog_running_without_candidates(tmp_path):
+    with patch.dict(os.environ, {
+        "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "empty-running-catalog.sqlite3"),
+        "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
+        "MARKET_ANALYSIS_PROVIDER_API_KEY": "test-provider-token",
+        "MARKET_AUTOPAPER_ENABLED": "false", "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
+    }, clear=False):
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("do not request market detail, order book, or model without candidates")
+        pipeline = MarketDecisionPipeline(
+            lambda: {"status": "running", "analysis_candidates": []},
+            forbidden, forbidden, forbidden,
+        )
+        result = pipeline.run_once_for_tests()
+        assert result["status"] == "waiting_for_catalog"
+        assert result["catalog_snapshot_status"] == "running"
+        assert result["catalog_snapshot_partial"] is True
+        assert result["analyzed_count"] == 0
+        assert result["paper_entries_created"] == 0
+        assert result["live_orders_submitted"] == 0
+
+
 def test_pipeline_without_provider_never_fetches_book_or_creates_trade(tmp_path):
     with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "no-provider.sqlite3"), "MARKET_ANALYSIS_PROVIDER_URL": "", "MARKET_AUTOPAPER_ENABLED": "true", "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false"}, clear=False):
         def fail(_ticker):
