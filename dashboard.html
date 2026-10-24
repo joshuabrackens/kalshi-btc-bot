@@ -512,6 +512,7 @@
         <div class="mini"><div class="label">Current engine · forward sample</div><div class="value" id="strategy-shadow-current-rate">—</div><div class="help">Positive-net settled rate</div></div>
         <div class="mini"><div class="label">Hold-to-settlement · forward sample</div><div class="value" id="strategy-shadow-candidate-rate">—</div><div class="help">Hypothetical positive-net rate</div></div>
         <div class="mini"><div class="label">Candidate P&amp;L vs. current</div><div class="value" id="strategy-shadow-delta-pnl">—</div><div class="help">Paired net-P&amp;L difference</div></div>
+        <div class="mini"><div class="label">Slippage-adjusted P&amp;L delta</div><div class="value" id="strategy-shadow-adjusted-delta-pnl">—</div><div class="help" id="strategy-shadow-slippage-assumption">Modeled slippage assumption, not measured fills</div></div>
       </div>
       <p class="small" style="margin:9px 0 12px" id="strategy-shadow-status">Waiting for strategy shadow journal data.</p>
       <div class="table-wrap" style="margin-top:10px">
@@ -1142,6 +1143,8 @@
     const historical=comparison.paired_comparison||{};
     const current=prospective.current_engine||{};
     const candidate=prospective.hold_to_settlement_candidate||{};
+    const adjusted=prospective.slippage_adjusted_comparison||{};
+    const slippage=comparison.slippage_assumption||{};
     const journal=comparison.shadow_journal||{};
     const config=comparison.candidate||{};
     write('strategy-shadow-paired',`${prospective.paired_resolved_trades||0} paired · ${prospective.baseline_settled_trades||0} baseline settled`);
@@ -1149,10 +1152,14 @@
     write('strategy-shadow-candidate-rate',hasNum(candidate.positive_net_rate_percent)?`${nfmt(candidate.positive_net_rate_percent,1)}%`:'—');
     write('strategy-shadow-delta-pnl',hasNum(prospective.net_pnl_difference_cents)?signedMoneyCents(prospective.net_pnl_difference_cents):'—');
     if($('strategy-shadow-delta-pnl'))$('strategy-shadow-delta-pnl').className='value '+(asNum(prospective.net_pnl_difference_cents)>0?'positive':asNum(prospective.net_pnl_difference_cents)<0?'negative':'');
+    write('strategy-shadow-adjusted-delta-pnl',hasNum(adjusted.net_pnl_difference_cents)?signedMoneyCents(adjusted.net_pnl_difference_cents):'—');
+    if($('strategy-shadow-adjusted-delta-pnl'))$('strategy-shadow-adjusted-delta-pnl').className='value '+(asNum(adjusted.net_pnl_difference_cents)>0?'positive':asNum(adjusted.net_pnl_difference_cents)<0?'negative':'');
+    write('strategy-shadow-slippage-assumption',hasNum(slippage.modeled_cents_per_contract)?'Modeled '+nfmt(slippage.modeled_cents_per_contract,2)+'¢/contract · not measured from fills':'Slippage assumption unavailable');
     const configured=Boolean(config.configured)||Number(journal.shadow_rows_created)>0;
+    const targetRate=hasNum(comparison.target_positive_net_rate_percent)?nfmt(comparison.target_positive_net_rate_percent,1):'90';
     const target=prospective.target_supported_out_of_sample===true
-      ?'The 90% target gate is supported by the resolved prospective shadow sample.'
-      :'The 90% target is not demonstrated by the resolved prospective shadow sample yet.';
+      ?'The '+targetRate+'% target gate is supported by resolved prospective results after modeled slippage.'
+      :'The '+targetRate+'% target is not demonstrated by resolved prospective results after modeled slippage yet.';
     write('strategy-shadow-status',`${configured?'Shadow journal available':'Shadow test awaiting worker activation'} · ${journal.shadow_results_resolved||0} candidate outcomes resolved · ${journal.stopped_baseline_trades_waiting_for_official_resolution||0} settled baseline trade(s) still need an official candidate result · ${journal.shadow_rows_pending||0} total candidate row(s) pending. ${config.prospective_start_at?'Forward-test start: '+time(config.prospective_start_at)+'.':'No prospective start timestamp configured; historical rows cannot qualify as forward-test evidence.'} ${target}`);
     const familyBody=$('strategy-family-comparison');
     if(familyBody){
