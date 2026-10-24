@@ -504,6 +504,30 @@
       <p class="small" style="margin-bottom:8px">Cohorts help identify candidate patterns. Small samples are highlighted and must not drive rule changes.</p>
       <div class="table-wrap"><table style="min-width:760px" aria-label="Post-trade learning cohorts"><thead><tr><th>Feature</th><th>Segment</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Net P&amp;L</th><th>Average / trade</th><th>Sample quality</th></tr></thead><tbody id="learning-cohorts"><tr><td colspan="9" class="empty">Waiting for settled outcomes…</td></tr></tbody></table></div>
     </div>
+    <div style="margin-top:18px" id="strategy-shadow-comparison-panel">
+      <h3>Historical strategy ranking and forward shadow comparison</h3>
+      <p class="small" style="margin-bottom:10px">The candidate holds a virtual copy of each accepted trade to the official Kalshi result while the current engine manages its actual paper position. It changes no entries, submits no orders, and cannot override risk controls. Historical exit-path rates are conditional, not whole-strategy win rates.</p>
+      <div class="mini-grid">
+        <div class="mini"><div class="label">Prospective paired results</div><div class="value" id="strategy-shadow-paired">—</div><div class="help">Same entry, both exit policies resolved</div></div>
+        <div class="mini"><div class="label">Current engine · forward sample</div><div class="value" id="strategy-shadow-current-rate">—</div><div class="help">Positive-net settled rate</div></div>
+        <div class="mini"><div class="label">Hold-to-settlement · forward sample</div><div class="value" id="strategy-shadow-candidate-rate">—</div><div class="help">Hypothetical positive-net rate</div></div>
+        <div class="mini"><div class="label">Candidate P&amp;L vs. current</div><div class="value" id="strategy-shadow-delta-pnl">—</div><div class="help">Paired net-P&amp;L difference</div></div>
+      </div>
+      <p class="small" style="margin:9px 0 12px" id="strategy-shadow-status">Waiting for strategy shadow journal data.</p>
+      <div class="table-wrap" style="margin-top:10px">
+        <table style="min-width:720px" aria-label="Historical strategy family comparison">
+          <thead><tr><th>Historical strategy family</th><th>Trades</th><th>Positive / negative</th><th>Positive-net rate</th><th>Net P&amp;L</th><th>Sample quality</th></tr></thead>
+          <tbody id="strategy-family-comparison"><tr><td colspan="6" class="empty">Waiting for historical strategy results…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table style="min-width:720px" aria-label="Historical exit path comparison">
+          <thead><tr><th>Historical exit path</th><th>Trades</th><th>Positive / negative</th><th>Positive-net rate</th><th>Net P&amp;L</th><th>Sample quality</th></tr></thead>
+          <tbody id="strategy-exit-comparison"><tr><td colspan="6" class="empty">Waiting for exit-path results…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="small" style="margin-top:9px" id="strategy-shadow-note">A high win rate among trades held to settlement can be a selection effect when stopped trades are excluded.</p>
+    </div>
     <div style="margin-top:15px">
       <h3>Recent learning notes</h3>
       <ul class="reason-list" id="learning-recent-reviews"><li>No completed post-trade reviews yet.</li></ul>
@@ -1099,6 +1123,59 @@
     setList('learning-recent-reviews',[...policyChangeNotes,...recentTradeNotes],'No completed post-trade reviews or adaptive-target changes yet.');
     const research=Array.isArray(report.research_notes)?report.research_notes:[];
     write('learning-caution',`${research.join(' ')} ${report.important||''}`.trim());
+    renderStrategyComparison(report.strategy_comparison||{});
+  }
+
+  function renderStrategyComparison(comparison){
+    const prospective=comparison.prospective_comparison||{};
+    const historical=comparison.paired_comparison||{};
+    const current=prospective.current_engine||{};
+    const candidate=prospective.hold_to_settlement_candidate||{};
+    const journal=comparison.shadow_journal||{};
+    const config=comparison.candidate||{};
+    write('strategy-shadow-paired',`${prospective.paired_resolved_trades||0} paired · ${prospective.baseline_settled_trades||0} baseline settled`);
+    write('strategy-shadow-current-rate',hasNum(current.positive_net_rate_percent)?`${nfmt(current.positive_net_rate_percent,1)}%`:'—');
+    write('strategy-shadow-candidate-rate',hasNum(candidate.positive_net_rate_percent)?`${nfmt(candidate.positive_net_rate_percent,1)}%`:'—');
+    write('strategy-shadow-delta-pnl',hasNum(prospective.net_pnl_difference_cents)?signedMoneyCents(prospective.net_pnl_difference_cents):'—');
+    if($('strategy-shadow-delta-pnl'))$('strategy-shadow-delta-pnl').className='value '+(asNum(prospective.net_pnl_difference_cents)>0?'positive':asNum(prospective.net_pnl_difference_cents)<0?'negative':'');
+    const configured=Boolean(config.configured)||Number(journal.shadow_rows_created)>0;
+    const target=prospective.target_supported_out_of_sample===true
+      ?'The 90% target gate is supported by the resolved prospective shadow sample.'
+      :'The 90% target is not demonstrated by the resolved prospective shadow sample yet.';
+    write('strategy-shadow-status',`${configured?'Shadow journal available':'Shadow test awaiting worker activation'} · ${journal.shadow_results_resolved||0} candidate outcomes resolved · ${journal.stopped_baseline_trades_waiting_for_official_resolution||0} settled baseline trade(s) still need an official candidate result · ${journal.shadow_rows_pending||0} total candidate row(s) pending. ${config.prospective_start_at?'Forward-test start: '+time(config.prospective_start_at)+'.':'No prospective start timestamp configured; historical rows cannot qualify as forward-test evidence.'} ${target}`);
+    const familyBody=$('strategy-family-comparison');
+    if(familyBody){
+      familyBody.replaceChildren();
+      const rows=Array.isArray(comparison.historical_strategy_families)?comparison.historical_strategy_families:[];
+      if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent='No settled strategy-family results are available.';tr.appendChild(td);familyBody.appendChild(tr);}
+      for(const row of rows){
+        const tr=document.createElement('tr');
+        addCell(tr,String(row.strategy_family||'unknown').replaceAll('_',' '));
+        addCell(tr,row.settled_trades??0);
+        addCell(tr,`${row.positive_net_count??0} / ${row.negative_net_count??0}`);
+        addCell(tr,hasNum(row.positive_net_rate_percent)?`${nfmt(row.positive_net_rate_percent,1)}%`:'—');
+        addCell(tr,hasNum(row.net_pnl_cents)?signedMoneyCents(row.net_pnl_cents):'—',asNum(row.net_pnl_cents)>0?'positive':asNum(row.net_pnl_cents)<0?'negative':'');
+        addCell(tr,row.sample_quality||'descriptive',Number(row.settled_trades)<20?'warning-text':'');
+        familyBody.appendChild(tr);
+      }
+    }
+    const exitBody=$('strategy-exit-comparison');
+    if(exitBody){
+      exitBody.replaceChildren();
+      const rows=Array.isArray(comparison.historical_exit_path_cohorts)?comparison.historical_exit_path_cohorts:[];
+      if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=6;td.className='empty';td.textContent='No historical exit-path results are available.';tr.appendChild(td);exitBody.appendChild(tr);}
+      for(const row of rows){
+        const tr=document.createElement('tr');
+        addCell(tr,String(row.exit_path||'unknown').replaceAll('_',' '));
+        addCell(tr,row.settled_trades??0);
+        addCell(tr,`${row.positive_net_count??0} / ${row.negative_net_count??0}`);
+        addCell(tr,hasNum(row.positive_net_rate_percent)?`${nfmt(row.positive_net_rate_percent,1)}%`:'—');
+        addCell(tr,hasNum(row.net_pnl_cents)?signedMoneyCents(row.net_pnl_cents):'—',asNum(row.net_pnl_cents)>0?'positive':asNum(row.net_pnl_cents)<0?'negative':'');
+        addCell(tr,row.sample_quality||'descriptive',Number(row.settled_trades)<20?'warning-text':'');
+        exitBody.appendChild(tr);
+      }
+    }
+    write('strategy-shadow-note',`${comparison.historical_candidate_note||''} ${comparison.full_strategy_note||''} ${prospective.interpretation||''} ${historical.interpretation||''}`.trim());
   }
 
   function signedMoneyCents(v){ if(!hasNum(v)) return '—'; const n=Number(v)/100; return `${n<0?'-':''}$${Math.abs(n).toFixed(2)}`; }

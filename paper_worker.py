@@ -26,6 +26,7 @@ from kalshi_api import get_market, get_orderbook, KalshiAPIError
 from db_store import connect_database, ensure_schema, backend_name, record_decision_audit
 from payload_safety import sanitize_sensitive_payload
 from trade_learning import sync_settled_trade_learning, update_adaptive_entry_policy
+from strategy_shadow import process_hold_to_settlement_shadow
 
 log = logging.getLogger("paper_worker")
 
@@ -1099,6 +1100,20 @@ def run_once() -> dict[str, Any]:
     try:
         conn = _connect()
         _manage_open(conn)
+        # A separate, paper-only shadow duplicates entries but holds its own
+        # virtual copy until official settlement. Any provider error here is
+        # isolated from the primary engine and cannot block normal risk logic.
+        if _truthy("PAPER_STRATEGY_SHADOW_ENABLED", False):
+            try:
+                shadow_result = process_hold_to_settlement_shadow(
+                    conn, get_market,
+                    max_market_checks=max(0, min(4, int(_safe_float(os.getenv("PAPER_STRATEGY_SHADOW_MARKET_CHECKS_PER_CYCLE", "1"), 1)))),
+                    retry_seconds=max(30, min(3600, int(_safe_float(os.getenv("PAPER_STRATEGY_SHADOW_RETRY_SECONDS", "60"), 60)))),
+                )
+                if shadow_result.get("created") or shadow_result.get("newly_settled") or shadow_result.get("errors"):
+                    log.info("Strategy shadow comparison: %s", shadow_result)
+            except Exception as shadow_exc:
+                log.warning("Hold-to-settlement strategy shadow failed independently; primary engine unaffected: %s", shadow_exc)
         # Record every newly settled trade before recomputing the bounded
         # paper-only entry-price policy. The learner can only tighten the target;
         # it never changes the 92c hard cap, dollar limits, or live-trading state.
