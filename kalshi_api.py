@@ -258,20 +258,55 @@ def get_orderbook(ticker: str) -> dict[str, Any]:
 
 
 def find_open_btc_markets() -> list[dict[str, Any]]:
-    """Fetch the open BTC 15m market set, following a small bounded number of pages."""
+    """Discover BTC 15-minute markets from the official open-event feed.
+
+    Nested event markets avoid an N+1 request pattern: the worker can inspect
+    all candidates from one catalog page, then refresh only the selected market
+    and its order book immediately before considering a paper entry.
+    Market status is intentionally validated again by the worker; discovery
+    alone never makes a contract eligible for entry.
+    """
     found: list[dict[str, Any]] = []
+    seen: set[str] = set()
     cursor: str | None = None
-    # Active BTC 15m series normally fits in one page. Keep pagination bounded
-    # for unusual periods, but avoid the older 5-page scan by default.
     max_pages = max(1, min(int(os.getenv("KALSHI_MARKET_DISCOVERY_MAX_PAGES", "2")), 5))
     for _ in range(max_pages):
-        payload = get_markets(status="open", limit=200, cursor=cursor, series_ticker="KXBTC15M")
-        for market in payload.get("markets", []):
-            ticker = str(market.get("ticker", "")).upper()
-            market_status = str(market.get("status", "")).lower()
-            if ticker.startswith("KXBTC15M-") and market_status in {"active", "open"}:
+        payload = get_events(
+            status="open", limit=200, cursor=cursor,
+            with_nested_markets=True, series_ticker="KXBTC15M",
+        )
+        events = payload.get("events", [])
+        if not isinstance(events, list):
+            raise KalshiAPIError("Kalshi BTC event catalog returned an invalid events list.", retryable=False)
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_series = str(event.get("series_ticker") or "").strip().upper()
+            if event_series and event_series != "KXBTC15M":
+                continue
+            markets = event.get("markets", [])
+            if not isinstance(markets, list):
+                continue
+            for raw_market in markets:
+                if not isinstance(raw_market, dict):
+                    continue
+                ticker = str(raw_market.get("ticker") or "").strip().upper()
+                if not ticker.startswith("KXBTC15M-") or ticker in seen:
+                    continue
+                # Preserve non-active nested rows for a downstream explicit
+                # market-status rejection reason. They can never be entered
+                # unless the worker independently confirms active/open status.
+                market = dict(raw_market)
+                if not market.get("event_ticker") and event.get("event_ticker"):
+                    market["event_ticker"] = event.get("event_ticker")
+                if not market.get("title") and event.get("title"):
+                    market["title"] = event.get("title")
+                if not market.get("subtitle") and event.get("sub_title"):
+                    market["subtitle"] = event.get("sub_title")
                 found.append(market)
-        cursor = payload.get("cursor")
+                seen.add(ticker)
+        cursor_value = payload.get("cursor")
+        cursor = str(cursor_value).strip() if cursor_value else None
         if not cursor:
             break
     return found
