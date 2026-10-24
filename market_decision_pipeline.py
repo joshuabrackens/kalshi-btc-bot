@@ -101,6 +101,59 @@ def _normalize_market(payload: Any) -> dict[str, Any]:
     return dict(market) if isinstance(market, dict) else dict(payload)
 
 
+def _exploratory_paper_candidate(result: dict[str, Any], market: Mapping[str, Any],
+                                  model: Any, *, enabled: bool) -> dict[str, Any]:
+    """Create a separately labelled paper candidate when only calibration/evidence is missing."""
+    if not enabled or result.get("eligible") or not isinstance(model, Mapping):
+        return result
+    reasons = [str(x) for x in result.get("reasons", [])]
+    allowed = {"model_not_validated_out_of_sample", "insufficient_out_of_sample_validation",
+               "brier_score_unavailable_or_too_high", "net_edge_not_calculable"}
+    if not reasons or any(x not in allowed and not x.startswith("required_evidence_missing:") for x in reasons):
+        return result
+    ticker = str(market.get("ticker") or market.get("market_ticker") or "")
+    p = _num(model.get("model_probability_yes"), -1)
+    if not ticker or model.get("market_ticker") != ticker or not 0 < p < 1:
+        return result
+    model_id, version = model.get("model_id"), model.get("model_version")
+    if not isinstance(model_id, str) or not model_id.strip() or not isinstance(version, str) or not version.strip():
+        return result
+    try:
+        as_of = datetime.fromisoformat(str(model.get("as_of_utc")).replace("Z", "+00:00"))
+        if as_of.tzinfo is None:
+            return result
+        age = (datetime.now(timezone.utc) - as_of.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return result
+    if age < -120 or age > 1800 or str(market.get("status") or "").lower() not in {"open", "active"}:
+        return result
+    yes_ask, no_ask = _num(result.get("yes_ask_cents"), -1), _num(result.get("no_ask_cents"), -1)
+    if not (0 < yes_ask <= 100 and 0 < no_ask <= 100):
+        return result
+    fee = max(2.0, _num(result.get("estimated_fee_cents"), 2))
+    slip = max(1.0, _num(result.get("estimated_slippage_cents"), 1))
+    yes_edge, no_edge = p * 100 - yes_ask - fee - slip, (1 - p) * 100 - no_ask - fee - slip
+    side, entry, edge = max((("YES", yes_ask, yes_edge), ("NO", no_ask, no_edge)), key=lambda x: x[2])
+    min_edge = max(5.0, _num(os.getenv("MARKET_MIN_NET_EDGE_CENTS", "5"), 5))
+    max_entry = min(90.0, _num(os.getenv("MARKET_MAX_ENTRY_CENTS", "90"), 90))
+    if edge < min_edge or entry > max_entry:
+        return result
+    result.update({
+        "status": "exploratory_paper_candidate", "eligible": True, "selected_side": side,
+        "model_probability_yes_pct": round(p * 100, 3), "yes_net_edge_cents": round(yes_edge, 3),
+        "no_net_edge_cents": round(no_edge, 3), "expected_net_edge_cents": round(edge, 3),
+        "entry_ask_cents": round(entry, 3), "experimental_paper_mode": True,
+        "model_validation_status": "UNVALIDATED_EXPLORATORY",
+        "exploratory_validation_warnings": reasons, "warnings": [
+            "Unvalidated probability: paper accuracy measurement only.",
+            "Do not treat exploratory results as validated predictive performance.",
+        ], "reasons": [],
+    })
+    if isinstance(result.get("model"), dict):
+        result["model"]["validation_status"] = "UNVALIDATED_EXPLORATORY"
+    return result
+
+
 class MarketDecisionPipeline:
     def __init__(
         self,
@@ -131,7 +184,8 @@ class MarketDecisionPipeline:
             "candidate_pool_size": 0, "analyzed_count": 0, "paper_entries_created": 0,
             "blocked_count": 0, "decisions": [], "last_error": None,
             "mode": "PAPER_RESEARCH_ONLY", "live_orders_submitted": 0,
-            "note": "Probability and evidence must pass out-of-sample validation. No live order API exists in this pipeline.",
+            "exploratory_paper_enabled": _bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False),
+            "note": "Validated entries require calibrated evidence; explicitly enabled exploratory entries are labeled unvalidated and used only to measure paper accuracy. No live order API exists.",
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -141,6 +195,7 @@ class MarketDecisionPipeline:
             result["provider_configured"] = provider_configured()
             from runtime_controls import market_autopilot_enabled
             result["autopaper_enabled"] = _bool_env("MARKET_AUTOPAPER_ENABLED", False) and market_autopilot_enabled()
+            result["exploratory_paper_enabled"] = _bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False)
             return result
 
     def start(self, force: bool = True, *, paper_entry_once: bool = False) -> dict[str, Any]:
@@ -260,6 +315,10 @@ class MarketDecisionPipeline:
                             min_validation_samples=_int_env("MARKET_MODEL_MIN_VALIDATION_SAMPLES", 100, 30, 10000),
                             max_brier_score=_num(os.getenv("MARKET_MODEL_MAX_BRIER_SCORE", "0.22"), 0.22),
                         )
+                        result = _exploratory_paper_candidate(
+                            result, market, model,
+                            enabled=_bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False),
+                        )
                         result["display_group"] = market_display_group(
                             category, ticker, market.get("title"), market.get("event_title"),
                             market.get("event_ticker"), market.get("event_sub_title"),
@@ -356,62 +415,62 @@ class MarketDecisionPipeline:
                 open_count = int(conn.execute(
                     "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
                 ).fetchone()[0] or 0)
+                max_open_positions = _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 5, 1, 20)
+                max_entries_per_cycle = _int_env("MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE", 3, 1, 10)
+                if paper_entry_once and not autopilot_on:
+                    max_entries_per_cycle = 1
 
                 if ranked_candidates:
-                    best = ranked_candidates[0][0]
-                    best["paper_selection_status"] = "best_eligible_candidate_not_opened"
-                    if not paper_environment_safe:
-                        reason = "paper_entry_environment_gate_off_or_unsafe_mode"
-                    elif not (autopilot_on or paper_entry_once):
-                        reason = "master_autopilot_off; candidate ranked for research only"
-                    elif open_count >= 1:
-                        reason = "an_open_research_position_must_settle_before_another_position_can_open"
-                    else:
-                        best, score, details = ranked_candidates[0]
-                        # Persist a truthful selection record with the simulated
-                        # position when it is opened; a failed attempt is reset below.
-                        best["paper_trade_created"] = True
-                        best["paper_selection_status"] = "best_candidate_position_opened"
-                        best["paper_trade_block_reason"] = None
-                        best.setdefault("paper_selection", {})["selected_for_attempt"] = True
-                        best["paper_entry_gate"] = {
+                    for candidate, _score, _details in ranked_candidates:
+                        candidate["paper_trade_created"] = False
+                        candidate["paper_entry_gate"] = {
                             "authorized_for_this_batch": entry_authorized,
                             "autopilot_enabled": autopilot_on,
                             "manual_one_shot_requested": bool(paper_entry_once),
                             "environment_safe": paper_environment_safe,
                             "open_position_count_before_entry": open_count,
+                            "max_open_positions": max_open_positions,
+                            "max_entries_per_cycle": max_entries_per_cycle,
                         }
-                        created, risk_reason = self._create_paper_trade(
-                            conn, best,
-                            allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
-                        )
-                        if created:
-                            entered = 1
+                        if not paper_environment_safe:
+                            reason = "paper_entry_environment_gate_off_or_unsafe_mode"
+                            candidate["paper_selection_status"] = "best_eligible_candidate_not_opened"
+                        elif not (autopilot_on or paper_entry_once):
+                            reason = "master_autopilot_off; candidate ranked for research only"
+                            candidate["paper_selection_status"] = "best_candidate_ranked_autopilot_off"
+                        elif open_count >= max_open_positions:
+                            reason = "max_open_research_paper_trades_reached"
+                            candidate["paper_selection_status"] = "eligible_candidate_waiting_for_open_position"
+                        elif entered >= max_entries_per_cycle:
+                            reason = "max_entries_per_research_cycle_reached"
+                            candidate["paper_selection_status"] = "eligible_candidate_not_selected_this_cycle"
                         else:
-                            reason = risk_reason or "paper_position_not_created"
-                            best["paper_trade_created"] = False
-                            best["paper_trade_block_reason"] = reason
-                            best["paper_selection_status"] = "best_candidate_blocked_by_risk_or_duplicate"
-                            best.setdefault("reasons", []).append(reason)
-                    if not best.get("paper_trade_created"):
-                        best["paper_trade_block_reason"] = reason
-                        if reason not in best.setdefault("reasons", []):
-                            best["reasons"].append(reason)
-                    best["paper_trade_created"] = bool(best.get("paper_trade_created"))
-                    best["paper_entry_gate"] = {
-                        "authorized_for_this_batch": entry_authorized,
-                        "autopilot_enabled": autopilot_on,
-                        "manual_one_shot_requested": bool(paper_entry_once),
-                        "environment_safe": paper_environment_safe,
-                        "open_position_count_before_entry": open_count,
-                    }
-                    if not entry_authorized and paper_environment_safe and not autopilot_on:
-                        best["paper_selection_status"] = "best_candidate_ranked_autopilot_off"
-                    elif open_count >= 1 and entry_authorized:
-                        best["paper_selection_status"] = "best_candidate_waiting_for_open_position_to_settle"
-                    best.setdefault("paper_selection", {})["selected_for_attempt"] = True
-                    for other, _, _ in ranked_candidates[1:]:
-                        other["paper_selection"].update(selected_for_attempt=False)
+                            candidate.setdefault("paper_selection", {})["selected_for_attempt"] = True
+                            created, risk_reason = self._create_paper_trade(
+                                conn, candidate,
+                                allow_manual_entry_once=bool(paper_entry_once and not autopilot_on),
+                            )
+                            if created:
+                                entered += 1
+                                open_count += 1
+                                candidate["paper_trade_created"] = True
+                                candidate["paper_selection_status"] = "paper_position_opened"
+                                candidate["paper_trade_block_reason"] = None
+                                reason = None
+                            else:
+                                reason = risk_reason or "paper_position_not_created"
+                                candidate["paper_selection_status"] = "best_candidate_blocked_by_risk_or_duplicate"
+                        if reason:
+                            candidate["paper_trade_block_reason"] = reason
+                            if reason not in candidate.setdefault("reasons", []):
+                                candidate["reasons"].append(reason)
+                    for index, (candidate, _score, _details) in enumerate(ranked_candidates, start=1):
+                        candidate.setdefault("paper_selection", {}).update({
+                            "rank": index,
+                            "eligible_candidate_count": len(ranked_candidates),
+                            "is_best_candidate": index == 1,
+                            "selected_for_attempt": bool(candidate.get("paper_selection", {}).get("selected_for_attempt", False)),
+                        })
                 for item in decisions:
                     self._record_decision(conn, item)
                 conn.commit()
@@ -575,8 +634,8 @@ class MarketDecisionPipeline:
         if not model_id or not model_version:
             return False, "model_identity_missing"
 
-        # One research position at a time ensures the journal tests the single best eligible candidate.
-        max_open = 1
+        # Multiple isolated paper positions allow prospective measurement across the best ranked markets.
+        max_open = _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 5, 1, 20)
         max_open_cost = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_OPEN_COST_CENTS", "2000"), 2000))
         daily_loss_limit = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_DAILY_LOSS_CENTS", "500"), 500))
         open_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(contracts*(entry_cents+estimated_fee_cents+estimated_slippage_cents)),0) FROM market_research_paper_trades WHERE status='open'").fetchone()
