@@ -107,17 +107,29 @@ def test_provider_quota_429_activates_circuit_breaker_and_avoids_repeat_paid_cal
     }
     fake = Mock(status_code=429, content=json.dumps(error_body).encode("utf-8"), is_redirect=False)
     fake.json.return_value = error_body
-    with patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
-                                    "OPENAI_API_KEY": "openai-test-secret",
-                                    "OPENAI_MODEL": "gpt-5.1",
-                                    "OPENAI_QUOTA_COOLDOWN_SECONDS": "3600",
-                                    "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json")}, clear=False), \\
-         patch.object(provider.requests, "post", return_value=fake) as post:
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
+                "OPENAI_API_KEY": "openai-test-secret",
+                "OPENAI_MODEL": "gpt-5.1",
+                "OPENAI_QUOTA_COOLDOWN_SECONDS": "3600",
+                "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json"),
+            },
+            clear=False,
+        ),
+        patch.object(provider.requests, "post", return_value=fake) as post,
+    ):
         with TestClient(provider.app) as client:
-            first = client.post("/analyze", json=_market_payload(),
-                                headers={"Authorization": "Bearer shared-secret"})
-            second = client.post("/analyze", json=_market_payload(),
-                                 headers={"Authorization": "Bearer shared-secret"})
+            first = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+            second = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
     assert first.status_code == 503
     assert first.headers["Retry-After"] == "3600"
     assert second.status_code == 503
