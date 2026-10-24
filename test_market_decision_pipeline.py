@@ -339,7 +339,8 @@ def test_settlement_only_monitor_resolves_open_position_with_autopilot_off(tmp_p
 
         def final_market(ticker):
             assert ticker == "KXSPORTS-SETTLE-MONITOR"
-            return {"market": {"ticker": ticker, "status": "settled", "result": "YES"}}
+            # Official final results may be exposed as closed + settlement_result.
+            return {"market": {"ticker": ticker, "status": "closed", "settlement_result": "YES"}}
 
         def no_model(*_args, **_kwargs):
             raise AssertionError("settlement-only monitoring must not invoke the model/evidence provider")
