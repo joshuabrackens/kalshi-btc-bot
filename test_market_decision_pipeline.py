@@ -269,6 +269,10 @@ def test_top_ranked_eligible_candidates_open_and_settlement_pnl_is_recorded(tmp_
                 saved = json.loads(best[6])["decision"]
                 assert saved["paper_selection"]["rank"] == 1
                 assert saved["paper_selection"]["rank_score_is_probability"] is False
+                assert saved["paper_trade_created"] is True
+                assert saved["paper_selection_status"] == "paper_position_opened"
+                assert saved["paper_trade_block_reason"] is None
+                assert saved["paper_entry_gate"]["environment_safe"] is True
                 assert by_ticker["KXSPORTS-LIQUID"][1] == "open"
 
                 # Only official final statuses/results can settle a research simulation.
@@ -479,6 +483,10 @@ def test_exploratory_paper_mode_opens_unvalidated_prediction_for_accuracy_tracki
                 saved = json.loads(row[2])["decision"]
                 assert saved["experimental_paper_mode"] is True
                 assert saved["model_validation_status"] == "UNVALIDATED_EXPLORATORY"
+                assert saved["paper_trade_created"] is True
+                assert saved["paper_selection_status"] == "paper_position_opened"
+                assert saved["paper_trade_block_reason"] is None
+                assert saved["paper_entry_gate"]["environment_safe"] is True
             finally:
                 conn.close()
         finally:
