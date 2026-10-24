@@ -38,6 +38,11 @@ def test_read_only_routes_work_and_manual_writes_are_disabled_by_default():
                 assert "active_position" in dashboard_data
                 assert client.get("/api/category-readiness").json()["current_active_strategy"] == "btc_15m"
                 assert client.get("/api/analytics").json()["mode"] == "SIMULATION_ONLY"
+                market_analysis = client.get("/api/market-analysis")
+                assert market_analysis.status_code == 200, market_analysis.text
+                position_note = market_analysis.json()["research_paper_position_note"]
+                assert "Multiple simulated research positions" in position_note
+                assert "One simulated research position is allowed open at a time" not in position_note
                 learning = client.get("/api/learning")
                 assert learning.status_code == 200, learning.text
                 assert learning.json()["mode"] == "SIMULATION_ONLY"

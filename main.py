@@ -1886,8 +1886,9 @@ def api_market_analysis() -> dict[str, Any]:
             settlement_monitor = market_decision_pipeline.settlement_monitor_status()
             result["research_paper_settlement_monitor"] = settlement_monitor
             result["research_paper_position_note"] = (
-                "One simulated research position is allowed open at a time. Entry is recorded at the selected-side ask; "
-                "estimated fee and slippage are deducted from final net P&L. The settlement-only monitor checks every "
+                "Multiple simulated research positions may remain open within configured per-cycle, open-position, "
+                "duplicate, exposure, and daily-loss risk caps. Entry is recorded at the selected-side ask; estimated "
+                "fee and slippage are deducted from final net P&L. The settlement-only monitor checks every "
                 f"{settlement_monitor['interval_seconds']} seconds while its scheduler is running, including when the master "
                 "autopilot is OFF; it does not call the model/evidence provider. No live order is sent."
             )
@@ -1907,14 +1908,15 @@ def api_market_analysis() -> dict[str, Any]:
 
 @app.post("/api/market-analysis/run")
 def api_run_market_analysis(request: Request) -> dict[str, Any]:
-    """Start one bounded authenticated research batch with at most one best-candidate paper entry."""
+    """Start one bounded authenticated research batch under configured paper-entry and risk caps."""
     _require_admin_session(request)
     # Start the settlement-only monitor as part of this explicit research workflow.
     # It keeps tracking this and later paper positions even after the master autopilot
     # remains OFF; that setting is never changed by this route.
     market_decision_pipeline.start_scheduler(enabled=True)
-    # A manual click is one-shot authorization to open at most the best eligible
-    # research-paper position for this batch. Environment safety gates still apply.
+    # A manual click authorizes a bounded paper-only batch. When autopilot is OFF,
+    # the one-shot path is capped at one entry; when ON, configured per-cycle caps apply.
+    # Environment, duplicate, exposure, and loss gates still apply in either case.
     return market_decision_pipeline.start(force=True, paper_entry_once=True)
 
 
