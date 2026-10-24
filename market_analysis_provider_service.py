@@ -399,6 +399,7 @@ def _openai_error_diagnostics(response: Any) -> tuple[str, str | None, str | Non
     return classification, code, error_type
 
 
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     database_configured = bool(os.getenv("DATABASE_URL", "").strip())
