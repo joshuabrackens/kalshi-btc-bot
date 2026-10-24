@@ -69,7 +69,7 @@ class DatabaseConnection:
         # parameter sequence is supplied. Escape literals before inserting %s.
         pg_sql = sql.replace("%", "%%").replace("?", "%s")
         match = re.match(r"\s*INSERT\s+INTO\s+[\"`]?([a-zA-Z_][\w]*)", pg_sql, re.IGNORECASE)
-        auto_return_id = bool(match and match.group(1).lower() in _TABLE_COLUMNS and not re.search(r"\bRETURNING\b", pg_sql, re.IGNORECASE))
+        auto_return_id = bool(match and match.group(1).lower() in _AUTO_ID_TABLES and not re.search(r"\bRETURNING\b", pg_sql, re.IGNORECASE))
         if auto_return_id:
             pg_sql = pg_sql.rstrip().rstrip(";") + " RETURNING id"
         cur = self.raw.cursor()
@@ -164,6 +164,19 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("state", "TEXT"), ("last_checked_at", "TEXT"), ("last_error", "TEXT"),
         ("comparison_cohort", "TEXT"), ("feature_snapshot_json", "TEXT"), ("notes", "TEXT"),
     ],
+}
+
+# Tables with generated numeric IDs. Several newer journals are created below
+# in ensure_schema rather than _TABLE_COLUMNS, so checking only _TABLE_COLUMNS
+# silently disabled PostgreSQL INSERT ... RETURNING for those tables.
+_AUTO_ID_TABLES = set(_TABLE_COLUMNS) | {
+    "decision_audit",
+    "trade_learning",
+    "market_research_decisions",
+    "market_research_paper_trades",
+    "market_research_prediction_outcomes",
+    "market_research_prediction_checks",
+    "adaptive_policy_history",
 }
 
 
