@@ -671,6 +671,17 @@ class MarketDecisionPipeline:
             self._scheduler_started = True
         threading.Thread(target=self._scheduler_loop, name="market-decision-scheduler", daemon=True).start()
 
+    def settlement_monitor_status(self) -> dict[str, Any]:
+        with self._lock:
+            started = bool(self._scheduler_started)
+        return {
+            "scheduler_started": started,
+            "interval_seconds": _int_env("MARKET_RESEARCH_SETTLEMENT_INTERVAL_SECONDS", 60, 30, 3600),
+            "runs_when_master_autopilot_off": True,
+            "uses_model_provider": False,
+            "requires_official_final_market_result": True,
+        }
+
     def _scheduler_loop(self) -> None:
         interval = _int_env("MARKET_ANALYSIS_INTERVAL_SECONDS", 300, 60, 86400)
         settlement_interval = _int_env("MARKET_RESEARCH_SETTLEMENT_INTERVAL_SECONDS", 60, 30, 3600)
