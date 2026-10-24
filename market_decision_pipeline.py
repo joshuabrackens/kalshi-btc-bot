@@ -101,6 +101,59 @@ def _normalize_market(payload: Any) -> dict[str, Any]:
     return dict(market) if isinstance(market, dict) else dict(payload)
 
 
+def _exploratory_paper_candidate(result: dict[str, Any], market: Mapping[str, Any],
+                                  model: Any, *, enabled: bool) -> dict[str, Any]:
+    """Create a separately labelled paper candidate when only calibration/evidence is missing."""
+    if not enabled or result.get("eligible") or not isinstance(model, Mapping):
+        return result
+    reasons = [str(x) for x in result.get("reasons", [])]
+    allowed = {"model_not_validated_out_of_sample", "insufficient_out_of_sample_validation",
+               "brier_score_unavailable_or_too_high", "net_edge_not_calculable"}
+    if not reasons or any(x not in allowed and not x.startswith("required_evidence_missing:") for x in reasons):
+        return result
+    ticker = str(market.get("ticker") or market.get("market_ticker") or "")
+    p = _num(model.get("model_probability_yes"), -1)
+    if not ticker or model.get("market_ticker") != ticker or not 0 < p < 1:
+        return result
+    model_id, version = model.get("model_id"), model.get("model_version")
+    if not isinstance(model_id, str) or not model_id.strip() or not isinstance(version, str) or not version.strip():
+        return result
+    try:
+        as_of = datetime.fromisoformat(str(model.get("as_of_utc")).replace("Z", "+00:00"))
+        if as_of.tzinfo is None:
+            return result
+        age = (datetime.now(timezone.utc) - as_of.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return result
+    if age < -120 or age > 1800 or str(market.get("status") or "").lower() not in {"open", "active"}:
+        return result
+    yes_ask, no_ask = _num(result.get("yes_ask_cents"), -1), _num(result.get("no_ask_cents"), -1)
+    if not (0 < yes_ask <= 100 and 0 < no_ask <= 100):
+        return result
+    fee = max(2.0, _num(result.get("estimated_fee_cents"), 2))
+    slip = max(1.0, _num(result.get("estimated_slippage_cents"), 1))
+    yes_edge, no_edge = p * 100 - yes_ask - fee - slip, (1 - p) * 100 - no_ask - fee - slip
+    side, entry, edge = max((("YES", yes_ask, yes_edge), ("NO", no_ask, no_edge)), key=lambda x: x[2])
+    min_edge = max(5.0, _num(os.getenv("MARKET_MIN_NET_EDGE_CENTS", "5"), 5))
+    max_entry = min(90.0, _num(os.getenv("MARKET_MAX_ENTRY_CENTS", "90"), 90))
+    if edge < min_edge or entry > max_entry:
+        return result
+    result.update({
+        "status": "exploratory_paper_candidate", "eligible": True, "selected_side": side,
+        "model_probability_yes_pct": round(p * 100, 3), "yes_net_edge_cents": round(yes_edge, 3),
+        "no_net_edge_cents": round(no_edge, 3), "expected_net_edge_cents": round(edge, 3),
+        "entry_ask_cents": round(entry, 3), "experimental_paper_mode": True,
+        "model_validation_status": "UNVALIDATED_EXPLORATORY",
+        "exploratory_validation_warnings": reasons, "warnings": [
+            "Unvalidated probability: paper accuracy measurement only.",
+            "Do not treat exploratory results as validated predictive performance.",
+        ], "reasons": [],
+    })
+    if isinstance(result.get("model"), dict):
+        result["model"]["validation_status"] = "UNVALIDATED_EXPLORATORY"
+    return result
+
+
 class MarketDecisionPipeline:
     def __init__(
         self,
