@@ -197,7 +197,7 @@ def test_end_to_end_catalog_scan_to_automatic_research_paper_entry(tmp_path):
 
 
 
-def test_only_best_eligible_candidate_opens_and_settlement_pnl_is_recorded(tmp_path):
+def test_top_ranked_eligible_candidates_open_and_settlement_pnl_is_recorded(tmp_path):
     with patch.dict(os.environ, {
         "DATABASE_URL": "", "BOT_DB_PATH": str(tmp_path / "best-market.sqlite3"),
         "MARKET_ANALYSIS_PROVIDER_URL": "https://model.example/analyze",
@@ -205,6 +205,8 @@ def test_only_best_eligible_candidate_opens_and_settlement_pnl_is_recorded(tmp_p
         "MARKET_AUTOPAPER_ENABLED": "true", "MARKET_PAPER_ENABLED_CATEGORIES": "sports",
         "TRADING_MODE": "paper", "LIVE_TRADING_ENABLED": "false",
         "MARKET_ANALYSIS_MAX_PER_CYCLE": "10",
+        "MARKET_RESEARCH_MAX_OPEN_POSITIONS": "5",
+        "MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE": "3",
     }, clear=False):
         from runtime_controls import set_market_autopilot_enabled
         set_market_autopilot_enabled(True)
@@ -241,44 +243,47 @@ def test_only_best_eligible_candidate_opens_and_settlement_pnl_is_recorded(tmp_p
             result = pipeline.run_once_for_tests()
             assert result["status"] == "complete"
             assert result["analyzed_count"] == 2
-            assert result["paper_entries_created"] == 1
+            assert result["paper_entries_created"] == 2
             assert result["live_orders_submitted"] == 0
             ranked = {row["ticker"]: row for row in result["decisions"]}
             assert ranked["KXSPORTS-EDGE"]["paper_selection"]["rank"] == 1
             assert ranked["KXSPORTS-EDGE"]["paper_trade_created"] is True
             assert ranked["KXSPORTS-LIQUID"]["paper_selection"]["rank"] == 2
-            assert ranked["KXSPORTS-LIQUID"]["paper_trade_created"] is False
+            assert ranked["KXSPORTS-LIQUID"]["paper_trade_created"] is True
 
             conn = db_store.connect_database()
             try:
-                row = conn.execute(
+                rows = conn.execute(
                     """SELECT market_ticker,status,entry_cents,estimated_fee_cents,
                               estimated_slippage_cents,expected_net_edge_cents,source_snapshot_json
-                       FROM market_research_paper_trades"""
-                ).fetchone()
-                assert row[0] == "KXSPORTS-EDGE"
-                assert row[1] == "open"
-                assert row[2] == 51.0
-                assert row[3] == 2.0
-                assert row[4] == 1.0
-                assert row[5] == 41.0
-                saved = json.loads(row[6])["decision"]
+                       FROM market_research_paper_trades ORDER BY id"""
+                ).fetchall()
+                assert len(rows) == 2
+                by_ticker = {row[0]: row for row in rows}
+                best = by_ticker["KXSPORTS-EDGE"]
+                assert best[1] == "open"
+                assert best[2] == 51.0
+                assert best[3] == 2.0
+                assert best[4] == 1.0
+                assert best[5] == 41.0
+                saved = json.loads(best[6])["decision"]
                 assert saved["paper_selection"]["rank"] == 1
                 assert saved["paper_selection"]["rank_score_is_probability"] is False
+                assert by_ticker["KXSPORTS-LIQUID"][1] == "open"
 
-                # The result is only recorded from an official final status/result.
+                # Only official final statuses/results can settle a research simulation.
                 pipeline._market_fetcher = lambda ticker: {
                     "market": {"ticker": ticker, "status": "settled", "result": "YES"}
                 }
                 pipeline._settle_open_trades(conn)
                 settled = conn.execute(
                     """SELECT status,result,pnl_cents,settled_at
-                       FROM market_research_paper_trades WHERE market_ticker='KXSPORTS-EDGE'"""
-                ).fetchone()
-                assert settled[0] == "settled"
-                assert settled[1] == "YES"
-                assert settled[2] == 46.0  # 100¢ payout - 51¢ entry - 2¢ fee - 1¢ slippage
-                assert settled[3]
+                       FROM market_research_paper_trades ORDER BY id"""
+                ).fetchall()
+                assert len(settled) == 2
+                assert all(row[0] == "settled" and row[1] == "YES" for row in settled)
+                assert all(row[2] == 46.0 for row in settled)
+                assert all(row[3] for row in settled)
                 assert conn.execute(
                     "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
                 ).fetchone()[0] == 0
@@ -288,7 +293,6 @@ def test_only_best_eligible_candidate_opens_and_settlement_pnl_is_recorded(tmp_p
             set_market_autopilot_enabled(False)
             for suffix in ("", "-wal", "-shm"):
                 Path(str(tmp_path / "best-market.sqlite3") + suffix).unlink(missing_ok=True)
-
 
 def test_settlement_only_monitor_resolves_open_position_with_autopilot_off(tmp_path):
     with patch.dict(os.environ, {
