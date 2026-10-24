@@ -156,6 +156,14 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("received_at", "TEXT"), ("status_code", "INTEGER"), ("status", "TEXT"),
         ("reason", "TEXT"), ("symbol", "TEXT"), ("timeframe", "TEXT"), ("direction", "TEXT"),
     ],
+    "strategy_shadow_trades": [
+        ("baseline_trade_id", "INTEGER"), ("strategy_key", "TEXT"),
+        ("created_at", "TEXT"), ("settled_at", "TEXT"), ("market_ticker", "TEXT"),
+        ("direction", "TEXT"), ("contracts", "INTEGER"), ("entry_cents", "REAL"),
+        ("fee_cents_per_contract", "REAL"), ("outcome", "TEXT"), ("pnl_cents", "REAL"),
+        ("state", "TEXT"), ("last_checked_at", "TEXT"), ("last_error", "TEXT"),
+        ("feature_snapshot_json", "TEXT"), ("notes", "TEXT"),
+    ],
 }
 
 
@@ -172,6 +180,10 @@ def _table_ddl(name: str, backend: str) -> str:
             "paper_trades": {"created_at", "market_ticker", "direction", "contracts", "entry_cents", "fee_cents_per_contract"},
             "gainzalgo_signals": {"created_at", "direction", "payload_json"},
             "webhook_events": {"received_at", "status_code", "status", "reason"},
+            "strategy_shadow_trades": {
+                "baseline_trade_id", "strategy_key", "created_at", "market_ticker",
+                "direction", "contracts", "entry_cents", "fee_cents_per_contract", "state",
+            },
         }[name]
         suffix = " NOT NULL" if col in required else ""
         definitions.append(f"{col} {column_type}{suffix}")
@@ -232,6 +244,8 @@ def ensure_schema(conn: DatabaseConnection) -> None:
             "ON gainzalgo_signals(fingerprint) WHERE fingerprint IS NOT NULL"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_open ON paper_trades(settled_at, id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_shadow_baseline_key ON strategy_shadow_trades(baseline_trade_id, strategy_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_shadow_state_checked ON strategy_shadow_trades(state, last_checked_at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_log_recent ON signal_log(id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_counterfactual ON signal_log(counterfactual_settled_at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_counterfactual_lookup ON signal_log(decision_status, proposed_direction, counterfactual_settled_at, id)")
