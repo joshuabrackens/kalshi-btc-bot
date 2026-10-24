@@ -45,7 +45,7 @@ class PostgresAutoReturnIdTests(unittest.TestCase):
              None, 0.5, None, "test-model", "v1", "{}"),
         )
         self.assertEqual(cur.lastrowid, 417)
-        self.assertIn("RETURNING id", raw.cursor_instance.sql.upper())
+        self.assertIn("RETURNING ID", raw.cursor_instance.sql.upper())
         self.assertEqual(raw.cursor_instance.params[1], "KXSPORTS-TEST")
 
     def test_all_new_serial_journals_request_returning_id(self):
@@ -70,7 +70,7 @@ class PostgresAutoReturnIdTests(unittest.TestCase):
             ("example", "false", "2026-10-24T19:00:00+00:00"),
         )
         self.assertIsNone(cur.lastrowid)
-        self.assertNotIn("RETURNING id", raw.cursor_instance.sql.upper())
+        self.assertNotIn("RETURNING ID", raw.cursor_instance.sql.upper())
 
 
 if __name__ == "__main__":
