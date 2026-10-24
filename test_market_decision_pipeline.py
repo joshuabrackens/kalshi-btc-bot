@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import db_store
-from market_decision_pipeline import MarketDecisionPipeline
+from market_decision_pipeline import MarketDecisionPipeline, _exploratory_paper_candidate
 
 
 def _stamp(minutes_ago=1):
@@ -39,6 +39,34 @@ def _market(ticker="KXSPORTS-TEST", status="active"):
 
 def _book():
     return {"orderbook": {"yes": [[49, 15], [48, 10]], "no": [[49, 15], [48, 10]]}}
+
+
+def test_exploratory_candidate_drops_stale_net_edge_warning_after_recalculation():
+    market = {"ticker": "KXSPORTS-EDGE-TEST", "status": "active"}
+    model = {
+        "market_ticker": market["ticker"], "model_probability_yes": 0.75,
+        "model_id": "exploratory-test-model", "model_version": "exploratory-v1",
+        "as_of_utc": _stamp(),
+    }
+    result = {
+        "eligible": False,
+        "reasons": [
+            "model_not_validated_out_of_sample",
+            "net_edge_not_calculable",
+            "required_evidence_missing:injury_report,lineup,recent_news,recent_stats",
+        ],
+        "yes_ask_cents": 40.0, "no_ask_cents": 61.0,
+        "estimated_fee_cents": 2.0, "estimated_slippage_cents": 1.0,
+        "model": {},
+    }
+    candidate = _exploratory_paper_candidate(result, market, model, enabled=True)
+    assert candidate["status"] == "exploratory_paper_candidate"
+    assert candidate["expected_net_edge_cents"] == 32.0
+    assert "net_edge_not_calculable" in candidate["initial_validation_reasons"]
+    assert "net_edge_not_calculable" not in candidate["exploratory_validation_warnings"]
+    assert "model_not_validated_out_of_sample" in candidate["exploratory_validation_warnings"]
+    assert "required_evidence_missing:injury_report,lineup,recent_news,recent_stats" in candidate["exploratory_validation_warnings"]
+    assert candidate["model_validation_status"] == "UNVALIDATED_EXPLORATORY"
 
 
 def test_pipeline_creates_separate_paper_trade_only_after_all_gates_and_deduplicates(tmp_path):
