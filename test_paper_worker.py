@@ -91,7 +91,9 @@ class WorkerSafetyTests(unittest.TestCase):
             "close_time": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
             "yes_ask": 50, "no_ask": 50,
         }}
-        self.assertIsNone(w._extract_market(m))
+        rejection_counts = {}
+        self.assertIsNone(w._extract_market(m, rejection_counts))
+        self.assertEqual(rejection_counts, {"missing_or_invalid_strike": 1})
 
     def test_market_explicit_strike_accepted(self):
         m = {"market": {
@@ -102,6 +104,19 @@ class WorkerSafetyTests(unittest.TestCase):
         }}
         parsed = w._extract_market(m)
         self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["strike"], 65000)
+
+    def test_exact_btc_series_does_not_depend_on_title_metadata(self):
+        # Presentation titles can be absent in market API responses. The exact
+        # KXBTC15M ticker plus explicit strike and live close time identifies the series.
+        m = {"market": {
+            "ticker": "KXBTC15M-TEST", "status": "active",
+            "close_time": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            "floor_strike": 65000,
+        }}
+        parsed = w._extract_market(m)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["ticker"], "KXBTC15M-TEST")
         self.assertEqual(parsed["strike"], 65000)
 
     def test_top_bid_levels(self):
