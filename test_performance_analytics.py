@@ -42,3 +42,17 @@ def test_price_buckets_and_score_groups_are_descriptive_not_probabilities():
     assert {r["group"] for r in output["by_entry_price_bucket"]} == {"1–49¢", "80–92¢"}
     assert {r["group"] for r in output["by_chart_evidence_score"]} == {"0–39", "75–100"}
     assert "Scores are not win probabilities" in output["important"]
+
+
+def test_win_rate_includes_wilson_interval_and_profitability_warning_for_small_samples():
+    from performance_analytics import _pnl_summary
+    rows = [
+        {"settled_at": f"2026-10-{(i % 28) + 1:02d}T00:00:00Z", "pnl_cents": 20 if i < 53 else -25}
+        for i in range(95)
+    ]
+    summary = _pnl_summary(rows)
+    assert summary["win_rate_percent"] == round(53 / 95 * 100, 2)
+    assert summary["win_rate_95_ci_low_percent"] < summary["win_rate_percent"]
+    assert summary["win_rate_95_ci_high_percent"] > summary["win_rate_percent"]
+    assert summary["win_rate_95_ci_low_percent"] > 35
+    assert summary["win_rate_95_ci_high_percent"] < 80
