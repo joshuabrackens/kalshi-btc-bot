@@ -48,7 +48,7 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 _SAFE_PROVIDER_ERROR = re.compile(
-    r"^(?:probability_provider_http_[1-5]\\d{2}"
+    r"^(?:probability_provider_http_[1-5]\d{2}"
     r"|probability_provider_network_error:[A-Za-z_][A-Za-z0-9_]*"
     r"|probability_provider_redirect_refused"
     r"|probability_provider_response_too_large"
