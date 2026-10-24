@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+from math import isfinite
 import os
 import re
 import time
@@ -96,6 +97,105 @@ def _load_registry() -> dict[str, Any]:
 
 _VALIDATION_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 _VALIDATION_CACHE_LOCK = threading.Lock()
+
+# A permanent upstream quota/billing failure should not trigger repeated paid calls
+# on every scanner cycle. This breaker is fail-closed and affects research analysis only.
+_QUOTA_COOLDOWN_LOCK = threading.Lock()
+_QUOTA_COOLDOWN_UNTIL = 0.0
+_QUOTA_COOLDOWN_SETTING_KEY = "openai_quota_cooldown_until_epoch"
+
+
+def _quota_cooldown_duration_seconds() -> int:
+    try:
+        configured = int(os.getenv("OPENAI_QUOTA_COOLDOWN_SECONDS", "3600"))
+    except (TypeError, ValueError, OverflowError):
+        configured = 3600
+    return max(60, min(86400, configured))
+
+
+def _persist_quota_cooldown_until(deadline_epoch: float) -> None:
+    """Persist the cooldown in shared runtime settings when a shared DB is configured."""
+    if not os.getenv("DATABASE_URL", "").strip():
+        return
+    try:
+        from db_store import connect_database
+        conn = connect_database()
+        try:
+            conn.execute(
+                """INSERT INTO runtime_settings (setting_key,setting_value,updated_at)
+                   VALUES (?,?,?)
+                   ON CONFLICT(setting_key) DO UPDATE SET
+                     setting_value=CASE
+                       WHEN CAST(runtime_settings.setting_value AS REAL) > CAST(excluded.setting_value AS REAL)
+                       THEN runtime_settings.setting_value ELSE excluded.setting_value END,
+                     updated_at=excluded.updated_at""",
+                (_QUOTA_COOLDOWN_SETTING_KEY, str(float(deadline_epoch)), _now()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        # Keep the local breaker active even if persistence is temporarily unavailable.
+        logger.warning("OpenAI quota cooldown persistence unavailable (%s)", type(exc).__name__)
+
+
+def _read_persisted_quota_cooldown_until() -> float | None:
+    """Return None when shared state cannot be read; caller must then fail closed."""
+    if not os.getenv("DATABASE_URL", "").strip():
+        return 0.0
+    try:
+        from db_store import connect_database
+        conn = connect_database()
+        try:
+            row = conn.execute(
+                "SELECT setting_value FROM runtime_settings WHERE setting_key=?",
+                (_QUOTA_COOLDOWN_SETTING_KEY,),
+            ).fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        if not row:
+            return 0.0
+        deadline = float(row[0])
+        return deadline if isfinite(deadline) and deadline > 0 else 0.0
+    except Exception as exc:
+        logger.warning(
+            "OpenAI quota cooldown state unavailable (%s); paid provider calls remain fail-closed",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _quota_cooldown_remaining_seconds() -> int:
+    with _QUOTA_COOLDOWN_LOCK:
+        local_remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
+    if local_remaining > 0:
+        return max(1, int(local_remaining + 0.999))
+
+    persisted_deadline = _read_persisted_quota_cooldown_until()
+    if persisted_deadline is None:
+        # A configured shared database is unavailable, so do not make a paid call
+        # without being able to verify whether a quota cooldown is active.
+        return 60
+    return max(0, int(persisted_deadline - time.time() + 0.999))
+
+
+def _activate_quota_cooldown() -> int:
+    global _QUOTA_COOLDOWN_UNTIL
+    duration = _quota_cooldown_duration_seconds()
+    deadline_epoch = time.time() + duration
+    with _QUOTA_COOLDOWN_LOCK:
+        _QUOTA_COOLDOWN_UNTIL = max(_QUOTA_COOLDOWN_UNTIL, time.monotonic() + duration)
+        remaining = _QUOTA_COOLDOWN_UNTIL - time.monotonic()
+    _persist_quota_cooldown_until(deadline_epoch)
+    return max(1, int(remaining + 0.999))
+
+
+def _clear_quota_cooldown() -> None:
+    """Reset the process-local breaker for isolated offline tests only."""
+    global _QUOTA_COOLDOWN_UNTIL
+    with _QUOTA_COOLDOWN_LOCK:
+        _QUOTA_COOLDOWN_UNTIL = 0.0
 
 
 def _validation_from_shared_database(category: str, model_id: str, model_version: str) -> dict[str, Any]:
@@ -369,6 +469,13 @@ async def analyze(request: Request) -> dict[str, Any]:
         "max_output_tokens": 2500,
         "store": False,
     }
+    cooldown_remaining = _quota_cooldown_remaining_seconds()
+    if cooldown_remaining:
+        raise HTTPException(
+            status_code=503,
+            detail="Research provider is paused after an upstream quota/billing error.",
+            headers={"Retry-After": str(cooldown_remaining)},
+        )
     try:
         response = requests.post("https://api.openai.com/v1/responses", json=request_payload,
                                  headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -387,6 +494,17 @@ async def analyze(request: Request) -> dict[str, Any]:
             "OpenAI provider returned status %s (classification=%s, code=%s, type=%s)",
             response.status_code, classification, error_code or "unavailable", error_type or "unavailable",
         )
+        if classification == "quota_or_billing":
+            cooldown_seconds = _activate_quota_cooldown()
+            logger.warning(
+                "OpenAI quota/billing circuit breaker activated for %s seconds; future upstream calls paused",
+                cooldown_seconds,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Research provider paused after an upstream quota/billing error.",
+                headers={"Retry-After": str(cooldown_seconds)},
+            )
         raise HTTPException(status_code=502, detail=f"Research provider returned HTTP {response.status_code}.")
     try:
         response_data = response.json()

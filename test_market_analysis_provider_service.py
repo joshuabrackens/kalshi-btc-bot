@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
@@ -23,6 +25,13 @@ def _market_payload():
                        "status": "active", "yes_ask_dollars": "0.5000", "no_ask_dollars": "0.5000"},
             "orderbook_summary": {"yes_ask_cents": 50.0, "no_ask_cents": 50.0},
             "required_evidence_types": ["injury_report", "lineup", "recent_news", "recent_stats"]}
+
+
+@pytest.fixture(autouse=True)
+def _reset_quota_circuit_breaker():
+    provider._clear_quota_cooldown()
+    yield
+    provider._clear_quota_cooldown()
 
 
 def test_provider_auth_and_missing_api_key_fail_closed():
@@ -88,7 +97,7 @@ def test_provider_rejects_mismatched_ticker_and_large_payload():
         assert large.status_code == 413
 
 
-def test_provider_classifies_quota_429_without_logging_secret_or_raw_body(caplog, tmp_path):
+def test_provider_quota_429_activates_circuit_breaker_and_avoids_repeat_paid_calls(caplog, tmp_path):
     error_body = {
         "error": {
             "message": "You exceeded your current quota, please check your plan and billing details.",
@@ -98,19 +107,84 @@ def test_provider_classifies_quota_429_without_logging_secret_or_raw_body(caplog
     }
     fake = Mock(status_code=429, content=json.dumps(error_body).encode("utf-8"), is_redirect=False)
     fake.json.return_value = error_body
-    with patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
-                                    "OPENAI_API_KEY": "openai-test-secret",
-                                    "OPENAI_MODEL": "gpt-5.1",
-                                    "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json")}, clear=False), \
-         patch.object(provider.requests, "post", return_value=fake):
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
+                "OPENAI_API_KEY": "openai-test-secret",
+                "OPENAI_MODEL": "gpt-5.1",
+                "OPENAI_QUOTA_COOLDOWN_SECONDS": "3600",
+                "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json"),
+            },
+            clear=False,
+        ),
+        patch.object(provider.requests, "post", return_value=fake) as post,
+    ):
         with TestClient(provider.app) as client:
-            response = client.post("/analyze", json=_market_payload(),
-                                   headers={"Authorization": "Bearer shared-secret"})
-    assert response.status_code == 502
+            first = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+            second = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+    assert first.status_code == 503
+    assert first.headers["Retry-After"] == "3600"
+    assert second.status_code == 503
+    assert int(second.headers["Retry-After"]) > 0
+    assert post.call_count == 1
     assert "classification=quota_or_billing" in caplog.text
     assert "code=insufficient_quota" in caplog.text
+    assert "circuit breaker activated for 3600 seconds" in caplog.text
     assert "openai-test-secret" not in caplog.text
     assert "current quota" not in caplog.text
+
+
+def test_quota_cooldown_survives_process_local_reset_with_shared_database(tmp_path, monkeypatch):
+    import db_store
+
+    db_path = tmp_path / "provider-quota.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test-shared-db")
+    monkeypatch.setenv("BOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("OPENAI_QUOTA_COOLDOWN_SECONDS", "3600")
+    monkeypatch.setattr(db_store, "_database_url", lambda: "")
+    db_store._INITIALIZED.clear()
+    conn = db_store.connect_database()
+    try:
+        db_store.ensure_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    activated_for = provider._activate_quota_cooldown()
+    assert activated_for == 3600
+    # Simulate a provider process restart: in-memory state is gone, shared state remains.
+    provider._clear_quota_cooldown()
+    remaining = provider._quota_cooldown_remaining_seconds()
+    assert 0 < remaining <= 3600
+
+
+def test_shared_quota_state_database_failure_blocks_paid_provider_call(monkeypatch, tmp_path):
+    import db_store
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unavailable-shared-db")
+    monkeypatch.setenv("BOT_DB_PATH", str(tmp_path / "unused.sqlite3"))
+    monkeypatch.setenv("MARKET_ANALYSIS_PROVIDER_API_KEY", "shared-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.1")
+    monkeypatch.setattr(db_store, "connect_database", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    with patch.object(provider.requests, "post") as post:
+        with TestClient(provider.app) as client:
+            response = client.post(
+                "/analyze", json=_market_payload(),
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+    assert response.status_code == 503
+    assert int(response.headers["Retry-After"]) == 60
+    post.assert_not_called()
 
 
 def test_provider_classifies_rate_limit_429_from_safe_error_fields():
