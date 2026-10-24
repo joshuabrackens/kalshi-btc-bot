@@ -40,6 +40,8 @@ class KalshiApiRetryTests(unittest.TestCase):
         __import__("os").environ["KALSHI_MIN_REQUEST_INTERVAL_SECONDS"] = "0"
         kalshi_api.MAX_RETRIES = 2
         kalshi_api._NEXT_REQUEST_AT = 0.0
+        kalshi_api._RATE_LIMITED_UNTIL = 0.0
+        self.fake_monotonic = [100.0]
 
     def tearDown(self):
         if self.old_interval is None:
@@ -48,11 +50,46 @@ class KalshiApiRetryTests(unittest.TestCase):
             __import__("os").environ["KALSHI_MIN_REQUEST_INTERVAL_SECONDS"] = self.old_interval
 
     def test_retries_rate_limit_then_succeeds(self):
-        with patch.object(kalshi_api._SESSION, "get", side_effect=[FakeResponse(429, headers={"Retry-After": "0"}), FakeResponse(200, {"markets": []})]) as get, \
-             patch.object(kalshi_api.time, "sleep"):
+        def fake_sleep(seconds):
+            self.fake_monotonic[0] += seconds
+
+        with patch.object(kalshi_api._SESSION, "get", side_effect=[
+                FakeResponse(429, headers={"Retry-After": "0"}),
+                FakeResponse(200, {"markets": []}),
+             ]) as get, \
+             patch.object(kalshi_api.time, "monotonic", side_effect=lambda: self.fake_monotonic[0]), \
+             patch.object(kalshi_api.time, "sleep", side_effect=fake_sleep):
             result = kalshi_api.get_markets()
         self.assertEqual(result, {"markets": []})
         self.assertEqual(get.call_count, 2)
+        self.assertLessEqual(kalshi_api._RATE_LIMITED_UNTIL, self.fake_monotonic[0])
+
+    def test_429_cooldown_is_shared_by_later_requests_and_respects_long_retry_after(self):
+        kalshi_api.MAX_RETRIES = 0
+        sleep_durations = []
+
+        def fake_sleep(seconds):
+            sleep_durations.append(seconds)
+            self.fake_monotonic[0] += seconds
+
+        with patch.object(kalshi_api._SESSION, "get", return_value=FakeResponse(429, headers={"Retry-After": "45"})) as get, \
+             patch.object(kalshi_api.time, "monotonic", side_effect=lambda: self.fake_monotonic[0]), \
+             patch.object(kalshi_api.time, "sleep", side_effect=fake_sleep):
+            with self.assertRaises(kalshi_api.KalshiAPIError) as caught:
+                kalshi_api.get_market("KXBTC15M-rate-limit")
+            self.assertEqual(caught.exception.status_code, 429)
+            self.assertTrue(caught.exception.retryable)
+            # A separate caller must wait on the shared cooldown before sending.
+            kalshi_api._wait_for_request_slot()
+
+        self.assertEqual(get.call_count, 1)
+        self.assertIn(45.0, sleep_durations)
+        self.assertGreaterEqual(max(sleep_durations), 45.0)
+        self.assertLessEqual(kalshi_api._RATE_LIMITED_UNTIL, self.fake_monotonic[0])
+
+    def test_retry_after_respects_server_values_beyond_old_30_second_cap(self):
+        self.assertEqual(kalshi_api._retry_after_seconds("120", 0, status_code=429), 120.0)
+        self.assertEqual(kalshi_api._retry_after_seconds(None, 0, status_code=429), 30.0)
 
     def test_does_not_retry_non_transient_400(self):
         with patch.object(kalshi_api._SESSION, "get", return_value=FakeResponse(400)) as get, \
