@@ -184,7 +184,8 @@ class MarketDecisionPipeline:
             "candidate_pool_size": 0, "analyzed_count": 0, "paper_entries_created": 0,
             "blocked_count": 0, "decisions": [], "last_error": None,
             "mode": "PAPER_RESEARCH_ONLY", "live_orders_submitted": 0,
-            "note": "Probability and evidence must pass out-of-sample validation. No live order API exists in this pipeline.",
+            "exploratory_paper_enabled": _bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False),
+            "note": "Validated entries require calibrated evidence; explicitly enabled exploratory entries are labeled unvalidated and used only to measure paper accuracy. No live order API exists.",
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -194,6 +195,7 @@ class MarketDecisionPipeline:
             result["provider_configured"] = provider_configured()
             from runtime_controls import market_autopilot_enabled
             result["autopaper_enabled"] = _bool_env("MARKET_AUTOPAPER_ENABLED", False) and market_autopilot_enabled()
+            result["exploratory_paper_enabled"] = _bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False)
             return result
 
     def start(self, force: bool = True, *, paper_entry_once: bool = False) -> dict[str, Any]:
@@ -312,6 +314,10 @@ class MarketDecisionPipeline:
                             max_entry_cents=_num(os.getenv("MARKET_MAX_ENTRY_CENTS", "90"), 90),
                             min_validation_samples=_int_env("MARKET_MODEL_MIN_VALIDATION_SAMPLES", 100, 30, 10000),
                             max_brier_score=_num(os.getenv("MARKET_MODEL_MAX_BRIER_SCORE", "0.22"), 0.22),
+                        )
+                        result = _exploratory_paper_candidate(
+                            result, market, model,
+                            enabled=_bool_env("MARKET_EXPLORATORY_PAPER_ENABLED", False),
                         )
                         result["display_group"] = market_display_group(
                             category, ticker, market.get("title"), market.get("event_title"),
