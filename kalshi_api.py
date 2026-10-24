@@ -51,7 +51,7 @@ def _request_spacing_seconds() -> float:
 
 
 def _wait_for_request_slot() -> None:
-    """Serialize requests and re-check the shared in-process cooldown after each wait."""
+    """Serialize requests and re-check a rate-limit cooldown that changes while waiting."""
     global _NEXT_REQUEST_AT
     spacing = _request_spacing_seconds()
     while True:
@@ -60,9 +60,15 @@ def _wait_for_request_slot() -> None:
             slot = max(now, _NEXT_REQUEST_AT, _RATE_LIMITED_UNTIL)
             wait = max(0.0, slot - now)
             _NEXT_REQUEST_AT = slot + spacing
-        if wait <= 0:
-            return
+            if wait <= 0:
+                return
         time.sleep(wait)
+        # Do not re-apply this caller's own reserved slot after sleeping; only
+        # loop if another request extended the shared server cooldown meanwhile.
+        with _RATE_LOCK:
+            cooldown_remaining = _RATE_LIMITED_UNTIL - time.monotonic()
+        if cooldown_remaining <= 0:
+            return
 
 
 def _activate_rate_limit_cooldown(delay_seconds: float) -> None:
