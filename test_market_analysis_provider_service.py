@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 import market_analysis_provider_service as provider
@@ -23,6 +24,13 @@ def _market_payload():
                        "status": "active", "yes_ask_dollars": "0.5000", "no_ask_dollars": "0.5000"},
             "orderbook_summary": {"yes_ask_cents": 50.0, "no_ask_cents": 50.0},
             "required_evidence_types": ["injury_report", "lineup", "recent_news", "recent_stats"]}
+
+
+@pytest.fixture(autouse=True)
+def _reset_quota_circuit_breaker():
+    provider._clear_quota_cooldown()
+    yield
+    provider._clear_quota_cooldown()
 
 
 def test_provider_auth_and_missing_api_key_fail_closed():
@@ -88,7 +96,7 @@ def test_provider_rejects_mismatched_ticker_and_large_payload():
         assert large.status_code == 413
 
 
-def test_provider_classifies_quota_429_without_logging_secret_or_raw_body(caplog, tmp_path):
+def test_provider_quota_429_activates_circuit_breaker_and_avoids_repeat_paid_calls(caplog, tmp_path):
     error_body = {
         "error": {
             "message": "You exceeded your current quota, please check your plan and billing details.",
@@ -101,14 +109,22 @@ def test_provider_classifies_quota_429_without_logging_secret_or_raw_body(caplog
     with patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
                                     "OPENAI_API_KEY": "openai-test-secret",
                                     "OPENAI_MODEL": "gpt-5.1",
+                                    "OPENAI_QUOTA_COOLDOWN_SECONDS": "3600",
                                     "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json")}, clear=False), \
-         patch.object(provider.requests, "post", return_value=fake):
+         patch.object(provider.requests, "post", return_value=fake) as post:
         with TestClient(provider.app) as client:
-            response = client.post("/analyze", json=_market_payload(),
-                                   headers={"Authorization": "Bearer shared-secret"})
-    assert response.status_code == 502
+            first = client.post("/analyze", json=_market_payload(),
+                                headers={"Authorization": "Bearer shared-secret"})
+            second = client.post("/analyze", json=_market_payload(),
+                                 headers={"Authorization": "Bearer shared-secret"})
+    assert first.status_code == 503
+    assert first.headers["Retry-After"] == "3600"
+    assert second.status_code == 503
+    assert int(second.headers["Retry-After"]) > 0
+    assert post.call_count == 1
     assert "classification=quota_or_billing" in caplog.text
     assert "code=insufficient_quota" in caplog.text
+    assert "circuit breaker activated for 3600 seconds" in caplog.text
     assert "openai-test-secret" not in caplog.text
     assert "current quota" not in caplog.text
 
