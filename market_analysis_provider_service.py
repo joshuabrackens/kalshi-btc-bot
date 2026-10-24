@@ -352,6 +352,12 @@ def _parse_output_text(response_data: Mapping[str, Any]) -> dict[str, Any]:
     raise HTTPException(status_code=502, detail="The research model did not return valid structured output.")
 
 
+def _log_provider_response_rejection(reason: str, ticker: str | None = None) -> None:
+    """Log a stable, non-sensitive reason when a successful upstream response fails validation."""
+    safe_ticker = ticker[:120] if isinstance(ticker, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,200}", ticker) else "unavailable"
+    logger.warning("Provider response rejected (reason=%s, ticker=%s)", reason, safe_ticker)
+
+
 def _openai_error_diagnostics(response: Any) -> tuple[str, str | None, str | None]:
     """Classify upstream failures from safe error fields without logging response bodies or secrets."""
     try:
@@ -485,8 +491,10 @@ async def analyze(request: Request) -> dict[str, Any]:
         logger.warning("OpenAI provider request failed: %s", type(exc).__name__)
         raise HTTPException(status_code=502, detail="Research provider upstream request failed.") from None
     if response.is_redirect:
+        _log_provider_response_rejection("upstream_redirect_refused", ticker)
         raise HTTPException(status_code=502, detail="Research provider redirect refused.")
     if len(response.content) > MAX_PROVIDER_RESPONSE_BYTES:
+        _log_provider_response_rejection("upstream_response_too_large", ticker)
         raise HTTPException(status_code=502, detail="Research provider response exceeded the size limit.")
     if response.status_code < 200 or response.status_code >= 300:
         classification, error_code, error_type = _openai_error_diagnostics(response)
@@ -509,17 +517,27 @@ async def analyze(request: Request) -> dict[str, Any]:
     try:
         response_data = response.json()
     except ValueError:
+        _log_provider_response_rejection("upstream_invalid_json", ticker)
         raise HTTPException(status_code=502, detail="Research provider returned invalid JSON.") from None
     if not isinstance(response_data, dict):
+        _log_provider_response_rejection("upstream_invalid_shape", ticker)
         raise HTTPException(status_code=502, detail="Research provider returned an invalid response shape.")
-    generated = _parse_output_text(response_data)
+    try:
+        generated = _parse_output_text(response_data)
+    except HTTPException as exc:
+        if exc.status_code == 502:
+            _log_provider_response_rejection("invalid_structured_output", ticker)
+        raise
     if generated.get("market_ticker") != ticker:
+        _log_provider_response_rejection("market_ticker_mismatch", ticker)
         raise HTTPException(status_code=502, detail="Research provider market ticker mismatch.")
     try:
         probability = float(generated.get("model_probability_yes"))
     except (TypeError, ValueError, OverflowError):
+        _log_provider_response_rejection("invalid_probability", ticker)
         raise HTTPException(status_code=502, detail="Research provider probability was invalid.") from None
     if not 0 < probability < 1:
+        _log_provider_response_rejection("probability_out_of_range", ticker)
         raise HTTPException(status_code=502, detail="Research provider probability must be between zero and one.")
     citations = _cited_urls(response_data)
     evidence: list[dict[str, Any]] = []

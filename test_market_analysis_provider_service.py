@@ -84,7 +84,7 @@ def test_provider_drops_evidence_url_not_present_in_actual_citations(tmp_path):
         assert response.json()["validation"]["out_of_sample"] is False
 
 
-def test_provider_rejects_mismatched_ticker_and_large_payload():
+def test_provider_rejects_mismatched_ticker_and_large_payload(caplog):
     fake_data = _response(ticker="ANOTHER-MARKET")
     fake = Mock(status_code=200, content=json.dumps(fake_data).encode("utf-8"), is_redirect=False)
     fake.json.return_value = fake_data
@@ -95,6 +95,8 @@ def test_provider_rejects_mismatched_ticker_and_large_payload():
             large = client.post("/analyze", content=b"{" + b" " * 70000 + b"}", headers={"Authorization": "Bearer shared-secret", "Content-Type": "application/json"})
         assert wrong.status_code == 502
         assert large.status_code == 413
+    assert "reason=market_ticker_mismatch" in caplog.text
+    assert "KXSPORTS-TEST" in caplog.text
 
 
 def test_provider_quota_429_activates_circuit_breaker_and_avoids_repeat_paid_calls(caplog, tmp_path):
