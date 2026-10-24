@@ -9,18 +9,18 @@ class LossStreakCircuitBreakerTests(unittest.TestCase):
     def setUp(self):
         self.now = datetime(2026, 10, 24, 6, 0, tzinfo=timezone.utc)
 
-    def test_four_recent_losses_pause_new_entries(self):
+    def test_four_recent_losses_pause_new_entries_for_15_minutes(self):
         rows = [
             ("2026-10-24T05:50:00+00:00", -6),
             ("2026-10-24T05:40:00+00:00", -17),
             ("2026-10-24T05:30:00+00:00", -25),
             ("2026-10-24T05:20:00+00:00", -36),
         ]
-        status = worker._loss_streak_cooldown_status(rows, limit=4, cooldown_minutes=60, now=self.now)
+        status = worker._loss_streak_cooldown_status(rows, limit=4, cooldown_minutes=15, now=self.now)
         self.assertIsNotNone(status)
         self.assertTrue(status["blocked"])
         self.assertEqual(status["consecutive_losses"], 4)
-        self.assertEqual(status["seconds_remaining"], 50 * 60)
+        self.assertEqual(status["seconds_remaining"], 5 * 60)
 
     def test_a_positive_net_trade_resets_the_streak(self):
         rows = [
