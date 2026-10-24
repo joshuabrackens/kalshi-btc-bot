@@ -106,6 +106,40 @@ def test_rejected_signal_counterfactuals_are_grouped_without_auto_changing_rules
                 conn.close()
 
 
+def test_legacy_calendar_labels_are_derived_from_trade_timestamp_in_learning_report():
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "calendar-context.sqlite3")}):
+            conn = _new_db(tmp)
+            try:
+                _insert_linked_trade(conn, trade_id_ticker="KXBTC15M-CALENDAR", outcome="UP", pnl=15.0)
+                assert sync_settled_trade_learning(conn) == 1
+                trade_id, features_json = conn.execute(
+                    "SELECT trade_id,feature_snapshot_json FROM trade_learning LIMIT 1"
+                ).fetchone()
+                features = json.loads(features_json)
+                for key in ("calendar_context_timezone", "day_type_utc", "weekday_utc", "utc_time_bucket", "utc_hour"):
+                    features.pop(key, None)
+                # Simulate a legacy row whose chart snapshot pre-dates calendar tagging.
+                conn.execute(
+                    "UPDATE trade_learning SET created_at=?,feature_snapshot_json=? WHERE trade_id=?",
+                    ("2026-10-24T07:00:00+00:00", json.dumps(features), trade_id),
+                )
+                conn.commit()
+
+                report = build_learning_report(conn)
+                review = report["recent_reviews"][0]
+                assert review["day_type_utc"] == "weekend"
+                assert review["weekday_utc"] == "Saturday"
+                assert review["utc_time_bucket"] == "06:00–11:59 UTC"
+                assert review["calendar_context_source"] == "derived_from_trade_timestamp"
+                assert report["calendar_context_coverage"]["derived_from_trade_timestamp"] == 1
+                assert report["calendar_context_coverage"]["unknown"] == 0
+                assert report["session_context_diagnostics"]["weekend"]["settled_trades"] == 1
+                assert report["session_context_diagnostics"]["automatic_strategy_changes_enabled"] is False
+            finally:
+                conn.close()
+
+
 def test_settled_trade_learning_captures_features_and_is_idempotent():
     with tempfile.TemporaryDirectory() as tmp:
         with patch.dict(os.environ, {"DATABASE_URL": "", "BOT_DB_PATH": str(Path(tmp) / "learning.sqlite3")}):

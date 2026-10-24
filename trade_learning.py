@@ -800,16 +800,43 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
             "entry_price_bucket", "evidence_bucket", "volume_confirmation", "momentum_alignment", "chase_warning",
             "feature_snapshot_json", "review_json"]
     rows: list[dict[str, Any]] = []
+    calendar_context_sources = {"stored_entry_snapshot": 0, "derived_from_trade_timestamp": 0, "unknown": 0}
     for raw in raw_rows:
         item = dict(zip(keys, raw))
         features = _parse_json_dict(item.pop("feature_snapshot_json", "{}"))
         review = _parse_json_dict(item.pop("review_json", "{}"))
+
+        # Older journal rows can predate calendar tagging. Their recorded entry
+        # timestamp is still a factual source for UTC weekday/weekend/time buckets.
+        # Derive only calendar labels; never infer missing trend/volatility features.
+        calendar_keys = ("day_type_utc", "weekday_utc", "utc_time_bucket", "utc_hour")
+        saved_calendar_present = any(
+            features.get(key) not in (None, "", "unknown") for key in calendar_keys
+        )
+        derived_calendar = utc_calendar_context(item.get("created_at"))
+        derived_calendar_used = False
+        for key in calendar_keys:
+            if features.get(key) in (None, "", "unknown"):
+                value = derived_calendar.get(key)
+                if value not in (None, "", "unknown"):
+                    features[key] = value
+                    derived_calendar_used = True
+        if saved_calendar_present:
+            source = "stored_entry_snapshot"
+        elif derived_calendar_used:
+            source = "derived_from_trade_timestamp"
+        else:
+            source = "unknown"
+        features["calendar_context_source"] = source
+        calendar_context_sources[source] += 1
+
         item["features"] = features
         item["review"] = review
-        # Flatten only explicit, saved labels for descriptive cohort aggregation.
-        # Legacy rows without timestamps/context remain unknown rather than inferred.
+        # Flatten calendar features after deterministic timestamp backfill.
+        # Trend/range and volatility remain unknown when historical evidence is absent.
         for context_key in ("day_type_utc", "weekday_utc", "utc_time_bucket", "trend_regime", "volatility_regime"):
             item[context_key] = features.get(context_key, "unknown")
+        item["calendar_context_source"] = source
         rows.append(item)
     summary = _summary(rows)
 
@@ -878,9 +905,48 @@ def build_learning_report(conn: Any, *, limit: int = 10000) -> dict[str, Any]:
             "reason": ("No adaptive state exists yet. Worker initializes it and collects at least 20 settled hybrid trades before considering a change." if adaptive_enabled else "Automatic target adjustment is disabled."),
             "automatic_changes_scope": "preferred entry target only; hard cap, trade dollar budget, daily loss limit, and live-trading permissions are never altered",
         }
+    session_cohorts = cohorts.get("day_type_utc", [])
+    weekend_cohort = next((item for item in session_cohorts if item.get("segment") == "weekend"), None)
+    weekday_cohort = next((item for item in session_cohorts if item.get("segment") == "weekday"), None)
+    session_review_flags: list[str] = []
+    if weekend_cohort:
+        weekend_n = int(weekend_cohort.get("settled_trades") or 0)
+        weekend_rate = _number(weekend_cohort.get("win_rate_percent"))
+        weekend_net = _number(weekend_cohort.get("net_pnl_cents"))
+        if weekend_n >= 10 and weekend_rate is not None and weekend_net is not None and weekend_rate < 90 and weekend_net < 0:
+            session_review_flags.append(
+                f"Weekend cohort needs review: {weekend_rate:.2f}% positive-net across {weekend_n} settled trades "
+                f"with net P&L {weekend_net:.2f} cents. This is an alert for investigation, not proof the calendar caused losses."
+            )
+    if weekday_cohort:
+        weekday_n = int(weekday_cohort.get("settled_trades") or 0)
+        weekday_rate = _number(weekday_cohort.get("win_rate_percent"))
+        if weekday_n >= 10 and weekday_rate is not None and weekday_rate < 90:
+            session_review_flags.append(
+                f"Weekday cohort is below the 90% target at {weekday_rate:.2f}% across {weekday_n} settled trades; "
+                "do not attribute the overall shortfall to weekends alone."
+            )
+    if not session_review_flags:
+        session_review_flags.append(
+            "No calendar cohort currently meets the sample and loss criteria for a specific alert; continue tracking by UTC day and session."
+        )
+
     return {
         "mode": "SIMULATION_ONLY",
         "system": "post_trade_feedback_v2",
+        "calendar_context_coverage": {
+            **calendar_context_sources,
+            "total_journal_rows_reviewed": len(rows),
+            "note": "Missing legacy weekday/weekend/time labels are derived from the saved trade-entry timestamp in UTC; original database rows are not mutated. Missing chart-regime and volatility features remain unknown.",
+        },
+        "session_context_diagnostics": {
+            "target_positive_net_rate_percent": 90.0,
+            "weekday": weekday_cohort,
+            "weekend": weekend_cohort,
+            "review_flags": session_review_flags,
+            "automatic_strategy_changes_enabled": False,
+            "note": "Calendar differences are diagnostic. They do not establish causation or authorize a blanket weekend ban; any strategy change must pass chronological out-of-sample testing and maintain positive net P&L.",
+        },
         "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "automatic_strategy_changes_enabled": adaptive_enabled,
         "signal_weight_adjustment_enabled": False,
