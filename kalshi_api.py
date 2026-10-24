@@ -30,6 +30,7 @@ _RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
 _SESSION = requests.Session()
 _RATE_LOCK = threading.Lock()
 _NEXT_REQUEST_AT = 0.0
+_RATE_LIMITED_UNTIL = 0.0
 
 
 class KalshiAPIError(RuntimeError):
@@ -43,37 +44,62 @@ class KalshiAPIError(RuntimeError):
 
 def _request_spacing_seconds() -> float:
     try:
-        value = float(os.getenv("KALSHI_MIN_REQUEST_INTERVAL_SECONDS", "0.5"))
+        value = float(os.getenv("KALSHI_MIN_REQUEST_INTERVAL_SECONDS", "1.0"))
     except (TypeError, ValueError, OverflowError):
         value = 0.5
     return max(0.0, min(value, 2.0))
 
 
 def _wait_for_request_slot() -> None:
-    """Space requests within this process to reduce accidental bursts."""
+    """Serialize requests and re-check the shared in-process cooldown after each wait."""
     global _NEXT_REQUEST_AT
     spacing = _request_spacing_seconds()
-    with _RATE_LOCK:
-        now = time.monotonic()
-        wait = max(0.0, _NEXT_REQUEST_AT - now)
-        _NEXT_REQUEST_AT = max(now, _NEXT_REQUEST_AT) + spacing
-    if wait > 0:
+    while True:
+        with _RATE_LOCK:
+            now = time.monotonic()
+            slot = max(now, _NEXT_REQUEST_AT, _RATE_LIMITED_UNTIL)
+            wait = max(0.0, slot - now)
+            _NEXT_REQUEST_AT = slot + spacing
+        if wait <= 0:
+            return
         time.sleep(wait)
 
 
-def _retry_after_seconds(value: str | None, attempt: int) -> float:
-    """Return a bounded server-requested delay or exponential fallback."""
+def _activate_rate_limit_cooldown(delay_seconds: float) -> None:
+    """Pause all API callers in this process after a 429, not only the failing request."""
+    global _NEXT_REQUEST_AT, _RATE_LIMITED_UNTIL
+    delay = max(0.25, min(float(delay_seconds), 300.0))
+    with _RATE_LOCK:
+        deadline = time.monotonic() + delay
+        _RATE_LIMITED_UNTIL = max(_RATE_LIMITED_UNTIL, deadline)
+        _NEXT_REQUEST_AT = max(_NEXT_REQUEST_AT, _RATE_LIMITED_UNTIL)
+
+
+def _default_rate_limit_delay(attempt: int) -> float:
+    """Use a slower bounded fallback when the API omits Retry-After on HTTP 429."""
+    try:
+        base = float(os.getenv("KALSHI_RATE_LIMIT_COOLDOWN_SECONDS", "30"))
+    except (TypeError, ValueError, OverflowError):
+        base = 30.0
+    base = max(5.0, min(base, 300.0))
+    return min(base * (2 ** max(0, int(attempt))), 300.0)
+
+
+def _retry_after_seconds(value: str | None, attempt: int, *, status_code: int | None = None) -> float:
+    """Return the server's Retry-After (up to 5 minutes) or an appropriate fallback."""
     if value:
         try:
-            return max(0.25, min(float(value), 30.0))
+            return max(0.25, min(float(value), 300.0))
         except (TypeError, ValueError, OverflowError):
             try:
                 parsed = parsedate_to_datetime(value)
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                return max(0.25, min((parsed - datetime.now(timezone.utc)).total_seconds(), 30.0))
+                return max(0.25, min((parsed - datetime.now(timezone.utc)).total_seconds(), 300.0))
             except (TypeError, ValueError, OverflowError):
                 pass
+    if status_code == 429:
+        return _default_rate_limit_delay(attempt)
     return min(1.0 * (2 ** attempt), 8.0)
 
 
@@ -95,8 +121,13 @@ def _get(path: str, params: dict | None = None) -> dict[str, Any]:
             last_status = int(response.status_code)
             if last_status in _RETRYABLE_HTTP_STATUS:
                 last_retryable = True
+                retry_delay = _retry_after_seconds(
+                    response.headers.get("Retry-After"), attempt, status_code=last_status,
+                )
+                if last_status == 429:
+                    _activate_rate_limit_cooldown(retry_delay)
                 if attempt < MAX_RETRIES:
-                    time.sleep(_retry_after_seconds(response.headers.get("Retry-After"), attempt))
+                    time.sleep(retry_delay)
                     continue
                 raise KalshiAPIError(
                     f"Kalshi public API returned HTTP {last_status} after bounded retries.",
@@ -135,7 +166,10 @@ def _get(path: str, params: dict | None = None) -> dict[str, Any]:
             last_retryable = last_status in _RETRYABLE_HTTP_STATUS or last_status is None
             if attempt < MAX_RETRIES and last_retryable:
                 retry_after = response.headers.get("Retry-After") if response is not None else None
-                time.sleep(_retry_after_seconds(retry_after, attempt))
+                retry_delay = _retry_after_seconds(retry_after, attempt, status_code=last_status)
+                if last_status == 429:
+                    _activate_rate_limit_cooldown(retry_delay)
+                time.sleep(retry_delay)
                 continue
             break
     status_fragment = f"HTTP {last_status}" if last_status is not None else "network/transport error"
