@@ -113,6 +113,10 @@ def _extract_market(raw: dict, rejection_counts: dict[str, int] | None = None) -
     # absent or use "Bitcoin above $X" wording without the word "up".
     if not ticker or not str(ticker).upper().startswith("KXBTC15M-"):
         return reject("wrong_series_ticker")
+    # Discovery is not entry authorization: only the explicitly tradable
+    # states are eligible. In particular, "initialized" is not an open market.
+    if status not in {"active", "open"}:
+        return reject("market_not_active")
     # Keep the BTC/Bitcoin identity check, but do not require the literal word
     # "up": current official titles commonly say "Bitcoin above $X".
     if "btc" not in title and "bitcoin" not in title:
@@ -1257,12 +1261,24 @@ def run_once() -> dict[str, Any]:
                 rejection_counts["missing_candidate_ticker"] = rejection_counts.get("missing_candidate_ticker", 0) + 1
                 continue
             try:
-                extracted = _extract_market(get_market(str(ticker)), rejection_counts)
+                # The official event feed already contains current nested market
+                # metadata. Use it for the broad candidate screen instead of
+                # issuing one GET /markets/{ticker} per candidate; refresh just
+                # the selected contract immediately before obtaining its book.
+                raw_market = candidate.get("raw") if isinstance(candidate, dict) else None
+                if isinstance(raw_market, dict):
+                    raw_ticker = str(raw_market.get("ticker") or "").strip().upper()
+                    if raw_ticker != str(ticker).strip().upper():
+                        rejection_counts["candidate_market_ticker_mismatch"] = rejection_counts.get("candidate_market_ticker_mismatch", 0) + 1
+                        continue
+                else:
+                    raw_market = get_market(str(ticker))
+                extracted = _extract_market(raw_market, rejection_counts)
                 if extracted:
                     parsed.append(extracted)
             except (KalshiAPIError, ValueError, TypeError) as exc:
                 rejection_counts["market_lookup_error"] = rejection_counts.get("market_lookup_error", 0) + 1
-                log.warning("Market lookup failed for %s: %s", ticker, exc)
+                log.warning("Market candidate validation failed for %s: %s", ticker, exc)
         if not parsed:
             log.warning(
                 "BTC market discovery found no eligible candidate: candidate_count=%s rejection_counts=%s",
@@ -1291,6 +1307,27 @@ def run_once() -> dict[str, Any]:
                 return {"action": "wait", "reason": note, "signal_id": queued["id"], "trade_placed": False,
                         "mode": "SIMULATION_ONLY"}
         market = min(parsed, key=lambda item: item["seconds"])
+        # Refresh the chosen contract once. Event snapshots are for discovery;
+        # only the fresh single-market response plus a fresh order book may be
+        # used to authorize a new paper entry.
+        refresh_rejections: dict[str, int] = {}
+        try:
+            refreshed = _extract_market(get_market(market["ticker"]), refresh_rejections)
+        except (KalshiAPIError, ValueError, TypeError) as exc:
+            reason = f"selected BTC market could not be refreshed safely: {type(exc).__name__}"
+            log.warning("%s", reason)
+            if queued:
+                _set_gainzalgo_pending(conn, queued["id"], "waiting_for_market", reason)
+                _log_wait(conn, reason, ticker=market["ticker"], external=queued)
+            return {"action": "wait", "reason": reason, "ticker": market["ticker"]}
+        if not refreshed:
+            reason = "selected BTC market failed fresh open/strike/15m-window validation: " + json.dumps(refresh_rejections, sort_keys=True)
+            log.warning("%s ticker=%s", reason, market["ticker"])
+            if queued:
+                _set_gainzalgo_pending(conn, queued["id"], "waiting_for_market", reason)
+                _log_wait(conn, reason, ticker=market["ticker"], external=queued)
+            return {"action": "wait", "reason": reason, "ticker": market["ticker"]}
+        market = refreshed
         min_seconds = max(30, int(_safe_float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "30"), 30)))
         if market["seconds"] < min_seconds:
             if queued:

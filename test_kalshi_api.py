@@ -146,6 +146,41 @@ class KalshiApiRetryTests(unittest.TestCase):
         tickers = get.call_args.kwargs["params"]["tickers"].split(",")
         self.assertEqual(len(tickers), 40)
 
+    def test_find_open_btc_markets_uses_open_events_with_nested_markets(self):
+        payload = {
+            "events": [
+                {
+                    "series_ticker": "KXBTC15M",
+                    "event_ticker": "KXBTC15M-26OCT242200",
+                    "title": "Bitcoin above $80,000",
+                    "markets": [
+                        {"ticker": "KXBTC15M-26OCT242200-00", "status": "active", "floor_strike": 80000},
+                        {"ticker": "KXBTC15M-26OCT242215-00", "status": "initialized", "floor_strike": 80100},
+                        {"ticker": "KXOTHER-26OCT242200", "status": "active", "floor_strike": 80000},
+                    ],
+                },
+                {
+                    "series_ticker": "KXOTHER",
+                    "markets": [{"ticker": "KXBTC15M-WRONG-EVENT", "status": "active"}],
+                },
+            ],
+            "cursor": "",
+        }
+        with patch.object(kalshi_api, "get_events", return_value=payload) as get_events, \
+             patch.object(kalshi_api, "get_markets") as get_markets:
+            result = kalshi_api.find_open_btc_markets()
+
+        self.assertEqual(
+            [market["ticker"] for market in result],
+            ["KXBTC15M-26OCT242200-00", "KXBTC15M-26OCT242215-00"],
+        )
+        self.assertEqual(result[0]["title"], "Bitcoin above $80,000")
+        get_events.assert_called_once_with(
+            status="open", limit=200, cursor=None,
+            with_nested_markets=True, series_ticker="KXBTC15M",
+        )
+        get_markets.assert_not_called()
+
     def test_request_spacing_helper_respects_disabled_interval(self):
         with patch.object(kalshi_api.time, "sleep") as sleep:
             kalshi_api._wait_for_request_slot()

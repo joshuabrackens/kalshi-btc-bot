@@ -95,6 +95,17 @@ class WorkerSafetyTests(unittest.TestCase):
         self.assertIsNone(w._extract_market(m, rejection_counts))
         self.assertEqual(rejection_counts, {"missing_or_invalid_strike": 1})
 
+    def test_initialized_market_is_rejected_even_when_strike_and_close_time_are_valid(self):
+        m = {"market": {
+            "ticker": "KXBTC15M-TEST", "status": "initialized",
+            "title": "Bitcoin above $80,500",
+            "close_time": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            "floor_strike": 80500,
+        }}
+        rejection_counts = {}
+        self.assertIsNone(w._extract_market(m, rejection_counts))
+        self.assertEqual(rejection_counts, {"market_not_active": 1})
+
     def test_market_explicit_strike_accepted(self):
         m = {"market": {
             "ticker": "KXBTC15M-TEST", "status": "active",
