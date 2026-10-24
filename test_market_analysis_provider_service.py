@@ -95,10 +95,12 @@ def test_provider_logs_invalid_structured_output_reason_without_raw_model_text(c
     response_data = {"output": [{"type": "message", "content": [{"type": "output_text", "text": private_model_text}]}]}
     fake = Mock(status_code=200, content=json.dumps(response_data).encode("utf-8"), is_redirect=False)
     fake.json.return_value = response_data
-    with patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret", "OPENAI_API_KEY": "openai-test-secret",
-                                    "OPENAI_MODEL": "gpt-5.1",
-                                    "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json")}, clear=False), \\
-         patch.object(provider.requests, "post", return_value=fake):
+    with (
+        patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret", "OPENAI_API_KEY": "openai-test-secret",
+                                  "OPENAI_MODEL": "gpt-5.1",
+                                  "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json")}, clear=False),
+        patch.object(provider.requests, "post", return_value=fake),
+    ):
         with TestClient(provider.app) as client:
             response = client.post("/analyze", json=_market_payload(),
                                    headers={"Authorization": "Bearer shared-secret"})
