@@ -142,6 +142,30 @@ def test_provider_quota_429_activates_circuit_breaker_and_avoids_repeat_paid_cal
     assert "current quota" not in caplog.text
 
 
+def test_quota_cooldown_survives_process_local_reset_with_shared_database(tmp_path, monkeypatch):
+    import db_store
+
+    db_path = tmp_path / "provider-quota.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test-shared-db")
+    monkeypatch.setenv("BOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("OPENAI_QUOTA_COOLDOWN_SECONDS", "3600")
+    monkeypatch.setattr(db_store, "_database_url", lambda: "")
+    db_store._INITIALIZED.clear()
+    conn = db_store.connect_database()
+    try:
+        db_store.ensure_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    activated_for = provider._activate_quota_cooldown()
+    assert activated_for == 3600
+    # Simulate a provider process restart: in-memory state is gone, shared state remains.
+    provider._clear_quota_cooldown()
+    remaining = provider._quota_cooldown_remaining_seconds()
+    assert 0 < remaining <= 3600
+
+
 def test_provider_classifies_rate_limit_429_from_safe_error_fields():
     fake = Mock(status_code=429, content=b"{}", is_redirect=False)
     fake.json.return_value = {
