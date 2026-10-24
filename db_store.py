@@ -162,7 +162,7 @@ _TABLE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("direction", "TEXT"), ("contracts", "INTEGER"), ("entry_cents", "REAL"),
         ("fee_cents_per_contract", "REAL"), ("outcome", "TEXT"), ("pnl_cents", "REAL"),
         ("state", "TEXT"), ("last_checked_at", "TEXT"), ("last_error", "TEXT"),
-        ("feature_snapshot_json", "TEXT"), ("notes", "TEXT"),
+        ("comparison_cohort", "TEXT"), ("feature_snapshot_json", "TEXT"), ("notes", "TEXT"),
     ],
 }
 
