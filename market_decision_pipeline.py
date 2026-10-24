@@ -391,8 +391,9 @@ class MarketDecisionPipeline:
                         result["paper_trade_created"] = False
                         result["paper_selection_status"] = "not_eligible"
                         result["batch_persistence_phase"] = "candidate_evaluated_pre_rank"
+                        decision_id = self._record_decision_with_retry(conn, result)
                         decisions.append(result)
-                        decision_ids.append(self._record_decision_with_retry(conn, result))
+                        decision_ids.append(decision_id)
                         if result.get("eligible") and category in enabled_categories:
                             eligible_for_entry.append(result)
                         blocked += int(not result.get("eligible"))
@@ -408,8 +409,9 @@ class MarketDecisionPipeline:
                             "reasons": ["market_analysis_unavailable", error_code],
                             "batch_persistence_phase": "candidate_evaluated_pre_rank",
                         }
+                        decision_id = self._record_decision_with_retry(conn, failed_result)
                         decisions.append(failed_result)
-                        decision_ids.append(self._record_decision_with_retry(conn, failed_result))
+                        decision_ids.append(decision_id)
                 # Rank all fully eligible results from this analyzed batch before opening anything.
                 # This prevents the first market returned by the scanner from winning merely by order.
                 eligible_for_entry = [
