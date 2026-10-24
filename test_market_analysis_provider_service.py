@@ -88,6 +88,39 @@ def test_provider_rejects_mismatched_ticker_and_large_payload():
         assert large.status_code == 413
 
 
+def test_provider_classifies_quota_429_without_logging_secret_or_raw_body(caplog, tmp_path):
+    error_body = {
+        "error": {
+            "message": "You exceeded your current quota, please check your plan and billing details.",
+            "type": "insufficient_quota",
+            "code": "insufficient_quota",
+        }
+    }
+    fake = Mock(status_code=429, content=json.dumps(error_body).encode("utf-8"), is_redirect=False)
+    fake.json.return_value = error_body
+    with patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
+                                    "OPENAI_API_KEY": "openai-test-secret",
+                                    "OPENAI_MODEL": "gpt-5.1",
+                                    "MARKET_MODEL_VALIDATION_REPORT_PATH": str(tmp_path / "empty.json")}, clear=False), \
+         patch.object(provider.requests, "post", return_value=fake):
+        with TestClient(provider.app) as client:
+            response = client.post("/analyze", json=_market_payload(),
+                                   headers={"Authorization": "Bearer shared-secret"})
+    assert response.status_code == 502
+    assert "classification=quota_or_billing" in caplog.text
+    assert "code=insufficient_quota" in caplog.text
+    assert "openai-test-secret" not in caplog.text
+    assert "current quota" not in caplog.text
+
+
+def test_provider_classifies_rate_limit_429_from_safe_error_fields():
+    fake = Mock(status_code=429, content=b"{}", is_redirect=False)
+    fake.json.return_value = {
+        "error": {"message": "Rate limit reached for requests.", "type": "requests", "code": "rate_limit_exceeded"}
+    }
+    assert provider._openai_error_diagnostics(fake) == ("rate_limit", "rate_limit_exceeded", "requests")
+
+
 def test_provider_uses_realized_database_outcomes_for_calibration(tmp_path, monkeypatch):
     import db_store
     from datetime import timedelta
