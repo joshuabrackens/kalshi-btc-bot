@@ -557,7 +557,7 @@
 
   <section class="card section" id="market-decision-section" aria-label="Market research and paper opportunity engine">
     <div class="section-head">
-      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed news, injury/lineup or event evidence. It will not invent probabilities when that provider is missing.</p></div>
+      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed evidence. Each batch ranks all eligible candidates it actually analyzed and can open at most one best-ranked paper position. No probability is invented if the provider is missing.</p></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-analysis-badge">NOT RUN</span><button type="button" class="mode-button" id="market-analysis-button" disabled>Run research batch · unlock admin first</button></div>
     </div>
     <p id="market-analysis-status" class="small" role="status" aria-live="polite">Waiting for scanner and validated evidence provider configuration. This pipeline can only create separate hold-to-settlement paper simulations; it cannot place live orders.</p>
@@ -567,7 +567,18 @@
       <div class="mini"><div class="label">Paper entries created</div><div class="value" id="market-analysis-entered">—</div><div class="help">Separate research journal; no live orders</div></div>
       <div class="mini"><div class="label">Settled research win rate</div><div class="value" id="market-analysis-winrate">—</div><div class="help" id="market-analysis-pnl">Separate hold-to-settlement results</div></div>
     </div>
-    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Configure a validated HTTPS provider and turn autopilot ON to start scheduled analysis and eligible paper-only entries automatically.</td></tr></tbody></table></div>
+    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Unlock admin and run a research batch. If an eligible opportunity passes every gate and there is no open research position, the batch will open one best-ranked simulated position.</td></tr></tbody></table></div>
+    <div style="margin-top:18px" id="market-research-position-ledger">
+      <h3>Best-candidate paper position and settlement ledger</h3>
+      <p class="small" style="margin-bottom:8px">One virtual research position may be open at a time. This ledger records the selected-side ask, contract count, estimated fee/slippage, model estimate, edge at entry, official settlement result, and realized simulated net P&amp;L. Open positions are not counted as wins or losses.</p>
+      <div class="table-wrap">
+        <table style="min-width:1200px" aria-label="Multi-market paper position and settlement ledger">
+          <thead><tr><th>Opened</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry ask</th><th>Estimated entry cost</th><th>Model side odds</th><th>Net edge at entry</th><th>Rank score</th><th>Settlement state / result</th><th>Net P&amp;L</th></tr></thead>
+          <tbody id="market-research-paper-positions"><tr><td colspan="11" class="empty">No virtual research positions have been opened yet.</td></tr></tbody>
+        </table>
+      </div>
+      <p class="small" id="market-research-position-note" style="margin-top:8px">The current research journal is separate from the BTC strategy. Settlement is accepted only from final market status and result.</p>
+    </div>
     <div style="margin-top:18px">
       <h3>Separate paper results by market category</h3>
       <p class="small">Research placements and their outcomes are isolated from the BTC 15-minute win rate. NFL, NBA, WNBA, NHL, MLB and NCAA labels are inferred only for reporting; every sports opportunity still uses the validated sports model/evidence gates. Empty categories show no win rate until a trade actually settles.</p>
