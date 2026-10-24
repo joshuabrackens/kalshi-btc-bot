@@ -390,11 +390,11 @@ class MarketDecisionPipeline:
                             result.setdefault("reasons", []).append("category_not_allowlisted_for_paper")
                         result["paper_trade_created"] = False
                         result["paper_selection_status"] = "not_eligible"
-                        if result.get("eligible") and category in enabled_categories:
-                            eligible_for_entry.append(result)
                         result["batch_persistence_phase"] = "candidate_evaluated_pre_rank"
                         decisions.append(result)
                         decision_ids.append(self._record_decision_with_retry(conn, result))
+                        if result.get("eligible") and category in enabled_categories:
+                            eligible_for_entry.append(result)
                         blocked += int(not result.get("eligible"))
                     except Exception as exc:
                         # Log only allowlisted provider codes; never arbitrary response text/tokens.
