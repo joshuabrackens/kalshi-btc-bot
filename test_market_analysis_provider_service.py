@@ -34,6 +34,19 @@ def _reset_quota_circuit_breaker():
     provider._clear_quota_cooldown()
 
 
+def test_root_probe_returns_health_without_paid_provider_call():
+    with patch.object(provider.requests, "post") as post:
+        with TestClient(provider.app) as client:
+            root_get = client.get("/")
+            root_head = client.head("/")
+            healthz = client.get("/healthz")
+    assert root_get.status_code == 200
+    assert root_get.json()["ok"] is True
+    assert root_head.status_code == 200
+    assert healthz.status_code == 200
+    post.assert_not_called()
+
+
 def test_provider_auth_and_missing_api_key_fail_closed():
     with patch.dict("os.environ", {"MARKET_ANALYSIS_PROVIDER_API_KEY": "shared-secret",
                                     "OPENAI_API_KEY": "", "OPENAI_MODEL": "gpt-5.1"}, clear=False):
