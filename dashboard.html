@@ -512,6 +512,7 @@
         <div class="mini"><div class="label">Current engine · forward sample</div><div class="value" id="strategy-shadow-current-rate">—</div><div class="help">Positive-net settled rate</div></div>
         <div class="mini"><div class="label">Hold-to-settlement · forward sample</div><div class="value" id="strategy-shadow-candidate-rate">—</div><div class="help">Hypothetical positive-net rate</div></div>
         <div class="mini"><div class="label">Candidate P&amp;L vs. current</div><div class="value" id="strategy-shadow-delta-pnl">—</div><div class="help">Paired net-P&amp;L difference</div></div>
+        <div class="mini"><div class="label">Slippage-adjusted P&amp;L delta</div><div class="value" id="strategy-shadow-adjusted-delta-pnl">—</div><div class="help" id="strategy-shadow-slippage-assumption">Modeled slippage assumption, not measured fills</div></div>
       </div>
       <p class="small" style="margin:9px 0 12px" id="strategy-shadow-status">Waiting for strategy shadow journal data.</p>
       <div class="table-wrap" style="margin-top:10px">
@@ -557,7 +558,7 @@
 
   <section class="card section" id="market-decision-section" aria-label="Market research and paper opportunity engine">
     <div class="section-head">
-      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed evidence. Each batch ranks all eligible candidates it actually analyzed and can open at most one best-ranked paper position. The engine will not invent probabilities when the provider is missing.</p></div>
+      <div><h2>Market research → paper decision pipeline</h2><p class="section-desc">Reviews a rotating set of activity-ranked open markets, obtains current order-book quotes, and asks a configured model/evidence provider for a calibrated probability plus source-attributed evidence. Each batch ranks eligible candidates and can open paper positions up to configured per-cycle and open-position risk caps. The engine will not invent probabilities when the provider is missing.</p></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge blue" id="market-analysis-badge">NOT RUN</span><button type="button" class="mode-button" id="market-analysis-button" disabled>Run research batch · unlock admin first</button></div>
     </div>
     <p id="market-analysis-status" class="small" role="status" aria-live="polite">Waiting for scanner and validated evidence provider configuration. This pipeline creates isolated hold-to-settlement paper simulations only; exploratory entries are labeled UNVALIDATED and cannot place live orders.</p>
@@ -567,10 +568,10 @@
       <div class="mini"><div class="label">Paper entries created</div><div class="value" id="market-analysis-entered">—</div><div class="help">Separate research journal; no live orders</div></div>
       <div class="mini"><div class="label">Settled research win rate</div><div class="value" id="market-analysis-winrate">—</div><div class="help" id="market-analysis-pnl">Separate hold-to-settlement results</div></div>
     </div>
-    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Unlock admin and run a research batch. If an eligible opportunity passes every gate and there is no open research position, the batch will open one best-ranked simulated position.</td></tr></tbody></table></div>
+    <div class="table-wrap" style="margin-top:13px"><table style="min-width:1050px" aria-label="Research opportunities"><thead><tr><th>Ticker / market</th><th>Category</th><th>Model YES</th><th>YES / NO ask</th><th>Net edge YES / NO</th><th>Decision</th><th>Why / evidence</th></tr></thead><tbody id="market-analysis-rows"><tr><td colspan="7" class="empty">No analysis batch yet. Unlock admin and run a research batch. The batch ranks eligible candidates and may open positions until configured paper position, duplicate, exposure, and loss limits are reached.</td></tr></tbody></table></div>
     <div style="margin-top:18px" id="market-research-position-ledger">
-      <h3>Best-candidate paper position and settlement ledger</h3>
-      <p class="small" style="margin-bottom:8px">One virtual research position may be open at a time. This ledger records the selected-side ask, contract count, estimated fee/slippage, model estimate, edge at entry, official settlement result, and realized simulated net P&amp;L. Open positions are not counted as wins or losses.</p>
+      <h3>Multi-market paper positions and settlement ledger</h3>
+      <p class="small" style="margin-bottom:8px">Research position count follows configured paper risk caps; multiple virtual positions may be open. This ledger records the selected-side ask, contract count, estimated fee/slippage, model estimate, edge at entry, official settlement result, and realized simulated net P&amp;L. Open positions are not counted as wins or losses.</p>
       <div class="table-wrap">
         <table style="min-width:1200px" aria-label="Multi-market paper position and settlement ledger">
           <thead><tr><th>Opened</th><th>Market</th><th>Side</th><th>Contracts</th><th>Entry ask</th><th>Estimated entry cost</th><th>Model side odds</th><th>Net edge at entry</th><th>Rank score</th><th>Settlement state / result</th><th>Net P&amp;L</th></tr></thead>
@@ -1142,6 +1143,8 @@
     const historical=comparison.paired_comparison||{};
     const current=prospective.current_engine||{};
     const candidate=prospective.hold_to_settlement_candidate||{};
+    const adjusted=prospective.slippage_adjusted_comparison||{};
+    const slippage=comparison.slippage_assumption||{};
     const journal=comparison.shadow_journal||{};
     const config=comparison.candidate||{};
     write('strategy-shadow-paired',`${prospective.paired_resolved_trades||0} paired · ${prospective.baseline_settled_trades||0} baseline settled`);
@@ -1149,10 +1152,14 @@
     write('strategy-shadow-candidate-rate',hasNum(candidate.positive_net_rate_percent)?`${nfmt(candidate.positive_net_rate_percent,1)}%`:'—');
     write('strategy-shadow-delta-pnl',hasNum(prospective.net_pnl_difference_cents)?signedMoneyCents(prospective.net_pnl_difference_cents):'—');
     if($('strategy-shadow-delta-pnl'))$('strategy-shadow-delta-pnl').className='value '+(asNum(prospective.net_pnl_difference_cents)>0?'positive':asNum(prospective.net_pnl_difference_cents)<0?'negative':'');
+    write('strategy-shadow-adjusted-delta-pnl',hasNum(adjusted.net_pnl_difference_cents)?signedMoneyCents(adjusted.net_pnl_difference_cents):'—');
+    if($('strategy-shadow-adjusted-delta-pnl'))$('strategy-shadow-adjusted-delta-pnl').className='value '+(asNum(adjusted.net_pnl_difference_cents)>0?'positive':asNum(adjusted.net_pnl_difference_cents)<0?'negative':'');
+    write('strategy-shadow-slippage-assumption',hasNum(slippage.modeled_cents_per_contract)?'Modeled '+nfmt(slippage.modeled_cents_per_contract,2)+'¢/contract · not measured from fills':'Slippage assumption unavailable');
     const configured=Boolean(config.configured)||Number(journal.shadow_rows_created)>0;
+    const targetRate=hasNum(comparison.target_positive_net_rate_percent)?nfmt(comparison.target_positive_net_rate_percent,1):'90';
     const target=prospective.target_supported_out_of_sample===true
-      ?'The 90% target gate is supported by the resolved prospective shadow sample.'
-      :'The 90% target is not demonstrated by the resolved prospective shadow sample yet.';
+      ?'The '+targetRate+'% target gate is supported by resolved prospective results after modeled slippage.'
+      :'The '+targetRate+'% target is not demonstrated by resolved prospective results after modeled slippage yet.';
     write('strategy-shadow-status',`${configured?'Shadow journal available':'Shadow test awaiting worker activation'} · ${journal.shadow_results_resolved||0} candidate outcomes resolved · ${journal.stopped_baseline_trades_waiting_for_official_resolution||0} settled baseline trade(s) still need an official candidate result · ${journal.shadow_rows_pending||0} total candidate row(s) pending. ${config.prospective_start_at?'Forward-test start: '+time(config.prospective_start_at)+'.':'No prospective start timestamp configured; historical rows cannot qualify as forward-test evidence.'} ${target}`);
     const familyBody=$('strategy-family-comparison');
     if(familyBody){
