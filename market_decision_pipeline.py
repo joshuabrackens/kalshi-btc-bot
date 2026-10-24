@@ -474,7 +474,7 @@ class MarketDecisionPipeline:
                                 "probability_provider_http_403",
                                 "probability_provider_http_429",
                             }
-                            or re.fullmatch(r"probability_provider_http_5\\d{2}", error_code)
+                            or re.fullmatch(r"probability_provider_http_5[0-9]{2}", error_code)
                             or error_code.startswith("probability_provider_network_error:")
                         ):
                             provider_failure_code = error_code
