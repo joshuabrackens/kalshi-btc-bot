@@ -252,6 +252,47 @@ def _parse_output_text(response_data: Mapping[str, Any]) -> dict[str, Any]:
     raise HTTPException(status_code=502, detail="The research model did not return valid structured output.")
 
 
+def _openai_error_diagnostics(response: Any) -> tuple[str, str | None, str | None]:
+    """Classify upstream failures from safe error fields without logging response bodies or secrets."""
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    error = payload.get("error") if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        error = {}
+
+    def safe_tag(value: Any) -> str | None:
+        if value is None or isinstance(value, bool):
+            return None
+        text = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(value).strip())[:80]
+        return text or None
+
+    code = safe_tag(error.get("code"))
+    error_type = safe_tag(error.get("type"))
+    message = str(error.get("message") or "").lower()
+    code_text = f"{code or ''} {error_type or ''}".lower()
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status == 429:
+        if any(term in code_text or term in message for term in ("insufficient_quota", "quota", "billing")):
+            classification = "quota_or_billing"
+        elif "rate_limit" in code_text or "rate limit" in message or "too many requests" in message:
+            classification = "rate_limit"
+        elif "capacity" in code_text or "capacity" in message:
+            classification = "upstream_capacity"
+        else:
+            classification = "rate_limit_or_quota_unspecified"
+    elif status == 401:
+        classification = "authentication_or_api_key"
+    elif status == 403:
+        classification = "permission_or_policy"
+    elif status >= 500:
+        classification = "upstream_server_error"
+    else:
+        classification = "upstream_error"
+    return classification, code, error_type
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     database_configured = bool(os.getenv("DATABASE_URL", "").strip())
@@ -341,7 +382,11 @@ async def analyze(request: Request) -> dict[str, Any]:
     if len(response.content) > MAX_PROVIDER_RESPONSE_BYTES:
         raise HTTPException(status_code=502, detail="Research provider response exceeded the size limit.")
     if response.status_code < 200 or response.status_code >= 300:
-        logger.warning("OpenAI provider returned status %s", response.status_code)
+        classification, error_code, error_type = _openai_error_diagnostics(response)
+        logger.warning(
+            "OpenAI provider returned status %s (classification=%s, code=%s, type=%s)",
+            response.status_code, classification, error_code or "unavailable", error_type or "unavailable",
+        )
         raise HTTPException(status_code=502, detail=f"Research provider returned HTTP {response.status_code}.")
     try:
         response_data = response.json()
