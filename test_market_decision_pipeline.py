@@ -166,7 +166,7 @@ def test_evaluated_decision_is_committed_before_later_ranking_failure(tmp_path):
                 assert rows[0][2] == 0.75
                 payload = json.loads(rows[0][3])
                 assert payload["batch_persistence_phase"] == "candidate_evaluated_pre_rank"
-                assert payload["model_validation_status"] == "VALIDATED"
+                assert payload["model"]["model_probability_yes"] == 0.75
             finally:
                 conn.close()
         finally:
