@@ -60,7 +60,7 @@ class PostgresAutoReturnIdTests(unittest.TestCase):
                 conn = DatabaseConnection(raw, "postgresql")
                 cur = conn.execute(f"INSERT INTO {table} (id) VALUES (?)", (9,))
                 self.assertEqual(cur.lastrowid, 9)
-                self.assertIn("RETURNING id", raw.cursor_instance.sql.upper())
+                self.assertIn("RETURNING ID", raw.cursor_instance.sql.upper())
 
     def test_non_serial_setting_table_does_not_request_generated_id(self):
         raw = FakePostgresConnection(returned_id=None)
