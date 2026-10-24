@@ -22,6 +22,11 @@ from market_category_registry import market_display_group
 
 log = logging.getLogger("market_decision_pipeline")
 
+# Research candidates are ranked across markets, but only one paper position may be open at a time.
+# Environment overrides may reduce other risk budgets, but cannot raise this single-position cap.
+MAX_OPEN_RESEARCH_POSITIONS = 1
+MAX_RESEARCH_ENTRIES_PER_CYCLE = 1
+
 
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -415,8 +420,14 @@ class MarketDecisionPipeline:
                 open_count = int(conn.execute(
                     "SELECT COUNT(*) FROM market_research_paper_trades WHERE status='open'"
                 ).fetchone()[0] or 0)
-                max_open_positions = _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 5, 1, 20)
-                max_entries_per_cycle = _int_env("MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE", 3, 1, 10)
+                max_open_positions = min(
+                    MAX_OPEN_RESEARCH_POSITIONS,
+                    _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 1, 1, 20),
+                )
+                max_entries_per_cycle = min(
+                    MAX_RESEARCH_ENTRIES_PER_CYCLE,
+                    _int_env("MARKET_RESEARCH_MAX_ENTRIES_PER_CYCLE", 1, 1, 10),
+                )
                 if paper_entry_once and not autopilot_on:
                     max_entries_per_cycle = 1
 
@@ -634,8 +645,11 @@ class MarketDecisionPipeline:
         if not model_id or not model_version:
             return False, "model_identity_missing"
 
-        # Multiple isolated paper positions allow prospective measurement across the best ranked markets.
-        max_open = _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 5, 1, 20)
+        # Hard single-position cap: environment overrides cannot create overlapping research exposure.
+        max_open = min(
+            MAX_OPEN_RESEARCH_POSITIONS,
+            _int_env("MARKET_RESEARCH_MAX_OPEN_POSITIONS", 1, 1, 20),
+        )
         max_open_cost = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_OPEN_COST_CENTS", "2000"), 2000))
         daily_loss_limit = max(1.0, _num(os.getenv("MARKET_RESEARCH_MAX_DAILY_LOSS_CENTS", "500"), 500))
         open_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(contracts*(entry_cents+estimated_fee_cents+estimated_slippage_cents)),0) FROM market_research_paper_trades WHERE status='open'").fetchone()
