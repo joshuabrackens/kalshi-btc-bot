@@ -261,7 +261,7 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
     trade_rows = conn.execute(
         """SELECT p.id,p.created_at,p.settled_at,p.market_ticker,p.direction,p.contracts,
                   p.entry_cents,p.pnl_cents,p.outcome,p.notes,p.entry_signal_source,
-                  sh.state,sh.settled_at,sh.pnl_cents,sh.last_checked_at,sh.last_error
+                  sh.state,sh.settled_at,sh.pnl_cents,sh.last_checked_at,sh.last_error,sh.comparison_cohort
            FROM paper_trades p
            LEFT JOIN strategy_shadow_trades sh
              ON sh.baseline_trade_id=p.id AND sh.strategy_key=?
@@ -273,15 +273,31 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
     exit_paths: dict[str, list[tuple[float, str, str]]] = {}
     paired_actual: list[float] = []
     paired_shadow: list[float] = []
+    prospective_actual: list[float] = []
+    prospective_shadow: list[float] = []
+    prospective_pending_after_baseline_settlement = 0
+    prospective_baseline_settled_count = 0
+    prospective_entries_seen = 0
+    prospective_baseline_open_count = 0
     unresolved_count = settled_count = 0
     last_checked_at = None
     last_error_count = 0
-    current_family_count = legacy_family_count = 0
 
     for row in trade_rows:
         (trade_id, created_at, actual_settled_at, ticker, direction, contracts,
          entry, actual_pnl, outcome, notes, source,
-         shadow_state, shadow_settled_at, shadow_pnl, checked_at, last_error) = row
+         shadow_state, shadow_settled_at, shadow_pnl, checked_at, last_error, comparison_cohort) = row
+        if comparison_cohort == "prospective":
+            prospective_entries_seen += 1
+            if actual_settled_at is None or actual_pnl is None:
+                prospective_baseline_open_count += 1
+            else:
+                prospective_baseline_settled_count += 1
+                if shadow_state == "settled" and shadow_pnl is not None:
+                    prospective_actual.append(_finite_number(actual_pnl))
+                    prospective_shadow.append(_finite_number(shadow_pnl))
+                else:
+                    prospective_pending_after_baseline_settlement += 1
         last_checked_at = max(str(last_checked_at or ""), str(checked_at or "")) or None
         last_error_count += int(bool(last_error))
         if shadow_state == "settled" and shadow_pnl is not None:
@@ -297,10 +313,6 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
         if shadow_state == "settled" and shadow_pnl is not None:
             paired_actual.append(_finite_number(actual_pnl))
             paired_shadow.append(_finite_number(shadow_pnl))
-        if family == "tradingview_hybrid":
-            current_family_count += 1
-        elif family == "legacy_auto_paper":
-            legacy_family_count += 1
 
     family_results = []
     for key, entries in families.items():
