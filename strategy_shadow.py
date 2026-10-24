@@ -402,6 +402,7 @@ def build_strategy_comparison_report(conn: Any, *, target_positive_net_rate_perc
                 "and remains open until Kalshi publishes the official market result. It does not submit orders or modify baseline trades."
             ),
             "configured": str(os.getenv("PAPER_STRATEGY_SHADOW_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"},
+            "prospective_start_at": str(os.getenv("PAPER_STRATEGY_SHADOW_START_AT", "")).strip() or None,
         },
         "historical_strategy_families": family_results,
         "historical_exit_path_cohorts": exit_results,
